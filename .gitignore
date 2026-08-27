@@ -1,1 +1,42 @@
-/.env
+# Environment
+.env
+.env.*
+!.env.example
+
+# Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Build directories
+/bin/
+/build/
+/dist/
+
+# Test and coverage
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Crash dumps
+*.stackdump
+core
+core.*
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
