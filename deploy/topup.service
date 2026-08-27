@@ -1,0 +1,32 @@
+[Unit]
+Description=TopUp Game Engine High Performance Backend (Go)
+After=network.target postgresql.service mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/topup/backend
+EnvironmentFile=/opt/topup/backend/.env
+
+# Start executable
+ExecStart=/opt/topup/backend/server
+
+# Auto restart on failure with small backoff
+Restart=always
+RestartSec=3s
+
+# High file descriptor limit for handling high concurrency connections
+LimitNOFILE=65536
+
+# Memory limit protection (optional safety net for small VPS)
+MemoryMax=512M
+
+# Security Sandboxing
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
