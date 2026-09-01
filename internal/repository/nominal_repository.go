@@ -61,7 +61,30 @@ func (r *nominalRepository) FindBySellerCode(code string) (*domain.Nominal, erro
 }
 
 func (r *nominalRepository) Update(nominal *domain.Nominal) error {
-	return r.db.Save(nominal).Error
+    updates := map[string]interface{}{
+        "name":                  nominal.Name,
+        "provider_product_code": nominal.ProviderProductCode,
+        "seller_product_code":   nominal.SellerProductCode,
+        "base_price":            nominal.BasePrice,
+        "price_public":          nominal.PricePublic,
+        "price_reseller":        nominal.PriceReseller,
+        "is_active":             nominal.IsActive,
+        "sort_order":            nominal.SortOrder,
+    }
+
+    if nominal.GameID > 0 {
+        updates["game_id"] = nominal.GameID
+    }
+
+    if nominal.ProviderID > 0 {
+        updates["provider_id"] = nominal.ProviderID
+    }
+
+    return r.db.
+        Model(&domain.Nominal{}).
+        Where("id = ?", nominal.ID).
+        Updates(updates).
+        Error
 }
 
 func (r *nominalRepository) Delete(id uint) error {

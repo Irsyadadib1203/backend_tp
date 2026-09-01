@@ -44,8 +44,22 @@ func (r *bannerRepository) Create(b *domain.Banner) error {
 	return r.db.Create(b).Error
 }
 
-func (r *bannerRepository) Update(b *domain.Banner) error {
-	return r.db.Save(b).Error
+func (r *bannerRepository) Update(banner *domain.Banner) error {
+    updates := map[string]interface{}{
+        "title":      banner.Title,
+        "subtitle":   banner.Subtitle,
+        "image_url":  banner.ImageURL,
+        "link_url":   banner.LinkURL,
+        "badge_text": banner.BadgeText,
+        "sort_order": banner.SortOrder,
+        "is_active":  banner.IsActive,
+    }
+
+    return r.db.
+        Model(&domain.Banner{}).
+        Where("id = ?", banner.ID).
+        Updates(updates).
+        Error
 }
 
 func (r *bannerRepository) Delete(id uint) error {

@@ -53,7 +53,28 @@ func (r *gameRepository) FindBySlug(slug string) (*domain.Game, error) {
 }
 
 func (r *gameRepository) Update(game *domain.Game) error {
-	return r.db.Save(game).Error
+    updates := map[string]interface{}{
+        "name":                game.Name,
+        "slug":                game.Slug,
+        "category":            game.Category,
+        "publisher":           game.Publisher,
+        "description":         game.Description,
+        "image_url":           game.ImageURL,
+        "banner_url":          game.BannerURL,
+        "is_active":           game.IsActive,
+        "is_popular":          game.IsPopular,
+        "sort_order":          game.SortOrder,
+        "has_zone_id":         game.HasZoneID,
+        "user_id_label":       game.UserIDLabel,
+        "zone_id_label":       game.ZoneIDLabel,
+        "nickname_check_code": game.NicknameCheckCode,
+    }
+
+    return r.db.
+        Model(&domain.Game{}).
+        Where("id = ?", game.ID).
+        Updates(updates).
+        Error
 }
 
 func (r *gameRepository) Delete(id uint) error {

@@ -57,7 +57,23 @@ func (r *articleRepository) Create(a *domain.Article) error {
 }
 
 func (r *articleRepository) Update(a *domain.Article) error {
-	return r.db.Save(a).Error
+    updates := map[string]interface{}{
+        "title":        a.Title,
+        "slug":         a.Slug,
+        "excerpt":      a.Excerpt,
+        "content":      a.Content,
+        "image_url":    a.ImageURL,
+        "category":     a.Category,
+		"read_time":    a.ReadTime,
+        "is_published": a.IsPublished,
+        "sort_order":   a.SortOrder,
+    }
+
+    return r.db.
+        Model(&domain.Article{}).
+        Where("id = ?", a.ID).
+        Updates(updates).
+        Error
 }
 
 func (r *articleRepository) Delete(id uint) error {
