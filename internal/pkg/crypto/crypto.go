@@ -3,6 +3,7 @@ package crypto
 import (
 	"crypto/hmac"
 	"crypto/md5"
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
 
@@ -39,5 +40,12 @@ func SHA256Hash(input string) string {
 func HMACSHA256(secret, data string) string {
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(data))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// HMACSHA1 computes HMAC-SHA1 signature
+func HMACSHA1(secret string, data []byte) string {
+	h := hmac.New(sha1.New, []byte(secret))
+	h.Write(data)
 	return hex.EncodeToString(h.Sum(nil))
 }

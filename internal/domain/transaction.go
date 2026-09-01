@@ -61,7 +61,7 @@ type Transaction struct {
 	ProviderOrderID      string            `gorm:"size:100" json:"provider_order_id"`
 	ProviderStatus       string            `gorm:"size:50" json:"provider_status"`
 	ProviderMessage      string            `gorm:"size:255" json:"provider_message"`
-	ProviderCallbackData string            `gorm:"type:text" json:"provider_callback_data,omitempty"`
+	ProviderCallbackData string            `gorm:"type:text" json:"provider_callback_data"`
 	
 	// Retries & Completion
 	RetryCount           int               `gorm:"default:0" json:"retry_count"`

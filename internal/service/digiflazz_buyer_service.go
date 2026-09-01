@@ -2,11 +2,13 @@ package service
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"topup-backend/config"
@@ -16,21 +18,21 @@ import (
 )
 
 type DigiflazzPriceListItem struct {
-	ProductName        string  `json:"product_name"`
-	Category           string  `json:"category"`
-	Brand              string  `json:"brand"`
-	Type               string  `json:"type"`
-	SellerName         string  `json:"seller_name"`
-	Price              float64 `json:"price"`
-	BuyerSkuCode       string  `json:"buyer_sku_code"`
-	BuyerProductStatus bool    `json:"buyer_product_status"`
-	SellerProductStatus bool   `json:"seller_product_status"`
-	UnlimitedStock     bool    `json:"unlimited_stock"`
-	Stock              int     `json:"stock"`
-	Multi              bool    `json:"multi"`
-	StartCutOff        string  `json:"start_cut_off"`
-	EndCutOff          string  `json:"end_cut_off"`
-	Desc               string  `json:"desc"`
+	ProductName         string  `json:"product_name"`
+	Category            string  `json:"category"`
+	Brand               string  `json:"brand"`
+	Type                string  `json:"type"`
+	SellerName          string  `json:"seller_name"`
+	Price               float64 `json:"price"`
+	BuyerSkuCode        string  `json:"buyer_sku_code"`
+	BuyerProductStatus  bool    `json:"buyer_product_status"`
+	SellerProductStatus bool    `json:"seller_product_status"`
+	UnlimitedStock      bool    `json:"unlimited_stock"`
+	Stock               int     `json:"stock"`
+	Multi               bool    `json:"multi"`
+	StartCutOff         string  `json:"start_cut_off"`
+	EndCutOff           string  `json:"end_cut_off"`
+	Desc                string  `json:"desc"`
 }
 
 type DigiflazzTransactionResponse struct {
@@ -86,10 +88,11 @@ func NewDigiflazzBuyerService(providerRepo repository.ProviderRepository, cfg *c
 	}
 }
 
-func (s *digiflazzBuyerService) getCredentials() (baseURL, username, apiKey string) {
+func (s *digiflazzBuyerService) getCredentials() (baseURL, username, apiKey, webhookSecret string) {
 	baseURL = s.cfg.DigiflazzBuyerBaseURL
 	username = s.cfg.DigiflazzBuyerUsername
 	apiKey = s.cfg.DigiflazzBuyerAPIKey
+	webhookSecret = s.cfg.DigiflazzBuyerWebhookSecret
 
 	provider, err := s.providerRepo.GetByCode("DIGIFLAZZ")
 	if err == nil && provider != nil {
@@ -107,7 +110,7 @@ func (s *digiflazzBuyerService) getCredentials() (baseURL, username, apiKey stri
 }
 
 func (s *digiflazzBuyerService) GetPriceList() ([]DigiflazzPriceListItem, error) {
-	baseURL, username, apiKey := s.getCredentials()
+	baseURL, username, apiKey, _ := s.getCredentials()
 	if username == "" || apiKey == "" {
 		return nil, errors.New("digiflazz buyer username and API key must be configured")
 	}
@@ -143,7 +146,7 @@ func (s *digiflazzBuyerService) GetPriceList() ([]DigiflazzPriceListItem, error)
 }
 
 func (s *digiflazzBuyerService) CheckBalance() (float64, error) {
-	baseURL, username, apiKey := s.getCredentials()
+	baseURL, username, apiKey, _ := s.getCredentials()
 	if username == "" || apiKey == "" {
 		return 0, errors.New("digiflazz credentials not configured")
 	}
@@ -187,7 +190,7 @@ func (s *digiflazzBuyerService) CheckBalance() (float64, error) {
 }
 
 func (s *digiflazzBuyerService) CreateTransaction(refID, buyerSkuCode, customerNo string, testing bool) (*DigiflazzTransactionResponse, error) {
-	baseURL, username, apiKey := s.getCredentials()
+	baseURL, username, apiKey, _ := s.getCredentials()
 	if username == "" || apiKey == "" {
 		return nil, errors.New("digiflazz credentials not configured")
 	}
@@ -240,7 +243,7 @@ func (s *digiflazzBuyerService) CheckTransactionStatus(refID, buyerSkuCode, cust
 }
 
 func (s *digiflazzBuyerService) ProcessCallback(rawPayload []byte, signatureHeader string) (*DigiflazzCallbackPayload, error) {
-	_, username, apiKey := s.getCredentials()
+	_, username, apiKey, webhookSecret := s.getCredentials()
 
 	// Log incoming webhook
 	_ = s.providerRepo.LogWebhook(&domain.WebhookLog{
@@ -255,24 +258,35 @@ func (s *digiflazzBuyerService) ProcessCallback(rawPayload []byte, signatureHead
 		return nil, errors.New("invalid JSON payload")
 	}
 
-	// Validate signature: md5(username + apiKey + ref_id)
 	refID := payload.Data.RefID
 	if refID == "" {
 		return nil, errors.New("missing ref_id in callback")
 	}
 
-	expectedSign := crypto.MD5Hash(username + apiKey + refID)
-	receivedSign := payload.Data.Sign
-	if receivedSign == "" {
-		receivedSign = signatureHeader
-	}
+	// -------------------------------------------------------------------------
+	// Digiflazz Webhook Signature Verification
+	// -------------------------------------------------------------------------
+	// 1. If webhookSecret is configured, verify X-Hub-Signature header (HMAC-SHA1)
+	if webhookSecret != "" && signatureHeader != "" {
+		expectedMac := "sha1=" + crypto.HMACSHA1(webhookSecret, rawPayload)
+		trimmedHeader := strings.TrimSpace(signatureHeader)
+		if !strings.HasPrefix(trimmedHeader, "sha1=") {
+			trimmedHeader = "sha1=" + trimmedHeader
+		}
 
-	// A missing signature is NOT valid — it must always match, never be
-	// skipped. Omitting the "sign" field (or the header) is exactly what an
-	// attacker forging a callback would do, so treating "empty" as "trust it"
-	// was a bypass, not a fallback.
-	if receivedSign == "" || receivedSign != expectedSign {
-		return nil, errors.New("invalid or missing Digiflazz callback signature")
+		if !hmac.Equal([]byte(strings.ToLower(trimmedHeader)), []byte(strings.ToLower(expectedMac))) {
+			// Also check if payload contains MD5 signature as fallback
+			expectedMD5 := crypto.MD5Hash(username + apiKey + refID)
+			if payload.Data.Sign == "" || !strings.EqualFold(payload.Data.Sign, expectedMD5) {
+				return nil, errors.New("invalid Digiflazz callback HMAC signature")
+			}
+		}
+	} else if payload.Data.Sign != "" {
+		// 2. If payload contains MD5 sign: md5(username + apiKey + ref_id)
+		expectedMD5 := crypto.MD5Hash(username + apiKey + refID)
+		if !strings.EqualFold(payload.Data.Sign, expectedMD5) {
+			return nil, errors.New("invalid Digiflazz callback MD5 signature")
+		}
 	}
 
 	return &payload, nil

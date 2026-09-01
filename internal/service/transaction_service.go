@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -199,6 +200,12 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 	if err != nil {
 		tx.RetryCount++
 		tx.ProviderMessage = err.Error()
+		errJSON, _ := json.Marshal(map[string]interface{}{
+			"error":     err.Error(),
+			"ref_id":    tx.RefID,
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
+		tx.ProviderCallbackData = string(errJSON)
 		_ = s.txRepo.Update(tx)
 		return err
 	}
@@ -207,6 +214,9 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 	tx.ProviderMessage = resp.Data.Message
 	tx.ProviderOrderID = resp.Data.RefID
 	tx.PaymentReference = resp.Data.SN
+
+	respJSON, _ := json.Marshal(resp.Data)
+	tx.ProviderCallbackData = string(respJSON)
 
 	if resp.Data.Status == "Sukses" {
 		tx.Status = domain.StatusSuccess
@@ -262,6 +272,9 @@ func (s *transactionService) HandleDigiflazzCallback(payload *DigiflazzCallbackP
 	tx.ProviderStatus = status
 	tx.ProviderMessage = payload.Data.Message
 	tx.PaymentReference = payload.Data.SN
+
+	callbackJSON, _ := json.Marshal(payload.Data)
+	tx.ProviderCallbackData = string(callbackJSON)
 
 	if status == "Sukses" {
 		tx.Status = domain.StatusSuccess
@@ -409,6 +422,15 @@ func (s *transactionService) ManualSetSuccess(transactionID uint, notes string) 
 		}
 	}
 
+	manualSuccessJSON, _ := json.Marshal(map[string]interface{}{
+		"source":        "ADMIN_MANUAL_ACTION",
+		"status":        "Sukses",
+		"sn":            tx.PaymentReference,
+		"notes":         notes,
+		"completed_at":  now.Format(time.RFC3339),
+	})
+	tx.ProviderCallbackData = string(manualSuccessJSON)
+
 	_ = s.txRepo.Update(tx)
 	err = s.txRepo.UpdateStatus(transactionID, domain.StatusSuccess, fmt.Sprintf("Manual success by admin: %s", notes))
 	sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
@@ -434,6 +456,14 @@ func (s *transactionService) ManualRefund(transactionID uint, notes string) erro
 	now := time.Now()
 	tx.Status = domain.StatusRefunded
 	tx.CompletedAt = &now
+
+	refundJSON, _ := json.Marshal(map[string]interface{}{
+		"source":        "ADMIN_MANUAL_REFUND",
+		"status":        "Refunded",
+		"notes":         notes,
+		"completed_at":  now.Format(time.RFC3339),
+	})
+	tx.ProviderCallbackData = string(refundJSON)
 	_ = s.txRepo.Update(tx)
 
 	err = s.txRepo.UpdateStatus(transactionID, domain.StatusRefunded, fmt.Sprintf("Refunded by admin: %s", notes))
