@@ -216,19 +216,56 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 			return errors.New("kiosgamer service is not initialized")
 		}
 
-		// Execute actual top-up via Kiosgamer
+		// Gunakan KiosgamerProductCode (item_id Kiosgamer), bukan ProviderProductCode (SKU Digiflazz)
+		kiosgamerSKU := nominal.KiosgamerProductCode
+		if kiosgamerSKU == "" {
+			// Fallback: tandai gagal karena SKU Kiosgamer belum dimapping
+			tx.Status = domain.StatusFailed
+			tx.ProviderStatus = "Konfigurasi Error"
+			tx.ProviderMessage = fmt.Sprintf("SKU Kiosgamer belum dikonfigurasi untuk produk '%s'. Silakan isi item_id di halaman Nominals atau gunakan Auto-Sync SKU di Kiosgamer Center.", nominal.Name)
+			now := time.Now()
+			tx.CompletedAt = &now
+			_ = s.txRepo.Update(tx)
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, tx.ProviderMessage)
+			// Auto-refund jika bayar dengan saldo
+			if tx.PaymentMethod == "SALDO" && tx.UserID != nil {
+				_ = s.userRepo.UpdateBalance(*tx.UserID, tx.TotalAmount, domain.MutationCredit, "REFUND", tx.InvoiceNumber, "Pengembalian dana: SKU Kiosgamer belum dikonfigurasi")
+			}
+			return errors.New(tx.ProviderMessage)
+		}
+
+		// Execute actual top-up via Kiosgamer menggunakan item_id yang benar
+		// Ambil slug game untuk resolusi app_id yang akurat (FF vs CODM)
+		gameSlug := ""
+		if s.gameRepo != nil {
+			if g, err := s.gameRepo.FindByID(tx.GameID); err == nil && g != nil {
+				gameSlug = g.Slug
+			}
+		}
 		result, err := s.kiosgamerService.PlaceOrder(
 			context.Background(),
 			tx.RefID,
-			nominal.ProviderProductCode,
+			kiosgamerSKU,
 			tx.CustomerID,
 			tx.ServerID,
+			gameSlug,
 		)
 		if err != nil {
-			// Session error — mark for retry
+			// Bedakan session error vs error lainnya (player not found, product not found, dll)
+			isSessionErr := errors.Is(err, ErrKiosgamerSessionExpired) ||
+				errors.Is(err, ErrKiosgamerReauthRequired) ||
+				errors.Is(err, ErrKiosgamerChallengeRequired) ||
+				errors.Is(err, ErrKiosgamerNotConfigured)
+
 			tx.RetryCount++
-			tx.ProviderStatus = "Session Error"
-			tx.ProviderMessage = fmt.Sprintf("Kiosgamer session error: %v", err)
+			if isSessionErr {
+				tx.ProviderStatus = "Session Error"
+				tx.ProviderMessage = fmt.Sprintf("Kiosgamer session error: %v", err)
+			} else {
+				// Error non-session: player tidak ditemukan, produk tidak ada di Kiosgamer, dll
+				tx.ProviderStatus = "Provider Error"
+				tx.ProviderMessage = fmt.Sprintf("Kiosgamer provider error: %v", err)
+			}
 			_ = s.txRepo.Update(tx)
 			return err
 		}

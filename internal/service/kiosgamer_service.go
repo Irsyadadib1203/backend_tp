@@ -110,7 +110,7 @@ type KiosgamerService interface {
 	EnsureSession(ctx context.Context) (*KiosgamerUserInfo, error)
 	RecoverSession(ctx context.Context) error
 	GenerateTOTP(at time.Time) (string, error)
-	PlaceOrder(ctx context.Context, refID, productCode, customerID, serverID string) (*KiosgamerOrderResult, error)
+	PlaceOrder(ctx context.Context, refID, productCode, customerID, serverID, gameSlug string) (*KiosgamerOrderResult, error)
 
 	// Catalog & Mapping
 	FetchCatalog(ctx context.Context, gameSlug string) ([]KiosgamerCatalogItem, error)
@@ -454,17 +454,23 @@ func (s *kiosgamerService) GenerateTOTP(at time.Time) (string, error) {
 //  2. Submit the purchase using Garena Shell balance.
 //  3. If a TOTP is needed (OTP step), generate and submit it automatically.
 //
-// productCode examples: "FF_500D", "CODM_2240CP"
+// productCode: item_id Kiosgamer (angka, contoh: "14", "30", "103")
 // customerID: player UID (FF: playerID, CODM: playerID)
-// serverID:   zone/server ID (FF: leave blank or zone ID, CODM: leave blank for global)
-func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, customerID, serverID string) (*KiosgamerOrderResult, error) {
+// serverID:   zone/server ID (FF: zone ID, CODM: kosong untuk global)
+// gameSlug:   slug game ("free-fire" atau "call-of-duty-mobile") untuk menentukan app_id yang benar
+func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, customerID, serverID, gameSlug string) (*KiosgamerOrderResult, error) {
 	if _, err := s.EnsureSession(ctx); err != nil {
 		return nil, fmt.Errorf("kiosgamer: session error before order: %w", err)
 	}
 
 	// ── Step 1: Player validation ──────────────────────────────────────────
-	// Determine game type from product code prefix to pick correct app_id
-	appID := s.resolveAppID(productCode)
+	// Resolve app_id dari gameSlug (lebih akurat daripada dari productCode angka)
+	// Jika gameSlug kosong, fallback ke deteksi dari productCode
+	appIDSource := gameSlug
+	if appIDSource == "" {
+		appIDSource = productCode
+	}
+	appID := s.resolveAppID(appIDSource)
 
 	playerPayload := map[string]interface{}{
 		"player_id": customerID,
@@ -484,12 +490,20 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 	}
 	_, err := s.doJSON(ctx, http.MethodPost, "/topup/validate_player", playerPayload, &playerResp)
 	if err != nil {
+		// HTTP 404 dari validate_player = produk/player tidak ditemukan di Kiosgamer (bukan session error)
+		// Kembalikan sebagai "failed" bukan error agar tidak mislabeled sebagai "Session Error"
+		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "error_not_found") || strings.Contains(err.Error(), "1005") {
+			return &KiosgamerOrderResult{
+				Status:  "failed",
+				Message: fmt.Sprintf("Player ID %s atau produk tidak ditemukan di server Kiosgamer (app_id: %d). Pastikan Player ID benar dan produk tersedia.", customerID, appID),
+			}, nil
+		}
 		return nil, fmt.Errorf("kiosgamer: player validation failed: %w", err)
 	}
 	if !playerResp.Data.Valid {
 		return &KiosgamerOrderResult{
 			Status:  "failed",
-			Message: "Player ID tidak ditemukan atau tidak valid di server Kiosgamer",
+			Message: fmt.Sprintf("Player ID %s tidak ditemukan atau tidak valid di server Kiosgamer. Periksa kembali ID dan Server/Zone.", customerID),
 		}, nil
 	}
 
