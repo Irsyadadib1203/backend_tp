@@ -78,16 +78,16 @@ type KiosgamerOrderResult struct {
 
 // KiosgamerCatalogItem represents a product in Kiosgamer's shop catalog
 type KiosgamerCatalogItem struct {
-	ItemID       int     `json:"item_id"`
-	ProductCode  string  `json:"product_code"`
-	Name         string  `json:"name"`
-	Amount       int     `json:"amount"`
-	PointName    string  `json:"point_name"`
-	PriceIDR     float64 `json:"price_idr"`
-	GarenaShell  int     `json:"garena_shell"`
-	ItemType     string  `json:"item_type"` // "points", "membership", "bundle"
-	AppID        int     `json:"app_id"`
-	Description  string  `json:"description,omitempty"`
+	ItemID      int     `json:"item_id"`
+	ProductCode string  `json:"product_code"`
+	Name        string  `json:"name"`
+	Amount      int     `json:"amount"`
+	PointName   string  `json:"point_name"`
+	PriceIDR    float64 `json:"price_idr"`
+	GarenaShell int     `json:"garena_shell"`
+	ItemType    string  `json:"item_type"` // "points", "membership", "bundle"
+	AppID       int     `json:"app_id"`
+	Description string  `json:"description,omitempty"`
 }
 
 // KiosgamerSyncResult holds the summary of an auto-sync mapping operation
@@ -127,6 +127,7 @@ type kiosgamerService struct {
 	httpClient   *http.Client
 	baseURL      *url.URL
 	mu           sync.Mutex
+	orderMu      sync.Mutex
 }
 
 func NewKiosgamerService(
@@ -221,7 +222,23 @@ func (s *kiosgamerService) setSessionCookie(sessionKey string) {
 	}})
 }
 
+func (s *kiosgamerService) cookieValue(name string) string {
+	if s.httpClient == nil || s.httpClient.Jar == nil || s.baseURL == nil {
+		return ""
+	}
+	for _, cookie := range s.httpClient.Jar.Cookies(s.baseURL) {
+		if cookie.Name == name {
+			return cookie.Value
+		}
+	}
+	return ""
+}
+
 func (s *kiosgamerService) doJSON(ctx context.Context, method, path string, payload interface{}, out interface{}) (*http.Response, error) {
+	return s.doJSONWithHeaders(ctx, method, path, payload, out, nil)
+}
+
+func (s *kiosgamerService) doJSONWithHeaders(ctx context.Context, method, path string, payload interface{}, out interface{}, headers map[string]string) (*http.Response, error) {
 	var body io.Reader
 	if payload != nil {
 		b, err := json.Marshal(payload)
@@ -241,6 +258,11 @@ func (s *kiosgamerService) doJSON(ctx context.Context, method, path string, payl
 	}
 	req.Header.Set("Referer", "https://kiosgamer.co.id/")
 	req.Header.Set("User-Agent", "IRXPlay-Kiosgamer-Provider/1.0")
+	for key, value := range headers {
+		if value != "" {
+			req.Header.Set(key, value)
+		}
+	}
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
@@ -448,148 +470,388 @@ func (s *kiosgamerService) GenerateTOTP(at time.Time) (string, error) {
 }
 
 // ── PlaceOrder ────────────────────────────────────────────────────────────────
-// Sends a top-up order to Kiosgamer for Free Fire and CODM products.
-// The flow:
-//  1. Validate player ID via Kiosgamer's player-lookup endpoint (game-specific).
-//  2. Submit the purchase using Garena Shell balance.
-//  3. If a TOTP is needed (OTP step), generate and submit it automatically.
+// Executes the flow observed from Kiosgamer's web client:
+//  1. Ensure/repair Kiosgamer + Garena SSO session.
+//  2. POST /auth/player_id_login to bind the target player to this session.
+//  3. GET /shop/apps/roles and select packed_role_id (Free Fire commonly returns 0).
+//  4. POST /preflight, then read the __csrf__ cookie.
+//  5. Generate the current TOTP and POST /shop/pay/init using the Garena Shell channel.
+//  6. Poll /shop/pay/poll using the returned display_id.
 //
-// productCode: item_id Kiosgamer (angka, contoh: "14", "30", "103")
-// customerID: player UID (FF: playerID, CODM: playerID)
-// serverID:   zone/server ID (FF: zone ID, CODM: kosong untuk global)
-// gameSlug:   slug game ("free-fire" atau "call-of-duty-mobile") untuk menentukan app_id yang benar
+// Kiosgamer keeps player/login state in the session cookie. Therefore the stateful
+// player-login -> pay-init section is serialized with orderMu so two orders cannot
+// overwrite each other's selected player inside the same Kiosgamer session.
 func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, customerID, serverID, gameSlug string) (*KiosgamerOrderResult, error) {
-	if _, err := s.EnsureSession(ctx); err != nil {
+	_ = refID // Kiosgamer uses display_id as its provider transaction identifier.
+
+	itemID, err := strconv.Atoi(strings.TrimSpace(productCode))
+	if err != nil || itemID <= 0 {
+		return &KiosgamerOrderResult{Status: "failed", Message: "item_id Kiosgamer tidak valid: " + productCode}, nil
+	}
+	if strings.TrimSpace(customerID) == "" {
+		return &KiosgamerOrderResult{Status: "failed", Message: "Player ID Kiosgamer kosong"}, nil
+	}
+
+	appID := s.resolveAppID(gameSlug)
+
+	// Kiosgamer's Garena Shell channel observed on CO.ID.
+	const garenaShellChannelID = 208070
+
+	// The session stores player context. Keep this section single-flight per account.
+	s.orderMu.Lock()
+
+	info, err := s.EnsureSession(ctx)
+	if err != nil {
+		s.orderMu.Unlock()
 		return nil, fmt.Errorf("kiosgamer: session error before order: %w", err)
 	}
 
-	// ── Step 1: Player validation ──────────────────────────────────────────
-	// Resolve app_id dari gameSlug (lebih akurat daripada dari productCode angka)
-	// Jika gameSlug kosong, fallback ke deteksi dari productCode
-	appIDSource := gameSlug
-	if appIDSource == "" {
-		appIDSource = productCode
+	// A normal Kiosgamer login can still exist while the Garena SSO session required
+	// for Shell payment is gone. Try the official silent SSO recovery path before pay.
+	if err := s.ensureGarenaTransactionSession(ctx); err != nil {
+		s.orderMu.Unlock()
+		return nil, err
 	}
-	appID := s.resolveAppID(appIDSource)
 
+	// Step 1: bind/validate the target player.
 	playerPayload := map[string]interface{}{
-		"player_id": customerID,
-		"app_id":    appID,
+		"app_id":   appID,
+		"login_id": customerID,
 	}
-	if serverID != "" {
-		playerPayload["server_id"] = serverID
+	if v := strings.TrimSpace(serverID); v != "" {
+		if n, convErr := strconv.Atoi(v); convErr == nil {
+			playerPayload["app_server_id"] = n
+		} else {
+			playerPayload["app_server_id"] = v
+		}
 	}
 
 	var playerResp struct {
-		Status  int    `json:"status"`
-		Message string `json:"message"`
-		Data    struct {
-			Nickname string `json:"username"`
-			Valid    bool   `json:"valid"`
-		} `json:"data"`
+		OpenID   string `json:"open_id"`
+		Region   string `json:"region"`
+		Nickname string `json:"nickname"`
+		ImgURL   string `json:"img_url"`
 	}
-	_, err := s.doJSON(ctx, http.MethodPost, "/topup/validate_player", playerPayload, &playerResp)
-	if err != nil {
-		// HTTP 404 dari validate_player = produk/player tidak ditemukan di Kiosgamer (bukan session error)
-		// Kembalikan sebagai "failed" bukan error agar tidak mislabeled sebagai "Session Error"
-		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "error_not_found") || strings.Contains(err.Error(), "1005") {
-			return &KiosgamerOrderResult{
-				Status:  "failed",
-				Message: fmt.Sprintf("Player ID %s atau produk tidak ditemukan di server Kiosgamer (app_id: %d). Pastikan Player ID benar dan produk tersedia.", customerID, appID),
-			}, nil
-		}
-		return nil, fmt.Errorf("kiosgamer: player validation failed: %w", err)
-	}
-	if !playerResp.Data.Valid {
-		return &KiosgamerOrderResult{
-			Status:  "failed",
-			Message: fmt.Sprintf("Player ID %s tidak ditemukan atau tidak valid di server Kiosgamer. Periksa kembali ID dan Server/Zone.", customerID),
-		}, nil
-	}
-
-	// ── Step 2: Submit purchase order ──────────────────────────────────────
-	orderPayload := map[string]interface{}{
-		"product_code": productCode,
-		"player_id":    customerID,
-		"app_id":       appID,
-		"ref_id":       refID,
-	}
-	if serverID != "" {
-		orderPayload["server_id"] = serverID
-	}
-
-	var orderResp struct {
-		Status  int    `json:"status"`
-		Message string `json:"message"`
-		Data    *struct {
-			OrderID      string `json:"order_id"`
-			Status       string `json:"status"`
-			SerialNumber string `json:"sn"`
-			Message      string `json:"message"`
-			// OTP challenge fields
-			NeedOTP bool   `json:"need_otp"`
-			OTPKey  string `json:"otp_key"`
-		} `json:"data"`
-	}
-	_, err = s.doJSON(ctx, http.MethodPost, "/topup/order", orderPayload, &orderResp)
-	if err != nil {
-		// Session may have expired mid-order; return specific error
-		if errors.Is(err, ErrKiosgamerSessionExpired) {
+	if _, err := s.doJSON(ctx, http.MethodPost, "/auth/player_id_login", playerPayload, &playerResp); err != nil {
+		s.orderMu.Unlock()
+		if errors.Is(err, ErrKiosgamerSessionExpired) || errors.Is(err, ErrKiosgamerChallengeRequired) {
 			return nil, err
 		}
-		return &KiosgamerOrderResult{
-			Status:  "failed",
-			Message: fmt.Sprintf("Kiosgamer order failed: %v", err),
-		}, nil
+		return &KiosgamerOrderResult{Status: "failed", Message: fmt.Sprintf("Player ID %s gagal divalidasi Kiosgamer: %v", customerID, err)}, nil
+	}
+	if playerResp.OpenID == "" {
+		s.orderMu.Unlock()
+		return &KiosgamerOrderResult{Status: "failed", Message: fmt.Sprintf("Player ID %s tidak ditemukan di Kiosgamer", customerID)}, nil
 	}
 
-	if orderResp.Data == nil {
-		return &KiosgamerOrderResult{
-			Status:  "failed",
-			Message: fmt.Sprintf("Kiosgamer order: respons kosong (status %d): %s", orderResp.Status, orderResp.Message),
-		}, nil
+	// Step 2: obtain the packed role selected by Kiosgamer for the player.
+	packedRoleID, err := s.fetchPackedRoleID(ctx, appID, serverID)
+	if err != nil {
+		s.orderMu.Unlock()
+		return &KiosgamerOrderResult{Status: "failed", Message: fmt.Sprintf("Gagal mengambil role/player Kiosgamer: %v", err)}, nil
 	}
 
-	// ── Step 3: Handle OTP/TOTP challenge if required ──────────────────────
-	if orderResp.Data.NeedOTP {
-		totp, err := s.GenerateTOTP(time.Now())
+	// Step 3: preflight sets/refreshes CSRF state used by pay/init.
+	if _, err := s.doJSON(ctx, http.MethodPost, "/preflight", nil, nil); err != nil {
+		s.orderMu.Unlock()
+		return nil, fmt.Errorf("kiosgamer preflight failed: %w", err)
+	}
+	csrfToken := s.cookieValue("__csrf__")
+	if csrfToken == "" {
+		s.orderMu.Unlock()
+		return &KiosgamerOrderResult{Status: "failed", Message: "Kiosgamer tidak mengembalikan CSRF token setelah preflight"}, nil
+	}
+
+	// Generate the OTP as late as possible. Avoid using a token in its final seconds.
+	if sec := time.Now().Unix() % 30; sec >= 27 {
+		wait := time.Duration(30-sec+1) * time.Second
+		select {
+		case <-ctx.Done():
+			s.orderMu.Unlock()
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	otpCode, err := s.GenerateTOTP(time.Now())
+	if err != nil {
+		s.orderMu.Unlock()
+		return nil, fmt.Errorf("kiosgamer TOTP generation failed: %w", err)
+	}
+
+	garenaUID := int64(0)
+	if info != nil && info.OAuth != nil {
+		garenaUID = info.OAuth.UID
+	}
+	if garenaUID == 0 {
+		if status, statusErr := s.Status(ctx); statusErr == nil {
+			garenaUID, _ = strconv.ParseInt(status.UID, 10, 64)
+		}
+	}
+	if garenaUID == 0 {
+		s.orderMu.Unlock()
+		return &KiosgamerOrderResult{Status: "failed", Message: "Garena UID akun Kiosgamer tidak tersedia"}, nil
+	}
+
+	payPayload := map[string]interface{}{
+		"app_id":         appID,
+		"packed_role_id": packedRoleID,
+		"channel_id":     garenaShellChannelID,
+		"service":        "pc",
+		"item_id":        itemID,
+		"channel_data": map[string]interface{}{
+			"otp_code":   otpCode,
+			"garena_uid": garenaUID,
+		},
+	}
+
+	var initResp struct {
+		DisplayID string      `json:"display_id"`
+		Result    string      `json:"result"`
+		ErrorData interface{} `json:"error_data"`
+		Exec      struct {
+			DisplayID string `json:"display_id"`
+		} `json:"exec"`
+	}
+	_, err = s.doJSONWithHeaders(ctx, http.MethodPost, "/shop/pay/init?region=CO.ID&language=id", payPayload, &initResp, map[string]string{
+		"x-csrf-token": csrfToken,
+	})
+
+	// Player context is no longer needed after pay/init, so allow the next order to start.
+	s.orderMu.Unlock()
+
+	if err != nil {
+		if errors.Is(err, ErrKiosgamerSessionExpired) || errors.Is(err, ErrKiosgamerChallengeRequired) {
+			return nil, err
+		}
+		return &KiosgamerOrderResult{Status: "failed", Message: fmt.Sprintf("Kiosgamer pay/init gagal: %v", err)}, nil
+	}
+	if initResp.DisplayID == "" {
+		initResp.DisplayID = initResp.Exec.DisplayID
+	}
+	if !strings.EqualFold(initResp.Result, "success") || initResp.DisplayID == "" {
+		errMsg := "Kiosgamer menolak transaksi"
+		if initResp.ErrorData != nil {
+			if b, marshalErr := json.Marshal(initResp.ErrorData); marshalErr == nil {
+				errMsg += ": " + string(b)
+			}
+		}
+		return &KiosgamerOrderResult{OrderID: initResp.DisplayID, Status: "failed", Message: errMsg}, nil
+	}
+
+	// Step 5: poll using display_id. The browser does the same on /result.
+	return s.pollKiosgamerOrder(ctx, initResp.DisplayID)
+}
+
+func (s *kiosgamerService) ensureGarenaTransactionSession(ctx context.Context) error {
+	var session KiosgamerSSOSession
+	_, err := s.doJSON(ctx, http.MethodGet, "/auth/check_session", nil, &session)
+	if err != nil {
+		return fmt.Errorf("kiosgamer Garena SSO check failed: %w", err)
+	}
+	if !session.Login || session.SessionKey == "" {
+		return ErrKiosgamerReauthRequired
+	}
+
+	var ignored map[string]interface{}
+	resp, err := s.doJSON(ctx, http.MethodPost, "/auth/sso", map[string]string{"session_key": session.SessionKey}, &ignored)
+	if err != nil {
+		return fmt.Errorf("kiosgamer Garena SSO exchange failed: %w", err)
+	}
+
+	newSession := s.cookieValue("session_key")
+	if newSession == "" && resp != nil {
+		for _, cookie := range resp.Cookies() {
+			if cookie.Name == "session_key" {
+				newSession = cookie.Value
+				break
+			}
+		}
+	}
+	if newSession == "" {
+		return errors.New("kiosgamer SSO exchange did not return session_key")
+	}
+
+	p, err := s.provider()
+	if err != nil {
+		return err
+	}
+	cred, err := s.repo.GetByProviderID(p.ID)
+	if err != nil {
+		return err
+	}
+	if cred == nil {
+		return ErrKiosgamerNotConfigured
+	}
+	enc, err := appcrypto.EncryptString(newSession, s.cfg.AppSecret)
+	if err != nil {
+		return err
+	}
+	cred.SessionKeyEncrypted = enc
+	cred.SessionStatus = domain.KiosgamerStatusActive
+	if session.UID != 0 {
+		cred.AccountUID = strconv.FormatInt(session.UID, 10)
+	}
+	now := time.Now()
+	cred.LastRecoveredAt = &now
+	return s.repo.Upsert(cred)
+}
+
+func (s *kiosgamerService) fetchPackedRoleID(ctx context.Context, appID int, serverID string) (int64, error) {
+	params := url.Values{}
+	params.Set("app_id", strconv.Itoa(appID))
+	params.Set("region", "CO.ID")
+	params.Set("language", "id")
+	params.Set("source", "pc")
+	if strings.TrimSpace(serverID) != "" {
+		params.Set("app_server_id", strings.TrimSpace(serverID))
+	}
+
+	var raw map[string]json.RawMessage
+	if _, err := s.doJSON(ctx, http.MethodGet, "/shop/apps/roles?"+params.Encode(), nil, &raw); err != nil {
+		return 0, err
+	}
+
+	entriesRaw, ok := raw[strconv.Itoa(appID)]
+	if !ok {
+		// Free Fire commonly uses packed_role_id=0, but only fall back when the
+		// endpoint returned a valid JSON object without an explicit error field.
+		if errRaw, hasErr := raw["error"]; hasErr && len(errRaw) > 0 {
+			return 0, fmt.Errorf("roles endpoint error: %s", strings.TrimSpace(string(errRaw)))
+		}
+		return 0, nil
+	}
+
+	var roles []struct {
+		PackedRoleID int64  `json:"packed_role_id"`
+		Error        string `json:"error"`
+	}
+	if err := json.Unmarshal(entriesRaw, &roles); err != nil {
+		return 0, fmt.Errorf("decode roles response: %w", err)
+	}
+	for _, role := range roles {
+		if role.Error == "" {
+			return role.PackedRoleID, nil
+		}
+	}
+	if len(roles) > 0 && roles[0].Error != "" {
+		return 0, errors.New(roles[0].Error)
+	}
+	return 0, nil
+}
+
+func (s *kiosgamerService) pollKiosgamerOrder(ctx context.Context, displayID string) (*KiosgamerOrderResult, error) {
+	delays := []time.Duration{0, 2 * time.Second, 3 * time.Second, 5 * time.Second, 8 * time.Second}
+	var last map[string]interface{}
+
+	for _, delay := range delays {
+		if delay > 0 {
+			select {
+			case <-ctx.Done():
+				return &KiosgamerOrderResult{OrderID: displayID, Status: "pending", Message: "Polling Kiosgamer dihentikan oleh context"}, nil
+			case <-time.After(delay):
+			}
+		}
+
+		var poll map[string]interface{}
+		_, err := s.doJSON(ctx, http.MethodPost, "/shop/pay/poll?region=CO.ID&language=id", map[string]string{"display_id": displayID}, &poll)
 		if err != nil {
-			return &KiosgamerOrderResult{
-				OrderID: orderResp.Data.OrderID,
-				Status:  "failed",
-				Message: "TOTP secret tidak terkonfigurasi; tidak dapat menyelesaikan OTP challenge Kiosgamer",
-			}, fmt.Errorf("kiosgamer OTP required but TOTP not configured: %w", err)
+			if errors.Is(err, ErrKiosgamerSessionExpired) || errors.Is(err, ErrKiosgamerChallengeRequired) {
+				return nil, err
+			}
+			// Do not create/retry a new order after init succeeded. Keep it pending.
+			last = map[string]interface{}{"message": err.Error()}
+			continue
 		}
+		last = poll
 
-		otpPayload := map[string]interface{}{
-			"order_id": orderResp.Data.OrderID,
-			"otp_key":  orderResp.Data.OTPKey,
-			"otp":      totp,
-		}
-		var otpResp struct {
-			Status  int    `json:"status"`
-			Message string `json:"message"`
-			Data    *struct {
-				OrderID      string `json:"order_id"`
-				Status       string `json:"status"`
-				SerialNumber string `json:"sn"`
-				Message      string `json:"message"`
-			} `json:"data"`
-		}
-		_, err = s.doJSON(ctx, http.MethodPost, "/topup/verify_otp", otpPayload, &otpResp)
-		if err != nil {
-			return &KiosgamerOrderResult{
-				OrderID: orderResp.Data.OrderID,
-				Status:  "failed",
-				Message: fmt.Sprintf("OTP verification failed: %v", err),
-			}, nil
-		}
-		if otpResp.Data != nil {
-			return s.buildOrderResult(otpResp.Data.OrderID, otpResp.Data.Status, otpResp.Data.Message, otpResp.Data.SerialNumber), nil
+		status, message, serial := parseKiosgamerPoll(poll)
+		switch status {
+		case "success":
+			if message == "" {
+				message = "Kiosgamer top up berhasil"
+			}
+			return &KiosgamerOrderResult{OrderID: displayID, Status: "success", Message: message, SerialNumber: serial}, nil
+		case "failed":
+			if message == "" {
+				message = "Kiosgamer melaporkan transaksi gagal"
+			}
+			return &KiosgamerOrderResult{OrderID: displayID, Status: "failed", Message: message, SerialNumber: serial}, nil
 		}
 	}
 
-	return s.buildOrderResult(orderResp.Data.OrderID, orderResp.Data.Status, orderResp.Data.Message, orderResp.Data.SerialNumber), nil
+	msg := "Transaksi Kiosgamer sudah dibuat dan masih diproses"
+	if last != nil {
+		if b, err := json.Marshal(last); err == nil {
+			msg += "; respons terakhir: " + truncateString(string(b), 500)
+		}
+	}
+	return &KiosgamerOrderResult{OrderID: displayID, Status: "pending", Message: msg}, nil
+}
+
+func parseKiosgamerPoll(v map[string]interface{}) (status, message, serial string) {
+	// Prefer explicit fields from the top-level response.
+	status = normalizeKiosgamerStatus(firstString(v, "status", "result", "state", "transaction_status"))
+	message = firstString(v, "message", "msg", "error", "error_message")
+	serial = firstString(v, "sn", "serial_number", "serial", "voucher_code")
+
+	// Some responses nest the transaction under data/transaction/exec.
+	for _, key := range []string{"data", "transaction", "exec"} {
+		if nested, ok := v[key].(map[string]interface{}); ok {
+			if status == "pending" || status == "" {
+				status = normalizeKiosgamerStatus(firstString(nested, "status", "result", "state", "transaction_status"))
+			}
+			if message == "" {
+				message = firstString(nested, "message", "msg", "error", "error_message")
+			}
+			if serial == "" {
+				serial = firstString(nested, "sn", "serial_number", "serial", "voucher_code")
+			}
+		}
+	}
+	if status == "" {
+		status = "pending"
+	}
+	return status, message, serial
+}
+
+func normalizeKiosgamerStatus(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "success", "sukses", "completed", "complete", "done", "paid":
+		return "success"
+	case "failed", "fail", "gagal", "error", "cancel", "cancelled", "canceled", "expired":
+		return "failed"
+	case "pending", "processing", "process", "queued", "created", "waiting", "":
+		return "pending"
+	default:
+		return "pending"
+	}
+}
+
+func firstString(v map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		raw, ok := v[key]
+		if !ok || raw == nil {
+			continue
+		}
+		switch x := raw.(type) {
+		case string:
+			if strings.TrimSpace(x) != "" {
+				return x
+			}
+		case float64:
+			return strconv.FormatFloat(x, 'f', -1, 64)
+		case bool:
+			return strconv.FormatBool(x)
+		}
+	}
+	return ""
+}
+
+func truncateString(v string, max int) string {
+	if len(v) <= max {
+		return v
+	}
+	return v[:max] + "..."
 }
 
 // resolveAppID maps a product code or game slug to the Garena game app_id.
