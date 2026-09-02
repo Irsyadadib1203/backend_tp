@@ -512,11 +512,16 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 		return nil, fmt.Errorf("kiosgamer: session error before order: %w", err)
 	}
 
-	// A normal Kiosgamer login can still exist while the Garena SSO session required
-	// for Shell payment is gone. Try the official silent SSO recovery path before pay.
+	// Best-effort refresh of the Garena SSO session. A healthy Kiosgamer session
+	// is already enough to continue the order flow; check_session can legitimately
+	// report no separate Garena web session even while get_user_info/multi is valid.
+	// Do not turn that condition into a hard Reauth Required error.
 	if err := s.ensureGarenaTransactionSession(ctx); err != nil {
-		s.orderMu.Unlock()
-		return nil, err
+		if errors.Is(err, ErrKiosgamerChallengeRequired) || errors.Is(err, ErrKiosgamerSessionExpired) {
+			s.orderMu.Unlock()
+			return nil, err
+		}
+		// Keep using the healthy Kiosgamer session returned by EnsureSession.
 	}
 
 	// Step 1: bind/validate the target player.
@@ -655,7 +660,10 @@ func (s *kiosgamerService) ensureGarenaTransactionSession(ctx context.Context) e
 		return fmt.Errorf("kiosgamer Garena SSO check failed: %w", err)
 	}
 	if !session.Login || session.SessionKey == "" {
-		return ErrKiosgamerReauthRequired
+		// No separate Garena browser session is available for silent SSO refresh.
+		// This is not the same as an expired Kiosgamer session: PlaceOrder has
+		// already verified the current Kiosgamer session with EnsureSession.
+		return nil
 	}
 
 	var ignored map[string]interface{}
