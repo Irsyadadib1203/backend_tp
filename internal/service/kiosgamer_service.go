@@ -25,6 +25,8 @@ import (
 	"topup-backend/internal/repository"
 )
 
+const kiosgamerGarenaShellChannelID = 208070
+
 var (
 	ErrKiosgamerSessionExpired    = errors.New("kiosgamer session expired")
 	ErrKiosgamerReauthRequired    = errors.New("kiosgamer re-authentication required")
@@ -271,7 +273,7 @@ func (s *kiosgamerService) doJSONWithHeaders(ctx context.Context, method, path s
 
 	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && resp.Header.Get("X-DD-B") != "" {
 		resp.Body.Close()
-		return nil, ErrKiosgamerChallengeRequired
+		return nil, fmt.Errorf("%w at %s %s", ErrKiosgamerChallengeRequired, method, path)
 	}
 
 	raw, err := io.ReadAll(resp.Body)
@@ -282,7 +284,7 @@ func (s *kiosgamerService) doJSONWithHeaders(ctx context.Context, method, path s
 	resp.Body = io.NopCloser(bytes.NewReader(raw))
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return resp, ErrKiosgamerSessionExpired
+		return resp, fmt.Errorf("%w at %s %s", ErrKiosgamerSessionExpired, method, path)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return resp, fmt.Errorf("kiosgamer HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
@@ -306,7 +308,14 @@ func (s *kiosgamerService) HealthCheck(ctx context.Context) (*KiosgamerUserInfo,
 	now := time.Now()
 	cred.LastCheckedAt = &now
 	if err != nil || info.OAuth == nil {
-		cred.SessionStatus = domain.KiosgamerStatusExpired
+		switch {
+		case errors.Is(err, ErrKiosgamerChallengeRequired):
+			cred.SessionStatus = domain.KiosgamerStatusChallengeRequired
+		case errors.Is(err, ErrKiosgamerReauthRequired):
+			cred.SessionStatus = domain.KiosgamerStatusReauthRequired
+		default:
+			cred.SessionStatus = domain.KiosgamerStatusExpired
+		}
 		_ = s.repo.Upsert(cred)
 		if err != nil {
 			return nil, err
@@ -494,9 +503,6 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 
 	appID := s.resolveAppID(gameSlug)
 
-	// Kiosgamer's Garena Shell channel observed on CO.ID.
-	const garenaShellChannelID = 208070
-
 	// The session stores player context. Keep this section single-flight per account.
 	s.orderMu.Lock()
 
@@ -595,7 +601,7 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 	payPayload := map[string]interface{}{
 		"app_id":         appID,
 		"packed_role_id": packedRoleID,
-		"channel_id":     garenaShellChannelID,
+		"channel_id":     kiosgamerGarenaShellChannelID,
 		"service":        "pc",
 		"item_id":        itemID,
 		"channel_data": map[string]interface{}{

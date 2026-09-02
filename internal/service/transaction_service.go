@@ -251,18 +251,19 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 			gameSlug,
 		)
 		if err != nil {
-			// Bedakan session error vs error lainnya (player not found, product not found, dll)
-			isSessionErr := errors.Is(err, ErrKiosgamerSessionExpired) ||
-				errors.Is(err, ErrKiosgamerReauthRequired) ||
-				errors.Is(err, ErrKiosgamerChallengeRequired) ||
-				errors.Is(err, ErrKiosgamerNotConfigured)
-
 			tx.RetryCount++
-			if isSessionErr {
+			switch {
+			case errors.Is(err, ErrKiosgamerChallengeRequired):
+				tx.ProviderStatus = "Challenge Required"
+				tx.ProviderMessage = fmt.Sprintf("Kiosgamer anti-bot challenge: %v", err)
+			case errors.Is(err, ErrKiosgamerReauthRequired):
+				tx.ProviderStatus = "Reauth Required"
+				tx.ProviderMessage = fmt.Sprintf("Kiosgamer re-authentication required: %v", err)
+			case errors.Is(err, ErrKiosgamerSessionExpired), errors.Is(err, ErrKiosgamerNotConfigured):
 				tx.ProviderStatus = "Session Error"
 				tx.ProviderMessage = fmt.Sprintf("Kiosgamer session error: %v", err)
-			} else {
-				// Error non-session: player tidak ditemukan, produk tidak ada di Kiosgamer, dll
+			default:
+				// Error non-session: player tidak ditemukan, produk tidak ada di Kiosgamer, dll.
 				tx.ProviderStatus = "Provider Error"
 				tx.ProviderMessage = fmt.Sprintf("Kiosgamer provider error: %v", err)
 			}
