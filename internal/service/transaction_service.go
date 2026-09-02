@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,12 +47,14 @@ type TransactionService interface {
 }
 
 type transactionService struct {
-	txRepo         repository.TransactionRepository
-	nominalRepo    repository.NominalRepository
-	gameRepo       repository.GameRepository
-	userRepo       repository.UserRepository
-	paymentRepo    repository.PaymentRepository
-	digiflazzBuyer DigiflazzBuyerService
+	txRepo           repository.TransactionRepository
+	nominalRepo      repository.NominalRepository
+	gameRepo         repository.GameRepository
+	userRepo         repository.UserRepository
+	paymentRepo      repository.PaymentRepository
+	providerRepo     repository.ProviderRepository
+	digiflazzBuyer   DigiflazzBuyerService
+	kiosgamerService KiosgamerService
 }
 
 func NewTransactionService(
@@ -60,15 +63,19 @@ func NewTransactionService(
 	gameRepo repository.GameRepository,
 	userRepo repository.UserRepository,
 	paymentRepo repository.PaymentRepository,
+	providerRepo repository.ProviderRepository,
 	digiflazzBuyer DigiflazzBuyerService,
+	kiosgamerService KiosgamerService,
 ) TransactionService {
 	return &transactionService{
-		txRepo:         txRepo,
-		nominalRepo:    nominalRepo,
-		gameRepo:       gameRepo,
-		userRepo:       userRepo,
-		paymentRepo:    paymentRepo,
-		digiflazzBuyer: digiflazzBuyer,
+		txRepo:           txRepo,
+		nominalRepo:      nominalRepo,
+		gameRepo:         gameRepo,
+		userRepo:         userRepo,
+		paymentRepo:      paymentRepo,
+		providerRepo:     providerRepo,
+		digiflazzBuyer:   digiflazzBuyer,
+		kiosgamerService: kiosgamerService,
 	}
 }
 
@@ -183,7 +190,7 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 
 	// -------------------------------------------------------------------------
 	// White-Label Margin Guard (Anti-Jual Rugi):
-	// If the provider modal exceeds the customer's payment, do NOT fire Digiflazz.
+	// If the provider modal exceeds the customer's payment, do NOT fire provider.
 	// Keep transaction in 'processing' safely so admin balance is protected.
 	// -------------------------------------------------------------------------
 	if nominal.BasePrice > tx.SellingPrice {
@@ -194,6 +201,83 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 		_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, "Dalam antrean pemrosesan server")
 		return nil
 	}
+
+	providerCode := "DIGIFLAZZ"
+	if nominal.Provider != nil && nominal.Provider.Code != "" {
+		providerCode = nominal.Provider.Code
+	} else if nominal.ProviderID > 0 && s.providerRepo != nil {
+		if p, err := s.providerRepo.GetByID(nominal.ProviderID); err == nil && p != nil {
+			providerCode = p.Code
+		}
+	}
+
+	if providerCode == "KIOSGAMER" {
+		if s.kiosgamerService == nil {
+			return errors.New("kiosgamer service is not initialized")
+		}
+
+		// Execute actual top-up via Kiosgamer
+		result, err := s.kiosgamerService.PlaceOrder(
+			context.Background(),
+			tx.RefID,
+			nominal.ProviderProductCode,
+			tx.CustomerID,
+			tx.ServerID,
+		)
+		if err != nil {
+			// Session error — mark for retry
+			tx.RetryCount++
+			tx.ProviderStatus = "Session Error"
+			tx.ProviderMessage = fmt.Sprintf("Kiosgamer session error: %v", err)
+			_ = s.txRepo.Update(tx)
+			return err
+		}
+
+		// Map Kiosgamer result → transaction status
+		tx.ProviderOrderID = result.OrderID
+		tx.ProviderMessage = result.Message
+
+		respJSON, _ := json.Marshal(result)
+		tx.ProviderCallbackData = string(respJSON)
+
+		switch result.Status {
+		case "success":
+			tx.Status = domain.StatusSuccess
+			tx.ProviderStatus = "Sukses"
+			tx.PaymentReference = result.SerialNumber
+			now := time.Now()
+			tx.CompletedAt = &now
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusSuccess, "Kiosgamer: top up berhasil diproses")
+			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+				"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now,
+			})
+
+		case "failed":
+			tx.Status = domain.StatusFailed
+			tx.ProviderStatus = "Gagal"
+			now := time.Now()
+			tx.CompletedAt = &now
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, fmt.Sprintf("Kiosgamer gagal: %s", result.Message))
+			// Auto-refund if paid with balance
+			if tx.PaymentMethod == "SALDO" && tx.UserID != nil {
+				_ = s.userRepo.UpdateBalance(*tx.UserID, tx.TotalAmount, domain.MutationCredit, "REFUND", tx.InvoiceNumber, "Pengembalian dana: top up Kiosgamer gagal")
+			}
+			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+				"status": "failed", "invoice": tx.InvoiceNumber,
+			})
+
+		default: // pending or unknown
+			tx.Status = domain.StatusProcessing
+			tx.ProviderStatus = "Pending"
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, "Kiosgamer: pesanan sedang diproses")
+			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+				"status": "processing", "invoice": tx.InvoiceNumber,
+			})
+		}
+
+		return s.txRepo.Update(tx)
+	}
+
 
 	// Call Digiflazz Buyer API
 	resp, err := s.digiflazzBuyer.CreateTransaction(tx.RefID, nominal.ProviderProductCode, tx.CustomerID, false)

@@ -14,9 +14,11 @@ type NominalRepository interface {
 	Update(nominal *domain.Nominal) error
 	Delete(id uint) error
 	ListByGameID(gameID uint) ([]domain.Nominal, error)
-	ListAllAdmin(offset, limit int, gameID uint, search string) ([]domain.Nominal, int64, error)
+	ListAllAdmin(offset, limit int, gameID uint, providerID uint, search string) ([]domain.Nominal, int64, error)
 	ListForSellerH2H() ([]domain.Nominal, error)
 	UpsertFromDigiflazz(nominals []domain.Nominal) error
+	BatchSwitchProvider(nominalIDs []uint, providerID uint) error
+	SwitchProviderByGame(gameID uint, providerID uint) error
 }
 
 type nominalRepository struct {
@@ -61,30 +63,40 @@ func (r *nominalRepository) FindBySellerCode(code string) (*domain.Nominal, erro
 }
 
 func (r *nominalRepository) Update(nominal *domain.Nominal) error {
-    updates := map[string]interface{}{
-        "name":                  nominal.Name,
-        "provider_product_code": nominal.ProviderProductCode,
-        "seller_product_code":   nominal.SellerProductCode,
-        "base_price":            nominal.BasePrice,
-        "price_public":          nominal.PricePublic,
-        "price_reseller":        nominal.PriceReseller,
-        "is_active":             nominal.IsActive,
-        "sort_order":            nominal.SortOrder,
-    }
+	var existing domain.Nominal
+	if err := r.db.First(&existing, nominal.ID).Error; err != nil {
+		return err
+	}
 
-    if nominal.GameID > 0 {
-        updates["game_id"] = nominal.GameID
-    }
+	if nominal.Name != "" {
+		existing.Name = nominal.Name
+	}
+	existing.Description = nominal.Description
+	if nominal.ProviderProductCode != "" {
+		existing.ProviderProductCode = nominal.ProviderProductCode
+	}
+	if nominal.SellerProductCode != "" {
+		existing.SellerProductCode = nominal.SellerProductCode
+	}
+	if nominal.GameID > 0 {
+		existing.GameID = nominal.GameID
+	}
+	if nominal.ProviderID > 0 {
+		existing.ProviderID = nominal.ProviderID
+	}
+	if nominal.BasePrice > 0 {
+		existing.BasePrice = nominal.BasePrice
+	}
+	existing.PricePublic = nominal.PricePublic
+	existing.PriceMember = nominal.PriceMember
+	existing.PriceVIP = nominal.PriceVIP
+	existing.PriceReseller = nominal.PriceReseller
+	existing.MarginPercent = nominal.MarginPercent
+	existing.MarginFlat = nominal.MarginFlat
+	existing.IsActive = nominal.IsActive
+	existing.SortOrder = nominal.SortOrder
 
-    if nominal.ProviderID > 0 {
-        updates["provider_id"] = nominal.ProviderID
-    }
-
-    return r.db.
-        Model(&domain.Nominal{}).
-        Where("id = ?", nominal.ID).
-        Updates(updates).
-        Error
+	return r.db.Save(&existing).Error
 }
 
 func (r *nominalRepository) Delete(id uint) error {
@@ -99,13 +111,16 @@ func (r *nominalRepository) ListByGameID(gameID uint) ([]domain.Nominal, error) 
 	return nominals, err
 }
 
-func (r *nominalRepository) ListAllAdmin(offset, limit int, gameID uint, search string) ([]domain.Nominal, int64, error) {
+func (r *nominalRepository) ListAllAdmin(offset, limit int, gameID uint, providerID uint, search string) ([]domain.Nominal, int64, error) {
 	var nominals []domain.Nominal
 	var total int64
 
 	query := r.db.Model(&domain.Nominal{})
 	if gameID > 0 {
 		query = query.Where("game_id = ?", gameID)
+	}
+	if providerID > 0 {
+		query = query.Where("provider_id = ?", providerID)
 	}
 	if search != "" {
 		query = query.Where("name LIKE ? OR provider_product_code LIKE ? OR seller_product_code LIKE ?", "%"+search+"%", "%"+search+"%", "%"+search+"%")
@@ -120,6 +135,24 @@ func (r *nominalRepository) ListAllAdmin(offset, limit int, gameID uint, search 
 		Offset(offset).Limit(limit).
 		Find(&nominals).Error
 	return nominals, total, err
+}
+
+func (r *nominalRepository) BatchSwitchProvider(nominalIDs []uint, providerID uint) error {
+	if len(nominalIDs) == 0 || providerID == 0 {
+		return nil
+	}
+	return r.db.Model(&domain.Nominal{}).
+		Where("id IN ?", nominalIDs).
+		Update("provider_id", providerID).Error
+}
+
+func (r *nominalRepository) SwitchProviderByGame(gameID uint, providerID uint) error {
+	if gameID == 0 || providerID == 0 {
+		return nil
+	}
+	return r.db.Model(&domain.Nominal{}).
+		Where("game_id = ?", gameID).
+		Update("provider_id", providerID).Error
 }
 
 func (r *nominalRepository) ListForSellerH2H() ([]domain.Nominal, error) {

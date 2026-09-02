@@ -12,6 +12,14 @@ import (
 	"topup-backend/internal/repository"
 )
 
+type SwitchProviderResult struct {
+	TotalRequested int      `json:"total_requested"`
+	SwitchedCount  int      `json:"switched_count"`
+	SkippedCount   int      `json:"skipped_count"`
+	SkippedItems   []string `json:"skipped_items"`
+	Message        string   `json:"message"`
+}
+
 type GameService interface {
 	GetPublicGames() ([]domain.Game, error)
 	GetGameBySlug(slug string) (*domain.Game, error)
@@ -26,7 +34,9 @@ type GameService interface {
 	CreateNominal(nominal *domain.Nominal) error
 	UpdateNominal(nominal *domain.Nominal) error
 	DeleteNominal(id uint) error
-	ListNominalsAdmin(offset, limit int, gameID uint, search string) ([]domain.Nominal, int64, error)
+	ListNominalsAdmin(offset, limit int, gameID uint, providerID uint, search string) ([]domain.Nominal, int64, error)
+	BatchSwitchProvider(nominalIDs []uint, providerID uint) (*SwitchProviderResult, error)
+	SwitchProviderByGame(gameID uint, providerID uint) (*SwitchProviderResult, error)
 	
 	// Catalog Sync from Digiflazz
 	SyncDigiflazzProducts(targetGameID uint, brandFilter string, defaultMarginPercent float64) (int, error)
@@ -169,8 +179,130 @@ func (s *gameService) DeleteNominal(id uint) error {
 	return err
 }
 
-func (s *gameService) ListNominalsAdmin(offset, limit int, gameID uint, search string) ([]domain.Nominal, int64, error) {
-	return s.nominalRepo.ListAllAdmin(offset, limit, gameID, search)
+func (s *gameService) ListNominalsAdmin(offset, limit int, gameID uint, providerID uint, search string) ([]domain.Nominal, int64, error) {
+	return s.nominalRepo.ListAllAdmin(offset, limit, gameID, providerID, search)
+}
+
+func isKiosgamerSupportedGame(game *domain.Game) bool {
+	if game == nil {
+		return false
+	}
+	slug := strings.ToLower(strings.TrimSpace(game.Slug))
+	name := strings.ToLower(strings.TrimSpace(game.Name))
+	
+	if strings.Contains(slug, "free-fire") || strings.Contains(slug, "freefire") || strings.Contains(name, "free fire") {
+		return true
+	}
+	if strings.Contains(slug, "codm") || strings.Contains(slug, "call-of-duty") || strings.Contains(name, "call of duty") || strings.Contains(name, "codm") {
+		return true
+	}
+	return false
+}
+
+func (s *gameService) BatchSwitchProvider(nominalIDs []uint, providerID uint) (*SwitchProviderResult, error) {
+	provider, err := s.providerRepo.GetByID(providerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve provider: %w", err)
+	}
+	if provider == nil {
+		return nil, errors.New("provider not found")
+	}
+
+	result := &SwitchProviderResult{
+		TotalRequested: len(nominalIDs),
+		SkippedItems:   make([]string, 0),
+	}
+
+	var validIDs []uint
+
+	if strings.EqualFold(provider.Code, "KIOSGAMER") {
+		for _, nid := range nominalIDs {
+			nom, err := s.nominalRepo.FindByID(nid)
+			if err != nil || nom == nil {
+				result.SkippedCount++
+				result.SkippedItems = append(result.SkippedItems, fmt.Sprintf("Nominal ID %d (Tidak ditemukan)", nid))
+				continue
+			}
+
+			// 1. Tolok Ukur Game Whitelist (Kiosgamer hanya mendukung Free Fire & CODM)
+			game := nom.Game
+			if game == nil && nom.GameID > 0 {
+				game, _ = s.gameRepo.FindByID(nom.GameID)
+			}
+
+			if !isKiosgamerSupportedGame(game) {
+				gameTitle := "Game ini"
+				if game != nil {
+					gameTitle = game.Name
+				}
+				result.SkippedCount++
+				result.SkippedItems = append(result.SkippedItems, fmt.Sprintf("%s (%s tidak didukung oleh Kiosgamer, tetap di provider saat ini)", nom.Name, gameTitle))
+				continue
+			}
+
+			// 2. Tolok Ukur SKU Kiosgamer Mapping (Harus sudah terhubung ke KiosgamerProductCode)
+			if strings.TrimSpace(nom.KiosgamerProductCode) == "" {
+				result.SkippedCount++
+				result.SkippedItems = append(result.SkippedItems, fmt.Sprintf("%s (SKU Kiosgamer belum di-mapping, tetap di provider saat ini)", nom.Name))
+				continue
+			}
+
+			validIDs = append(validIDs, nid)
+		}
+	} else {
+		// Non-Kiosgamer (e.g. Digiflazz) -> switch all
+		validIDs = nominalIDs
+	}
+
+	if len(validIDs) > 0 {
+		if err := s.nominalRepo.BatchSwitchProvider(validIDs, providerID); err != nil {
+			return nil, fmt.Errorf("gagal memperbarui provider: %w", err)
+		}
+		s.invalidateGameCache()
+		result.SwitchedCount = len(validIDs)
+	}
+
+	if result.SkippedCount > 0 && result.SwitchedCount > 0 {
+		result.Message = fmt.Sprintf("%d nominal berhasil dialihkan ke %s. %d nominal tetap di provider lama (karena game tidak didukung / SKU belum dimapping).", result.SwitchedCount, provider.Name, result.SkippedCount)
+	} else if result.SkippedCount > 0 && result.SwitchedCount == 0 {
+		result.Message = fmt.Sprintf("Tidak ada nominal yang dialihkan. Semua %d nominal tetap di provider lama karena game tidak didukung atau SKU belum dimapping.", result.SkippedCount)
+	} else {
+		result.Message = fmt.Sprintf("Berhasil mengalihkan %d nominal ke provider %s.", result.SwitchedCount, provider.Name)
+	}
+
+	return result, nil
+}
+
+func (s *gameService) SwitchProviderByGame(gameID uint, providerID uint) (*SwitchProviderResult, error) {
+	provider, err := s.providerRepo.GetByID(providerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve provider: %w", err)
+	}
+	if provider == nil {
+		return nil, errors.New("provider not found")
+	}
+
+	nominals, _, err := s.nominalRepo.ListAllAdmin(0, 0, gameID, 0, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list nominals for game %d: %w", gameID, err)
+	}
+
+	var nominalIDs []uint
+	for _, n := range nominals {
+		nominalIDs = append(nominalIDs, n.ID)
+	}
+
+	if len(nominalIDs) == 0 {
+		return &SwitchProviderResult{
+			TotalRequested: 0,
+			SwitchedCount:  0,
+			SkippedCount:   0,
+			SkippedItems:   []string{},
+			Message:        "Tidak ada produk nominal pada game ini.",
+		}, nil
+	}
+
+	return s.BatchSwitchProvider(nominalIDs, providerID)
 }
 
 func (s *gameService) SyncDigiflazzProducts(targetGameID uint, brandFilter string, defaultMarginPercent float64) (int, error) {
@@ -242,7 +374,7 @@ func (s *gameService) AutoSyncAllPrices() (int, error) {
 	}
 
 	// 3. Fetch all nominals from database
-	existingNominals, _, err := s.nominalRepo.ListAllAdmin(0, 5000, 0, "")
+	existingNominals, _, err := s.nominalRepo.ListAllAdmin(0, 5000, 0, 0, "")
 	if err != nil {
 		return 0, err
 	}

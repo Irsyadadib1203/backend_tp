@@ -137,10 +137,11 @@ func (h *AdminHandler) GetNominals(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	gameID, _ := strconv.Atoi(c.Query("game_id"))
+	providerID, _ := strconv.Atoi(c.Query("provider_id"))
 	search := c.Query("search")
 	offset := (page - 1) * limit
 
-	nominals, total, err := h.gameService.ListNominalsAdmin(offset, limit, uint(gameID), search)
+	nominals, total, err := h.gameService.ListNominalsAdmin(offset, limit, uint(gameID), uint(providerID), search)
 	if err != nil {
 		response.InternalServerError(c, "Failed to load nominals", err)
 		return
@@ -678,4 +679,56 @@ func (h *AdminHandler) GetPublicArticles(c *gin.Context) {
 		return
 	}
 	response.Success(c, "Articles loaded", articles)
+}
+
+// ====================== PROVIDERS & BATCH SWITCH ======================
+
+func (h *AdminHandler) GetProviders(c *gin.Context) {
+	providers, err := h.providerRepo.List()
+	if err != nil {
+		response.InternalServerError(c, "Failed to load providers", err)
+		return
+	}
+	response.Success(c, "Providers loaded", providers)
+}
+
+type BatchSwitchProviderRequest struct {
+	NominalIDs []uint `json:"nominal_ids"`
+	GameID     uint   `json:"game_id"`
+	ProviderID uint   `json:"provider_id" binding:"required"`
+}
+
+func (h *AdminHandler) BatchSwitchProvider(c *gin.Context) {
+	var req BatchSwitchProviderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request payload", err.Error())
+		return
+	}
+
+	if req.ProviderID == 0 {
+		response.BadRequest(c, "provider_id is required", nil)
+		return
+	}
+
+	if len(req.NominalIDs) > 0 {
+		result, err := h.gameService.BatchSwitchProvider(req.NominalIDs, req.ProviderID)
+		if err != nil {
+			response.InternalServerError(c, "Gagal mengalihkan provider untuk nominal terpilih", err)
+			return
+		}
+		response.Success(c, result.Message, result)
+		return
+	}
+
+	if req.GameID > 0 {
+		result, err := h.gameService.SwitchProviderByGame(req.GameID, req.ProviderID)
+		if err != nil {
+			response.InternalServerError(c, "Gagal mengalihkan provider untuk produk game ini", err)
+			return
+		}
+		response.Success(c, result.Message, result)
+		return
+	}
+
+	response.BadRequest(c, "Either nominal_ids or game_id must be provided", nil)
 }

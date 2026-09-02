@@ -47,17 +47,21 @@ func main() {
 	paymentRepo := repository.NewPaymentRepository(db)
 	bannerRepo := repository.NewBannerRepository(db)
 	articleRepo := repository.NewArticleRepository(db)
+	kiosgamerRepo := repository.NewKiosgamerRepository(db)
+	rolePermRepo := repository.NewRolePermissionRepository(db)
 
 	// 4. Initialize Services
 	authService := service.NewAuthService(userRepo, cfg)
 	nicknameService := service.NewNicknameService()
 	digiflazzBuyerService := service.NewDigiflazzBuyerService(providerRepo, cfg)
+	kiosgamerService := service.NewKiosgamerService(kiosgamerRepo, providerRepo, nominalRepo, gameRepo, cfg)
 	webhookService := service.NewWebhookService(providerRepo)
 	digiflazzSellerService := service.NewDigiflazzSellerService(userRepo, nominalRepo, txRepo, digiflazzBuyerService, webhookService)
 	gameService := service.NewGameService(gameRepo, nominalRepo, providerRepo, digiflazzBuyerService)
-	txService := service.NewTransactionService(txRepo, nominalRepo, gameRepo, userRepo, paymentRepo, digiflazzBuyerService)
+	txService := service.NewTransactionService(txRepo, nominalRepo, gameRepo, userRepo, paymentRepo, providerRepo, digiflazzBuyerService, kiosgamerService)
 	depositService := service.NewDepositService(depositRepo, userRepo)
 	ipService := service.NewIPWhitelistService(ipRepo)
+	rbacService := service.NewRBACService(rolePermRepo)
 
 	// 5. Initialize Handlers
 	authHandler := handler.NewAuthHandler(authService)
@@ -66,6 +70,8 @@ func main() {
 	depositHandler := handler.NewDepositHandler(depositService)
 	digiflazzBuyerHandler := handler.NewDigiflazzBuyerHandler(digiflazzBuyerService, txService)
 	digiflazzSellerHandler := handler.NewDigiflazzSellerHandler(digiflazzSellerService)
+	kiosgamerHandler := handler.NewKiosgamerHandler(kiosgamerService)
+	rbacHandler := handler.NewRBACHandler(rbacService)
 	tripayChannelService := service.NewTripayChannelService(cfg.TripayAPIKey, cfg.TripayBaseURL, paymentRepo)
 	adminHandler := handler.NewAdminHandler(gameService, txService, depositService, digiflazzBuyerService, userRepo, providerRepo, paymentRepo, bannerRepo, articleRepo, tripayChannelService)
 	ipHandler := handler.NewIPWhitelistHandler(ipService)
@@ -172,70 +178,124 @@ func main() {
 		// -------------------------------------------------------------
 		// ADMIN PANEL API (Protected by JWT RBAC: SuperAdmin / Admin / Operator)
 		// -------------------------------------------------------------
+		// ADMIN PANEL API (Protected by JWT RBAC: SuperAdmin / Admin / Operator)
+		// -------------------------------------------------------------
 		admin := api.Group("/admin", middleware.AuthMiddleware(authService), middleware.RequireRole(domain.RoleAdmin, domain.RoleSuperAdmin, domain.RoleOperator))
 		{
-			admin.GET("/dashboard/stats", adminHandler.GetDashboardStats)
+			// RBAC User & Role Permissions
+			admin.GET("/rbac/my-permissions", rbacHandler.GetMyPermissions)
+			admin.GET("/rbac/permissions", middleware.RequireRole(domain.RoleSuperAdmin), rbacHandler.GetRolePermissions)
+			admin.POST("/rbac/permissions", middleware.RequireRole(domain.RoleSuperAdmin), rbacHandler.UpdateRolePermissions)
+
+			// Dashboard
+			admin.GET("/dashboard/stats", middleware.RequirePermission(rbacService, domain.ResourceDashboard), adminHandler.GetDashboardStats)
 
 			// Games
-			admin.GET("/games", adminHandler.GetGames)
-			admin.POST("/games", adminHandler.CreateGame)
-			admin.PUT("/games/:id", adminHandler.UpdateGame)
-			admin.DELETE("/games/:id", adminHandler.DeleteGame)
+			games := admin.Group("/games", middleware.RequirePermission(rbacService, domain.ResourceGames))
+			{
+				games.GET("", adminHandler.GetGames)
+				games.POST("", adminHandler.CreateGame)
+				games.PUT("/:id", adminHandler.UpdateGame)
+				games.DELETE("/:id", adminHandler.DeleteGame)
+			}
 
 			// Nominals & Pricing
-			admin.GET("/nominals", adminHandler.GetNominals)
-			admin.POST("/nominals", adminHandler.CreateNominal)
-			admin.PUT("/nominals/:id", adminHandler.UpdateNominal)
-			admin.DELETE("/nominals/:id", adminHandler.DeleteNominal)
+			nominals := admin.Group("/nominals", middleware.RequirePermission(rbacService, domain.ResourceNominals))
+			{
+				nominals.GET("", adminHandler.GetNominals)
+				nominals.POST("", adminHandler.CreateNominal)
+				nominals.PUT("/:id", adminHandler.UpdateNominal)
+				nominals.DELETE("/:id", adminHandler.DeleteNominal)
+				nominals.POST("/batch-switch-provider", adminHandler.BatchSwitchProvider)
+			}
+
+			// Providers (Accessible if nominals or settings are allowed)
+			admin.GET("/providers", adminHandler.GetProviders)
 
 			// Digiflazz Sync & Balances
-			admin.POST("/digiflazz/sync", adminHandler.SyncDigiflazz)
-			admin.GET("/digiflazz/balance", adminHandler.GetDigiflazzBalance)
+			digi := admin.Group("/digiflazz", middleware.RequirePermission(rbacService, domain.ResourceDigiflazz))
+			{
+				digi.POST("/sync", adminHandler.SyncDigiflazz)
+				digi.GET("/balance", adminHandler.GetDigiflazzBalance)
+			}
+
+			// Kiosgamer Provider Management
+			kios := admin.Group("/kiosgamer", middleware.RequirePermission(rbacService, domain.ResourceKiosgamer))
+			{
+				kios.GET("/status", kiosgamerHandler.Status)
+				kios.POST("/credentials", kiosgamerHandler.SaveCredentials)
+				kios.POST("/health-check", kiosgamerHandler.HealthCheck)
+				kios.POST("/recover", kiosgamerHandler.Recover)
+				kios.GET("/catalog", kiosgamerHandler.GetCatalog)
+				kios.POST("/sync-catalog", kiosgamerHandler.AutoSyncCatalog)
+				kios.PUT("/nominals/code", kiosgamerHandler.UpdateNominalCode)
+			}
 
 			// Transactions
-			admin.GET("/transactions", adminHandler.GetTransactions)
-			admin.POST("/transactions/:id/retry", adminHandler.ManualRetryTx)
-			admin.POST("/transactions/:id/success", adminHandler.ManualSuccessTx)
-			admin.POST("/transactions/:id/refund", adminHandler.ManualRefundTx)
+			txs := admin.Group("/transactions", middleware.RequirePermission(rbacService, domain.ResourceTransactions))
+			{
+				txs.GET("", adminHandler.GetTransactions)
+				txs.POST("/:id/retry", adminHandler.ManualRetryTx)
+				txs.POST("/:id/success", adminHandler.ManualSuccessTx)
+				txs.POST("/:id/refund", adminHandler.ManualRefundTx)
+			}
 
 			// IP Whitelist & Watchlist Management
-			admin.GET("/ip-whitelist", ipHandler.GetWhitelists)
-			admin.POST("/ip-whitelist", ipHandler.AddWhitelist)
-			admin.DELETE("/ip-whitelist/:id", ipHandler.DeleteWhitelist)
-			admin.GET("/ip-logs", ipHandler.GetAccessLogs)
-			admin.GET("/watchlist", ipHandler.GetWatchlist)
-			admin.POST("/watchlist/block", ipHandler.BlockIP)
-			admin.POST("/watchlist/unblock", ipHandler.UnblockIP)
+			ip := admin.Group("", middleware.RequirePermission(rbacService, domain.ResourceIPWhitelist))
+			{
+				ip.GET("/ip-whitelist", ipHandler.GetWhitelists)
+				ip.POST("/ip-whitelist", ipHandler.AddWhitelist)
+				ip.DELETE("/ip-whitelist/:id", ipHandler.DeleteWhitelist)
+				ip.GET("/ip-logs", ipHandler.GetAccessLogs)
+				ip.GET("/watchlist", ipHandler.GetWatchlist)
+				ip.POST("/watchlist/block", ipHandler.BlockIP)
+				ip.POST("/watchlist/unblock", ipHandler.UnblockIP)
+			}
 
 			// Users & Resellers
-			admin.GET("/users", adminHandler.GetUsers)
-			admin.POST("/users", adminHandler.CreateUser)
-			admin.PUT("/users/:id", adminHandler.UpdateUser)
+			users := admin.Group("/users", middleware.RequirePermission(rbacService, domain.ResourceUsers))
+			{
+				users.GET("", adminHandler.GetUsers)
+				users.POST("", adminHandler.CreateUser)
+				users.PUT("/:id", adminHandler.UpdateUser)
+			}
 
 			// Deposits
-			admin.GET("/deposits", adminHandler.GetDeposits)
-			admin.POST("/deposits/:id/approve", adminHandler.ApproveDeposit)
-			admin.POST("/deposits/:id/reject", adminHandler.RejectDeposit)
+			deposits := admin.Group("/deposits", middleware.RequirePermission(rbacService, domain.ResourceDeposits))
+			{
+				deposits.GET("", adminHandler.GetDeposits)
+				deposits.POST("/:id/approve", adminHandler.ApproveDeposit)
+				deposits.POST("/:id/reject", adminHandler.RejectDeposit)
+			}
 
 			// Payment Methods & Logs
-			admin.GET("/payment-methods", adminHandler.GetPaymentMethods)
-			admin.POST("/payment-methods", adminHandler.CreatePaymentMethod)
-			admin.PUT("/payment-methods/:id", adminHandler.UpdatePaymentMethod)
-			admin.DELETE("/payment-methods/:id", adminHandler.DeletePaymentMethod)
-			admin.POST("/payment-methods/sync-tripay", adminHandler.SyncTripayPaymentMethods)
-			admin.GET("/webhooks/logs", adminHandler.GetWebhookLogs)
+			payments := admin.Group("/payment-methods", middleware.RequirePermission(rbacService, domain.ResourcePaymentMethods))
+			{
+				payments.GET("", adminHandler.GetPaymentMethods)
+				payments.POST("", adminHandler.CreatePaymentMethod)
+				payments.PUT("/:id", adminHandler.UpdatePaymentMethod)
+				payments.DELETE("/:id", adminHandler.DeletePaymentMethod)
+				payments.POST("/sync-tripay", adminHandler.SyncTripayPaymentMethods)
+			}
+			admin.GET("/webhooks/logs", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetWebhookLogs)
 
 			// Banners
-			admin.GET("/banners", adminHandler.GetBanners)
-			admin.POST("/banners", adminHandler.CreateBanner)
-			admin.PUT("/banners/:id", adminHandler.UpdateBanner)
-			admin.DELETE("/banners/:id", adminHandler.DeleteBanner)
+			banners := admin.Group("/banners", middleware.RequirePermission(rbacService, domain.ResourceBanners))
+			{
+				banners.GET("", adminHandler.GetBanners)
+				banners.POST("", adminHandler.CreateBanner)
+				banners.PUT("/:id", adminHandler.UpdateBanner)
+				banners.DELETE("/:id", adminHandler.DeleteBanner)
+			}
 
 			// Articles
-			admin.GET("/articles", adminHandler.GetArticles)
-			admin.POST("/articles", adminHandler.CreateArticle)
-			admin.PUT("/articles/:id", adminHandler.UpdateArticle)
-			admin.DELETE("/articles/:id", adminHandler.DeleteArticle)
+			articles := admin.Group("/articles", middleware.RequirePermission(rbacService, domain.ResourceArticles))
+			{
+				articles.GET("", adminHandler.GetArticles)
+				articles.POST("", adminHandler.CreateArticle)
+				articles.PUT("/:id", adminHandler.UpdateArticle)
+				articles.DELETE("/:id", adminHandler.DeleteArticle)
+			}
 		}
 	}
 

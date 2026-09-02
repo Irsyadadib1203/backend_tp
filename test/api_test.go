@@ -73,7 +73,7 @@ func setupTestRouter() *gin.Engine {
 	webhookService := service.NewWebhookService(providerRepo)
 	digiflazzSellerService := service.NewDigiflazzSellerService(userRepo, nominalRepo, txRepo, digiflazzBuyerService, webhookService)
 	gameService := service.NewGameService(gameRepo, nominalRepo, providerRepo, digiflazzBuyerService)
-	txService := service.NewTransactionService(txRepo, nominalRepo, gameRepo, userRepo, paymentRepo, digiflazzBuyerService)
+	txService := service.NewTransactionService(txRepo, nominalRepo, gameRepo, userRepo, paymentRepo, providerRepo, digiflazzBuyerService, nil)
 	depositService := service.NewDepositService(depositRepo, userRepo)
 	ipService := service.NewIPWhitelistService(ipRepo)
 

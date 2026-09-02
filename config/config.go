@@ -38,6 +38,9 @@ type Config struct {
 	// Digiflazz Seller (Our Open API H2H)
 	DigiflazzSellerSecret string
 
+	// Kiosgamer Provider
+	KiosgamerBaseURL string
+
 	// Payment Gateways (e.g. Tripay)
 	TripayAPIKey       string
 	TripayPrivateKey   string
@@ -88,6 +91,8 @@ func LoadConfig() *Config {
 		DigiflazzBuyerWebhookSecret: getEnv("DIGIFLAZZ_WEBHOOK_SECRET", ""),
 
 		DigiflazzSellerSecret: getEnv("DIGIFLAZZ_SELLER_SECRET", "h2h-seller-secret-999"),
+
+		KiosgamerBaseURL: getEnv("KIOSGAMER_BASE_URL", "https://kiosgamer.co.id/api"),
 
 		TripayAPIKey:       getEnv("TRIPAY_API_KEY", ""),
 		TripayPrivateKey:   getEnv("TRIPAY_PRIVATE_KEY", ""),

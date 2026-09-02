@@ -44,8 +44,7 @@ func SeedInitialData(db *gorm.DB) {
 		log.Println("[Seeder] ⚠️  SEGERA ganti password admin melalui Admin Panel!")
 	}
 
-	// 2. Seed Digiflazz Provider config (hanya jika belum ada provider)
-	//    Username & API Key HARUS diisi manual di .env atau Admin Panel
+	// 2. Seed Digiflazz & Kiosgamer Provider configs (hanya jika belum ada)
 	var providerCount int64
 	db.Model(&domain.Provider{}).Where("code = ?", "DIGIFLAZZ").Count(&providerCount)
 	if providerCount == 0 {
@@ -59,6 +58,21 @@ func SeedInitialData(db *gorm.DB) {
 			IsActive: true,
 		})
 		log.Println("[Seeder] Created Digiflazz Provider config (credentials loaded from .env)")
+	}
+
+	var kiosgamerCount int64
+	db.Model(&domain.Provider{}).Where("code = ?", "KIOSGAMER").Count(&kiosgamerCount)
+	if kiosgamerCount == 0 {
+		db.Create(&domain.Provider{
+			Name:     "Kiosgamer",
+			Code:     "KIOSGAMER",
+			BaseURL:  "https://kiosgamer.co.id/api",
+			Username: "",
+			APIKey:   "",
+			Balance:  0,
+			IsActive: true,
+		})
+		log.Println("[Seeder] Created Kiosgamer Provider config")
 	}
 
 	// 3. Seed Payment Method "Saldo Akun" saja (yang wajib ada untuk sistem)

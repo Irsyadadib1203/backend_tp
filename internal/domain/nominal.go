@@ -24,6 +24,7 @@ type Nominal struct {
 	MarginFlat          float64        `gorm:"type:decimal(15,2);default:0" json:"margin_flat"`
 	
 	ProviderProductCode string         `gorm:"size:100;index;not null" json:"provider_product_code"` // buyer_sku_code in Digiflazz
+	KiosgamerProductCode string        `gorm:"size:100;index" json:"kiosgamer_product_code"`         // SKU / item_id in Kiosgamer
 	SellerProductCode   string         `gorm:"size:100;index" json:"seller_product_code"`           // buyer_sku_code when clients order from us
 	
 	IsActive            bool           `gorm:"default:true" json:"is_active"`

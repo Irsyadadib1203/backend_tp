@@ -90,6 +90,8 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		&domain.WebhookLog{},
 		&domain.Banner{},
 		&domain.Article{},
+		&domain.KiosgamerCredential{},
+		&domain.RolePermission{},
 	)
 	if err != nil {
 		log.Fatalf("[Database] Migration error: %v", err)
