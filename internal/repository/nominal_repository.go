@@ -78,6 +78,7 @@ func (r *nominalRepository) Update(nominal *domain.Nominal) error {
 	if nominal.SellerProductCode != "" {
 		existing.SellerProductCode = nominal.SellerProductCode
 	}
+	existing.KiosgamerProductCode = nominal.KiosgamerProductCode
 	if nominal.GameID > 0 {
 		existing.GameID = nominal.GameID
 	}
@@ -123,7 +124,7 @@ func (r *nominalRepository) ListAllAdmin(offset, limit int, gameID uint, provide
 		query = query.Where("provider_id = ?", providerID)
 	}
 	if search != "" {
-		query = query.Where("name LIKE ? OR provider_product_code LIKE ? OR seller_product_code LIKE ?", "%"+search+"%", "%"+search+"%", "%"+search+"%")
+		query = query.Where("name LIKE ? OR provider_product_code LIKE ? OR seller_product_code LIKE ? OR kiosgamer_product_code LIKE ?", "%"+search+"%", "%"+search+"%", "%"+search+"%", "%"+search+"%")
 	}
 
 	if err := query.Count(&total).Error; err != nil {

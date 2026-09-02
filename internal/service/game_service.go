@@ -150,7 +150,34 @@ func (s *gameService) GetNominalByID(id uint) (*domain.Nominal, error) {
 	return s.nominalRepo.FindByID(id)
 }
 
+func (s *gameService) validateNominalProvider(nominal *domain.Nominal) error {
+	if nominal.ProviderID == 0 {
+		return nil
+	}
+	provider, err := s.providerRepo.GetByID(nominal.ProviderID)
+	if err != nil || provider == nil {
+		return nil
+	}
+
+	if strings.EqualFold(provider.Code, "KIOSGAMER") {
+		game, err := s.gameRepo.FindByID(nominal.GameID)
+		if err != nil || game == nil {
+			return errors.New("game target tidak ditemukan")
+		}
+		if !isKiosgamerSupportedGame(game) {
+			return fmt.Errorf("provider Kiosgamer hanya mendukung game Free Fire & Call of Duty Mobile. Game '%s' tidak didukung", game.Name)
+		}
+		if strings.TrimSpace(nominal.KiosgamerProductCode) == "" {
+			return errors.New("SKU Kiosgamer wajib diisi jika memilih provider pemrosesan Kiosgamer")
+		}
+	}
+	return nil
+}
+
 func (s *gameService) CreateNominal(nominal *domain.Nominal) error {
+	if err := s.validateNominalProvider(nominal); err != nil {
+		return err
+	}
 	if nominal.SellerProductCode == "" {
 		nominal.SellerProductCode = nominal.ProviderProductCode
 	}
@@ -163,6 +190,9 @@ func (s *gameService) CreateNominal(nominal *domain.Nominal) error {
 }
 
 func (s *gameService) UpdateNominal(nominal *domain.Nominal) error {
+	if err := s.validateNominalProvider(nominal); err != nil {
+		return err
+	}
 	nominal.CalculatePrices()
 	err := s.nominalRepo.Update(nominal)
 	if err == nil {
