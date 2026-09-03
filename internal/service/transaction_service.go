@@ -242,14 +242,24 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 				gameSlug = g.Slug
 			}
 		}
-		result, err := s.kiosgamerService.PlaceOrder(
-			context.Background(),
-			tx.RefID,
-			kiosgamerSKU,
-			tx.CustomerID,
-			tx.ServerID,
-			gameSlug,
-		)
+
+		var result *KiosgamerOrderResult
+		// -----------------------------------------------------------------------
+		// SAFE RETRY: Jika display_id sudah ada (order sudah dikirim ke Kiosgamer),
+		// lanjutkan poll status TANPA membuat order baru agar shell tidak terpotong ganda.
+		// -----------------------------------------------------------------------
+		if tx.ProviderOrderID != "" && tx.ProviderOrderID != "-" {
+			result, err = s.kiosgamerService.PollOrder(context.Background(), tx.ProviderOrderID)
+		} else {
+			result, err = s.kiosgamerService.PlaceOrder(
+				context.Background(),
+				tx.RefID,
+				kiosgamerSKU,
+				tx.CustomerID,
+				tx.ServerID,
+				gameSlug,
+			)
+		}
 		if err != nil {
 			tx.RetryCount++
 			switch {
@@ -272,7 +282,9 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 		}
 
 		// Map Kiosgamer result → transaction status
-		tx.ProviderOrderID = result.OrderID
+		if result.OrderID != "" {
+			tx.ProviderOrderID = result.OrderID
+		}
 		tx.ProviderMessage = result.Message
 
 		respJSON, _ := json.Marshal(result)
@@ -492,7 +504,12 @@ func (s *transactionService) ManualRetry(transactionID uint) error {
 		return errors.New("transaction not found")
 	}
 
+	// Reset status ke Processing agar FulfillOrder dipanggil ulang.
+	// PENTING: ProviderOrderID TIDAK di-reset agar FulfillOrder bisa melanjutkan
+	// poll order yang sudah ada di Kiosgamer, bukan membuat order baru (double-charge).
 	tx.Status = domain.StatusProcessing
+	tx.ProviderStatus = "Retrying"
+	tx.ProviderMessage = "Transaksi sedang diproses ulang oleh admin"
 	_ = s.txRepo.Update(tx)
 
 	targetTx := tx

@@ -113,6 +113,9 @@ type KiosgamerService interface {
 	RecoverSession(ctx context.Context) error
 	GenerateTOTP(at time.Time) (string, error)
 	PlaceOrder(ctx context.Context, refID, productCode, customerID, serverID, gameSlug string) (*KiosgamerOrderResult, error)
+	// PollOrder melanjutkan polling status order yang sudah dibuat (berdasarkan display_id).
+	// Digunakan saat retry transaksi yang sudah ada display_id-nya agar tidak double-charge.
+	PollOrder(ctx context.Context, displayID string) (*KiosgamerOrderResult, error)
 
 	FetchCatalog(ctx context.Context, gameSlug string) ([]KiosgamerCatalogItem, error)
 	AutoSyncMapping(ctx context.Context, gameID uint, gameSlug string) (*KiosgamerSyncResult, error)
@@ -866,6 +869,19 @@ func (s *kiosgamerService) pollKiosgamerOrder(ctx context.Context, displayID str
 	return &KiosgamerOrderResult{OrderID: displayID, Status: "pending", Message: msg}, nil
 }
 
+// PollOrder melanjutkan polling status order yang sudah ada di Kiosgamer berdasarkan display_id.
+// Ini dipakai saat retry transaksi yang sudah punya ProviderOrderID agar tidak membuat order baru.
+func (s *kiosgamerService) PollOrder(ctx context.Context, displayID string) (*KiosgamerOrderResult, error) {
+	if displayID == "" {
+		return &KiosgamerOrderResult{Status: "failed", Message: "display_id kosong, tidak bisa poll"}, nil
+	}
+	// Pastikan sesi valid sebelum poll
+	if _, err := s.EnsureSession(ctx); err != nil {
+		return nil, err
+	}
+	return s.pollKiosgamerOrder(ctx, displayID)
+}
+
 func parseKiosgamerPoll(v map[string]interface{}) (status, message, serial string) {
 	status = normalizeKiosgamerStatus(firstString(v, "status", "result", "state", "transaction_status"))
 	message = firstString(v, "message", "msg", "error", "error_message")
@@ -884,6 +900,34 @@ func parseKiosgamerPoll(v map[string]interface{}) (status, message, serial strin
 			}
 		}
 	}
+
+	// Cek apakah Kiosgamer mengembalikan error eksplisit
+	errStr := strings.ToLower(firstString(v, "error", "error_message", "err"))
+	if errStr != "" {
+		if strings.Contains(errStr, "not_received") || strings.Contains(errStr, "timeout") || strings.Contains(errStr, "unfinished") {
+			return "pending", message, serial
+		}
+		return "failed", message, serial
+	}
+
+	// Kiosgamer untuk Garena Shell langsung mengembalikan data transaksi lengkap (display_id, app, currency, dll.)
+	// tanpa field status="success". Jika respons memiliki data transaksi valid dan tidak ada error, maka transaksi sukses.
+	if status == "" || status == "pending" {
+		hasTxData := false
+		for _, k := range []string{"display_id", "app", "currency_amount", "point_amount", "channel_id", "update_time", "channel"} {
+			if _, exists := v[k]; exists {
+				hasTxData = true
+				break
+			}
+		}
+		if hasTxData {
+			if message == "" {
+				message = "Kiosgamer top up berhasil"
+			}
+			return "success", message, serial
+		}
+	}
+
 	if status == "" {
 		status = "pending"
 	}
