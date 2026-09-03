@@ -262,7 +262,11 @@ func (s *kiosgamerService) doJSONWithHeaders(ctx context.Context, method, path s
 		}
 		body = bytes.NewReader(b)
 	}
-	endpoint := strings.TrimRight(s.cfg.KiosgamerBaseURL, "/") + path
+	baseURL := strings.TrimRight(s.cfg.KiosgamerBaseURL, "/")
+	if strings.HasSuffix(baseURL, "/api") && strings.HasPrefix(path, "/api/") {
+		path = strings.TrimPrefix(path, "/api")
+	}
+	endpoint := baseURL + path
 	req, err := fhttp.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return nil, err
@@ -562,11 +566,14 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 			}
 		}
 
-		// POIN 3: Warm-up alur Kiosgamer sebelum validasi Player ID
+		// POIN 3: Warm-up alur Kiosgamer sebelum validasi Player ID (ambil info channels / produk)
 		var appInfo map[string]interface{}
-		warmupURL := fmt.Sprintf("/api/shop/apps/info?app_id=%d&region=CO.ID&language=id", appID)
+		warmupURL := fmt.Sprintf("/shop/apps/channels?app_id=%d&region=CO.ID&language=id", appID)
 		if _, err := s.doJSON(ctx, http.MethodGet, warmupURL, nil, &appInfo); err != nil {
-			return nil, fmt.Errorf("kiosgamer warmup failed: %w", err)
+			if errors.Is(err, ErrKiosgamerChallengeRequired) || errors.Is(err, ErrKiosgamerSessionExpired) {
+				return nil, err
+			}
+			fmt.Printf("[Kiosgamer] Warmup non-blocking notice: %v\n", err)
 		}
 
 		playerPayload := map[string]interface{}{
