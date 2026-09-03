@@ -138,14 +138,15 @@ func NewKiosgamerService(
 	gameRepo repository.GameRepository,
 	cfg *config.Config,
 ) KiosgamerService {
+	// CookieJar bawaan untuk menyimpan cookie DataDome & session_key
 	jar := tls_client.NewCookieJar()
 	baseURL, _ := url.Parse(strings.TrimRight(cfg.KiosgamerBaseURL, "/"))
 
+	// Konfigurasi TLS Client standar yang aman
 	options := []tls_client.HttpClientOption{
 		tls_client.WithTimeoutSeconds(35),
 		tls_client.WithClientProfile(profiles.Chrome_120),
 		tls_client.WithCookieJar(jar),
-		tls_client.WithRandomTLSExtensionOrder(),
 	}
 
 	client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), options...)
@@ -267,6 +268,7 @@ func (s *kiosgamerService) doJSONWithHeaders(ctx context.Context, method, path s
 		return nil, err
 	}
 
+	// Set Header Values
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -281,24 +283,49 @@ func (s *kiosgamerService) doJSONWithHeaders(ctx context.Context, method, path s
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 
+	// Inject CSRF jika ada
+	if csrfToken := s.cookieValue("__csrf__"); csrfToken != "" {
+		req.Header.Set("X-Csrf-Token", csrfToken)
+	}
+
 	for key, value := range headers {
 		if value != "" {
 			req.Header.Set(key, value)
 		}
 	}
 
+	// Kunci urutan header menggunakan HeaderOrderKey milik fhttp agar terhindar dari deteksi bot
+	req.Header[fhttp.HeaderOrderKey] = []string{
+		"host",
+		"connection",
+		"content-length",
+		"sec-ch-ua",
+		"sec-ch-ua-mobile",
+		"user-agent",
+		"content-type",
+		"accept",
+		"sec-ch-ua-platform",
+		"sec-fetch-site",
+		"sec-fetch-mode",
+		"sec-fetch-dest",
+		"referer",
+		"accept-encoding",
+		"accept-language",
+		"cookie",
+		"x-csrf-token",
+	}
+
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 
 	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && resp.Header.Get("X-DD-B") != "" {
-		resp.Body.Close()
 		return nil, fmt.Errorf("%w at %s %s", ErrKiosgamerChallengeRequired, method, path)
 	}
 
 	raw, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
 	if err != nil {
 		return resp, err
 	}
@@ -328,6 +355,7 @@ func (s *kiosgamerService) HealthCheck(ctx context.Context) (*KiosgamerUserInfo,
 	_, err = s.doJSON(ctx, http.MethodGet, "/auth/get_user_info/multi", nil, &info)
 	now := time.Now()
 	cred.LastCheckedAt = &now
+
 	if err != nil || info.OAuth == nil {
 		switch {
 		case errors.Is(err, ErrKiosgamerChallengeRequired):
@@ -512,128 +540,133 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 
 	appID := s.resolveAppID(gameSlug)
 
-	s.orderMu.Lock()
-
-	info, err := s.EnsureSession(ctx)
-	if err != nil {
-		s.orderMu.Unlock()
-		return nil, fmt.Errorf("kiosgamer: session error before order: %w", err)
-	}
-
-	if err := s.ensureGarenaTransactionSession(ctx); err != nil {
-		if errors.Is(err, ErrKiosgamerChallengeRequired) || errors.Is(err, ErrKiosgamerSessionExpired) {
-			s.orderMu.Unlock()
-			return nil, err
-		}
-	}
-
-	playerPayload := map[string]interface{}{
-		"app_id":   appID,
-		"login_id": customerID,
-	}
-	if v := strings.TrimSpace(serverID); v != "" {
-		if n, convErr := strconv.Atoi(v); convErr == nil {
-			playerPayload["app_server_id"] = n
-		} else {
-			playerPayload["app_server_id"] = v
-		}
-	}
-
-	var playerResp struct {
-		OpenID   string `json:"open_id"`
-		Region   string `json:"region"`
-		Nickname string `json:"nickname"`
-		ImgURL   string `json:"img_url"`
-	}
-	if _, err := s.doJSON(ctx, http.MethodPost, "/auth/player_id_login", playerPayload, &playerResp); err != nil {
-		s.orderMu.Unlock()
-		if errors.Is(err, ErrKiosgamerSessionExpired) || errors.Is(err, ErrKiosgamerChallengeRequired) {
-			return nil, err
-		}
-		return &KiosgamerOrderResult{Status: "failed", Message: fmt.Sprintf("Player ID %s gagal divalidasi Kiosgamer: %v", customerID, err)}, nil
-	}
-	if playerResp.OpenID == "" {
-		s.orderMu.Unlock()
-		return &KiosgamerOrderResult{Status: "failed", Message: fmt.Sprintf("Player ID %s tidak ditemukan di Kiosgamer", customerID)}, nil
-	}
-
-	packedRoleID, err := s.fetchPackedRoleID(ctx, appID, serverID)
-	if err != nil {
-		s.orderMu.Unlock()
-		return &KiosgamerOrderResult{Status: "failed", Message: fmt.Sprintf("Gagal mengambil role/player Kiosgamer: %v", err)}, nil
-	}
-
-	if _, err := s.doJSON(ctx, http.MethodPost, "/preflight", nil, nil); err != nil {
-		s.orderMu.Unlock()
-		return nil, fmt.Errorf("kiosgamer preflight failed: %w", err)
-	}
-	csrfToken := s.cookieValue("__csrf__")
-	if csrfToken == "" {
-		s.orderMu.Unlock()
-		return &KiosgamerOrderResult{Status: "failed", Message: "Kiosgamer tidak mengembalikan CSRF token setelah preflight"}, nil
-	}
-
-	if sec := time.Now().Unix() % 30; sec >= 27 {
-		wait := time.Duration(30-sec+1) * time.Second
-		select {
-		case <-ctx.Done():
-			s.orderMu.Unlock()
-			return nil, ctx.Err()
-		case <-time.After(wait):
-		}
-	}
-	otpCode, err := s.GenerateTOTP(time.Now())
-	if err != nil {
-		s.orderMu.Unlock()
-		return nil, fmt.Errorf("kiosgamer TOTP generation failed: %w", err)
-	}
-
-	garenaUID := int64(0)
-	if info != nil && info.OAuth != nil {
-		garenaUID = info.OAuth.UID
-	}
-	if garenaUID == 0 {
-		if status, statusErr := s.Status(ctx); statusErr == nil {
-			garenaUID, _ = strconv.ParseInt(status.UID, 10, 64)
-		}
-	}
-	if garenaUID == 0 {
-		s.orderMu.Unlock()
-		return &KiosgamerOrderResult{Status: "failed", Message: "Garena UID akun Kiosgamer tidak tersedia"}, nil
-	}
-
-	payPayload := map[string]interface{}{
-		"app_id":         appID,
-		"packed_role_id": packedRoleID,
-		"channel_id":     kiosgamerGarenaShellChannelID,
-		"service":        "pc",
-		"item_id":        itemID,
-		"channel_data": map[string]interface{}{
-			"otp_code":   otpCode,
-			"garena_uid": garenaUID,
-		},
-	}
-
-	var initResp struct {
+	initResp, err := func() (*struct {
 		DisplayID string      `json:"display_id"`
 		Result    string      `json:"result"`
 		ErrorData interface{} `json:"error_data"`
 		Exec      struct {
 			DisplayID string `json:"display_id"`
 		} `json:"exec"`
-	}
-	_, err = s.doJSONWithHeaders(ctx, http.MethodPost, "/shop/pay/init?region=CO.ID&language=id", payPayload, &initResp, map[string]string{
-		"x-csrf-token": csrfToken,
-	})
+	}, error) {
+		s.orderMu.Lock()
+		defer s.orderMu.Unlock()
 
-	s.orderMu.Unlock()
+		info, err := s.EnsureSession(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("kiosgamer: session error before order: %w", err)
+		}
+
+		if err := s.ensureGarenaTransactionSession(ctx); err != nil {
+			if errors.Is(err, ErrKiosgamerChallengeRequired) || errors.Is(err, ErrKiosgamerSessionExpired) {
+				return nil, err
+			}
+		}
+
+		// POIN 3: Warm-up alur Kiosgamer sebelum validasi Player ID
+		var appInfo map[string]interface{}
+		warmupURL := fmt.Sprintf("/api/shop/apps/info?app_id=%d&region=CO.ID&language=id", appID)
+		if _, err := s.doJSON(ctx, http.MethodGet, warmupURL, nil, &appInfo); err != nil {
+			return nil, fmt.Errorf("kiosgamer warmup failed: %w", err)
+		}
+
+		playerPayload := map[string]interface{}{
+			"app_id":   appID,
+			"login_id": customerID,
+		}
+		if v := strings.TrimSpace(serverID); v != "" {
+			if n, convErr := strconv.Atoi(v); convErr == nil {
+				playerPayload["app_server_id"] = n
+			} else {
+				playerPayload["app_server_id"] = v
+			}
+		}
+
+		var playerResp struct {
+			OpenID   string `json:"open_id"`
+			Region   string `json:"region"`
+			Nickname string `json:"nickname"`
+			ImgURL   string `json:"img_url"`
+		}
+		if _, err := s.doJSON(ctx, http.MethodPost, "/auth/player_id_login", playerPayload, &playerResp); err != nil {
+			if errors.Is(err, ErrKiosgamerSessionExpired) || errors.Is(err, ErrKiosgamerChallengeRequired) {
+				return nil, err
+			}
+			return nil, fmt.Errorf("Player ID %s gagal divalidasi Kiosgamer: %w", customerID, err)
+		}
+		if playerResp.OpenID == "" {
+			return nil, fmt.Errorf("Player ID %s tidak ditemukan di Kiosgamer", customerID)
+		}
+
+		packedRoleID, err := s.fetchPackedRoleID(ctx, appID, serverID)
+		if err != nil {
+			return nil, fmt.Errorf("Gagal mengambil role/player Kiosgamer: %w", err)
+		}
+
+		if _, err := s.doJSON(ctx, http.MethodPost, "/preflight", nil, nil); err != nil {
+			return nil, fmt.Errorf("kiosgamer preflight failed: %w", err)
+		}
+
+		if sec := time.Now().Unix() % 30; sec >= 27 {
+			wait := time.Duration(30-sec+1) * time.Second
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+		otpCode, err := s.GenerateTOTP(time.Now())
+		if err != nil {
+			return nil, fmt.Errorf("kiosgamer TOTP generation failed: %w", err)
+		}
+
+		garenaUID := int64(0)
+		if info != nil && info.OAuth != nil {
+			garenaUID = info.OAuth.UID
+		}
+		if garenaUID == 0 {
+			if status, statusErr := s.Status(ctx); statusErr == nil {
+				garenaUID, _ = strconv.ParseInt(status.UID, 10, 64)
+			}
+		}
+		if garenaUID == 0 {
+			return nil, errors.New("Garena UID akun Kiosgamer tidak tersedia")
+		}
+
+		payPayload := map[string]interface{}{
+			"app_id":         appID,
+			"packed_role_id": packedRoleID,
+			"channel_id":     kiosgamerGarenaShellChannelID,
+			"service":        "pc",
+			"item_id":        itemID,
+			"channel_data": map[string]interface{}{
+				"otp_code":   otpCode,
+				"garena_uid": garenaUID,
+			},
+		}
+
+		var respStruct struct {
+			DisplayID string      `json:"display_id"`
+			Result    string      `json:"result"`
+			ErrorData interface{} `json:"error_data"`
+			Exec      struct {
+				DisplayID string `json:"display_id"`
+			} `json:"exec"`
+		}
+		// x-csrf-token disuntikkan secara otomatis dari CookieJar melalui doJSONWithHeaders
+		_, err = s.doJSONWithHeaders(ctx, http.MethodPost, "/shop/pay/init?region=CO.ID&language=id", payPayload, &respStruct, nil)
+		if err != nil {
+			return nil, err
+		}
+		return &respStruct, nil
+	}()
 
 	if err != nil {
 		if errors.Is(err, ErrKiosgamerSessionExpired) || errors.Is(err, ErrKiosgamerChallengeRequired) {
 			return nil, err
 		}
-		return &KiosgamerOrderResult{Status: "failed", Message: fmt.Sprintf("Kiosgamer pay/init gagal: %v", err)}, nil
+		return &KiosgamerOrderResult{Status: "failed", Message: err.Error()}, nil
 	}
+
 	if initResp.DisplayID == "" {
 		initResp.DisplayID = initResp.Exec.DisplayID
 	}
@@ -1091,7 +1124,7 @@ func (s *kiosgamerService) AutoSyncMapping(ctx context.Context, gameID uint, gam
 					nom.KiosgamerProductCode = cat.ProductCode
 					_ = s.nominalRepo.Update(nom)
 					result.MatchedCount++
-					result.MatchedItems = append(result.MatchedItems, fmt.Sprintf("%s ➔ Kiosgamer ID %s (%s - %d Shell)", nom.Name, cat.ProductCode, cat.Name, cat.GarenaShell))
+					result.MatchedItems = append(result.MatchedItems, fmt.Sprintf("%s -> Kiosgamer ID %s (%s - %d Shell)", nom.Name, cat.ProductCode, cat.Name, cat.GarenaShell))
 					matched = true
 					break
 				}
@@ -1099,7 +1132,7 @@ func (s *kiosgamerService) AutoSyncMapping(ctx context.Context, gameID uint, gam
 					nom.KiosgamerProductCode = cat.ProductCode
 					_ = s.nominalRepo.Update(nom)
 					result.MatchedCount++
-					result.MatchedItems = append(result.MatchedItems, fmt.Sprintf("%s ➔ Kiosgamer ID %s (%s - %d Shell)", nom.Name, cat.ProductCode, cat.Name, cat.GarenaShell))
+					result.MatchedItems = append(result.MatchedItems, fmt.Sprintf("%s -> Kiosgamer ID %s (%s - %d Shell)", nom.Name, cat.ProductCode, cat.Name, cat.GarenaShell))
 					matched = true
 					break
 				}
@@ -1107,7 +1140,7 @@ func (s *kiosgamerService) AutoSyncMapping(ctx context.Context, gameID uint, gam
 					nom.KiosgamerProductCode = cat.ProductCode
 					_ = s.nominalRepo.Update(nom)
 					result.MatchedCount++
-					result.MatchedItems = append(result.MatchedItems, fmt.Sprintf("%s ➔ Kiosgamer ID %s (%s - %d Shell)", nom.Name, cat.ProductCode, cat.Name, cat.GarenaShell))
+					result.MatchedItems = append(result.MatchedItems, fmt.Sprintf("%s -> Kiosgamer ID %s (%s - %d Shell)", nom.Name, cat.ProductCode, cat.Name, cat.GarenaShell))
 					matched = true
 					break
 				}
@@ -1115,7 +1148,7 @@ func (s *kiosgamerService) AutoSyncMapping(ctx context.Context, gameID uint, gam
 					nom.KiosgamerProductCode = cat.ProductCode
 					_ = s.nominalRepo.Update(nom)
 					result.MatchedCount++
-					result.MatchedItems = append(result.MatchedItems, fmt.Sprintf("%s ➔ Kiosgamer ID %s (%s - %d Shell)", nom.Name, cat.ProductCode, cat.Name, cat.GarenaShell))
+					result.MatchedItems = append(result.MatchedItems, fmt.Sprintf("%s -> Kiosgamer ID %s (%s - %d Shell)", nom.Name, cat.ProductCode, cat.Name, cat.GarenaShell))
 					matched = true
 					break
 				}
@@ -1142,7 +1175,7 @@ func (s *kiosgamerService) AutoSyncMapping(ctx context.Context, gameID uint, gam
 					nom.KiosgamerProductCode = cat.ProductCode
 					_ = s.nominalRepo.Update(nom)
 					result.MatchedCount++
-					result.MatchedItems = append(result.MatchedItems, fmt.Sprintf("%s ➔ Kiosgamer ID %s (%d %s - %d Shell)", nom.Name, cat.ProductCode, cat.Amount, cat.PointName, cat.GarenaShell))
+					result.MatchedItems = append(result.MatchedItems, fmt.Sprintf("%s -> Kiosgamer ID %s (%d %s - %d Shell)", nom.Name, cat.ProductCode, cat.Amount, cat.PointName, cat.GarenaShell))
 					matched = true
 					break
 				}
