@@ -116,6 +116,8 @@ type KiosgamerService interface {
 	// PollOrder melanjutkan polling status order yang sudah dibuat (berdasarkan display_id).
 	// Digunakan saat retry transaksi yang sudah ada display_id-nya agar tidak double-charge.
 	PollOrder(ctx context.Context, displayID string) (*KiosgamerOrderResult, error)
+	// CheckRecentOrder memeriksa riwayat transaksi akun Kiosgamer untuk mendeteksi transaksi yang sukses
+	CheckRecentOrder(ctx context.Context, appID int) (*KiosgamerOrderResult, error)
 
 	FetchCatalog(ctx context.Context, gameSlug string) ([]KiosgamerCatalogItem, error)
 	AutoSyncMapping(ctx context.Context, gameID uint, gameSlug string) (*KiosgamerSyncResult, error)
@@ -880,6 +882,36 @@ func (s *kiosgamerService) PollOrder(ctx context.Context, displayID string) (*Ki
 		return nil, err
 	}
 	return s.pollKiosgamerOrder(ctx, displayID)
+}
+
+// CheckRecentOrder mengambil transaksi terbaru dari riwayat Kiosgamer (/shop/history).
+func (s *kiosgamerService) CheckRecentOrder(ctx context.Context, appID int) (*KiosgamerOrderResult, error) {
+	if _, err := s.EnsureSession(ctx); err != nil {
+		return nil, err
+	}
+	endpoint := fmt.Sprintf("/shop/history?region=CO.ID&language=id&app_id=%d", appID)
+	var histResp struct {
+		Items []struct {
+			DisplayID      string  `json:"display_id"`
+			Status         int     `json:"status"`
+			PointAmount    int     `json:"point_amount"`
+			CurrencyAmount float64 `json:"currency_amount"`
+			CreateTime     int64   `json:"create_time"`
+			UpdateTime     int64   `json:"update_time"`
+		} `json:"items"`
+	}
+	if _, err := s.doJSON(ctx, http.MethodGet, endpoint, nil, &histResp); err != nil {
+		return nil, err
+	}
+	if len(histResp.Items) == 0 {
+		return &KiosgamerOrderResult{Status: "pending", Message: "Belum ada riwayat transaksi di akun Kiosgamer"}, nil
+	}
+	latest := histResp.Items[0]
+	return &KiosgamerOrderResult{
+		OrderID: latest.DisplayID,
+		Status:  "success",
+		Message: fmt.Sprintf("Kiosgamer top up terkonfirmasi dari riwayat akun (Display ID: %s)", latest.DisplayID),
+	}, nil
 }
 
 func parseKiosgamerPoll(v map[string]interface{}) (status, message, serial string) {

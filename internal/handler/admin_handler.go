@@ -266,6 +266,16 @@ func (h *AdminHandler) ManualRetryTx(c *gin.Context) {
 	response.Success(c, "Transaction retry dispatched", nil)
 }
 
+func (h *AdminHandler) CheckStatusTx(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	tx, err := h.txService.CheckProviderStatus(uint(id))
+	if err != nil {
+		response.BadRequest(c, err.Error(), nil)
+		return
+	}
+	response.Success(c, "Status transaksi berhasil dicek dan disinkronkan", tx)
+}
+
 func (h *AdminHandler) ManualSuccessTx(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var req struct {

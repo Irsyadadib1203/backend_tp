@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"topup-backend/internal/domain"
@@ -42,6 +43,7 @@ type TransactionService interface {
 	
 	// Admin overrides
 	ManualRetry(transactionID uint) error
+	CheckProviderStatus(transactionID uint) (*domain.Transaction, error)
 	ManualSetSuccess(transactionID uint, notes string) error
 	ManualRefund(transactionID uint, notes string) error
 }
@@ -518,6 +520,146 @@ func (s *transactionService) ManualRetry(transactionID uint) error {
 	})
 
 	return nil
+}
+
+// CheckProviderStatus HANYA memeriksa/mengambil status transaksi ke provider
+// (Kiosgamer poll / history, atau Digiflazz check-status) TANPA PERNAH membuat order baru atau memotong saldo.
+func (s *transactionService) CheckProviderStatus(transactionID uint) (*domain.Transaction, error) {
+	tx, err := s.txRepo.FindByID(transactionID)
+	if err != nil || tx == nil {
+		return nil, errors.New("transaksi tidak ditemukan")
+	}
+
+	nominal, err := s.nominalRepo.FindByID(tx.NominalID)
+	if err != nil || nominal == nil {
+		return nil, errors.New("nominal tidak ditemukan")
+	}
+
+	providerCode := "DIGIFLAZZ"
+	if nominal.Provider != nil && nominal.Provider.Code != "" {
+		providerCode = nominal.Provider.Code
+	} else if nominal.ProviderID > 0 && s.providerRepo != nil {
+		if p, err := s.providerRepo.GetByID(nominal.ProviderID); err == nil && p != nil {
+			providerCode = p.Code
+		}
+	}
+
+	if providerCode == "KIOSGAMER" {
+		if s.kiosgamerService == nil {
+			return nil, errors.New("layanan Kiosgamer belum diinisialisasi")
+		}
+
+		displayID := tx.ProviderOrderID
+		if displayID == "" || displayID == "-" {
+			// Coba ekstrak dari ProviderCallbackData jika pernah tersimpan
+			if tx.ProviderCallbackData != "" {
+				var parsed map[string]interface{}
+				if err := json.Unmarshal([]byte(tx.ProviderCallbackData), &parsed); err == nil {
+					if id, ok := parsed["order_id"].(string); ok && id != "" && id != "-" {
+						displayID = id
+					} else if id, ok := parsed["display_id"].(string); ok && id != "" && id != "-" {
+						displayID = id
+					}
+				}
+			}
+		}
+
+		var result *KiosgamerOrderResult
+		if displayID != "" && displayID != "-" {
+			result, err = s.kiosgamerService.PollOrder(context.Background(), displayID)
+		} else {
+			// Jika belum ada displayID, periksa riwayat transaksi akun Kiosgamer untuk game terkait
+			appID := 100067 // default Free Fire
+			if s.gameRepo != nil {
+				if g, err := s.gameRepo.FindByID(tx.GameID); err == nil && g != nil {
+					if strings.Contains(strings.ToLower(g.Slug), "codm") || strings.Contains(strings.ToLower(g.Slug), "call-of-duty") {
+						appID = 100054
+					}
+				}
+			}
+			result, err = s.kiosgamerService.CheckRecentOrder(context.Background(), appID)
+		}
+
+		if err != nil {
+			return nil, fmt.Errorf("gagal cek status Kiosgamer: %w", err)
+		}
+
+		if result.OrderID != "" {
+			tx.ProviderOrderID = result.OrderID
+		}
+		tx.ProviderMessage = result.Message
+		respJSON, _ := json.Marshal(result)
+		tx.ProviderCallbackData = string(respJSON)
+
+		if result.Status == "success" {
+			tx.Status = domain.StatusSuccess
+			tx.ProviderStatus = "Sukses"
+			tx.PaymentReference = result.SerialNumber
+			now := time.Now()
+			tx.CompletedAt = &now
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusSuccess, "Kiosgamer: status dicek dan terkonfirmasi sukses")
+			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+				"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now,
+			})
+		} else if result.Status == "failed" {
+			tx.Status = domain.StatusFailed
+			tx.ProviderStatus = "Gagal"
+			now := time.Now()
+			tx.CompletedAt = &now
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, fmt.Sprintf("Kiosgamer gagal: %s", result.Message))
+			if tx.PaymentMethod == "SALDO" && tx.UserID != nil {
+				_ = s.userRepo.UpdateBalance(*tx.UserID, tx.TotalAmount, domain.MutationCredit, "REFUND", tx.InvoiceNumber, "Pengembalian dana: top up Kiosgamer gagal")
+			}
+			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+				"status": "failed", "invoice": tx.InvoiceNumber,
+			})
+		} else {
+			tx.ProviderStatus = "Pending"
+		}
+
+		_ = s.txRepo.Update(tx)
+		return tx, nil
+	}
+
+	// Provider DIGIFLAZZ
+	resp, err := s.digiflazzBuyer.CheckTransactionStatus(tx.RefID, nominal.ProviderProductCode, tx.CustomerID)
+	if err != nil {
+		return nil, fmt.Errorf("gagal cek status Digiflazz: %w", err)
+	}
+
+	if resp != nil && resp.Data.RefID != "" {
+		tx.ProviderStatus = resp.Data.Status
+		tx.ProviderMessage = resp.Data.Message
+		tx.ProviderOrderID = resp.Data.RefID
+		tx.PaymentReference = resp.Data.SN
+		respJSON, _ := json.Marshal(resp.Data)
+		tx.ProviderCallbackData = string(respJSON)
+
+		if resp.Data.Status == "Sukses" {
+			tx.Status = domain.StatusSuccess
+			now := time.Now()
+			tx.CompletedAt = &now
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusSuccess, "Digiflazz: terkonfirmasi sukses")
+			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+				"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now,
+			})
+		} else if resp.Data.Status == "Gagal" {
+			tx.Status = domain.StatusFailed
+			now := time.Now()
+			tx.CompletedAt = &now
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, fmt.Sprintf("Digiflazz gagal: %s", resp.Data.Message))
+			if tx.PaymentMethod == "SALDO" && tx.UserID != nil {
+				_ = s.userRepo.UpdateBalance(*tx.UserID, tx.TotalAmount, domain.MutationCredit, "REFUND", tx.InvoiceNumber, "Pengembalian dana top up gagal")
+			}
+			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+				"status": "failed", "invoice": tx.InvoiceNumber,
+			})
+		}
+
+		_ = s.txRepo.Update(tx)
+	}
+
+	return tx, nil
 }
 
 func (s *transactionService) ManualSetSuccess(transactionID uint, notes string) error {
