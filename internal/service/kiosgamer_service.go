@@ -287,6 +287,10 @@ func (s *kiosgamerService) doJSONWithHeaders(ctx context.Context, method, path s
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 
+	if method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch {
+		req.Header.Set("Origin", "https://kiosgamer.co.id")
+	}
+
 	// Inject CSRF jika ada
 	if csrfToken := s.cookieValue("__csrf__"); csrfToken != "" {
 		req.Header.Set("X-Csrf-Token", csrfToken)
@@ -308,6 +312,7 @@ func (s *kiosgamerService) doJSONWithHeaders(ctx context.Context, method, path s
 		"user-agent",
 		"content-type",
 		"accept",
+		"origin",
 		"sec-ch-ua-platform",
 		"sec-fetch-site",
 		"sec-fetch-mode",
