@@ -12,12 +12,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	fhttp "github.com/bogdanfinn/fhttp"
+	tls_client "github.com/bogdanfinn/tls-client"
+	"github.com/bogdanfinn/tls-client/profiles"
 
 	"topup-backend/config"
 	"topup-backend/internal/domain"
@@ -70,7 +73,6 @@ type KiosgamerStatus struct {
 	LastRecoveredAt *time.Time `json:"last_recovered_at,omitempty"`
 }
 
-// KiosgamerOrderResult is the result returned by PlaceOrder
 type KiosgamerOrderResult struct {
 	OrderID      string `json:"order_id"`
 	Status       string `json:"status"` // "success", "pending", "failed"
@@ -78,7 +80,6 @@ type KiosgamerOrderResult struct {
 	SerialNumber string `json:"serial_number,omitempty"`
 }
 
-// KiosgamerCatalogItem represents a product in Kiosgamer's shop catalog
 type KiosgamerCatalogItem struct {
 	ItemID      int     `json:"item_id"`
 	ProductCode string  `json:"product_code"`
@@ -92,7 +93,6 @@ type KiosgamerCatalogItem struct {
 	Description string  `json:"description,omitempty"`
 }
 
-// KiosgamerSyncResult holds the summary of an auto-sync mapping operation
 type KiosgamerSyncResult struct {
 	GameID         uint     `json:"game_id"`
 	GameName       string   `json:"game_name"`
@@ -114,7 +114,6 @@ type KiosgamerService interface {
 	GenerateTOTP(at time.Time) (string, error)
 	PlaceOrder(ctx context.Context, refID, productCode, customerID, serverID, gameSlug string) (*KiosgamerOrderResult, error)
 
-	// Catalog & Mapping
 	FetchCatalog(ctx context.Context, gameSlug string) ([]KiosgamerCatalogItem, error)
 	AutoSyncMapping(ctx context.Context, gameID uint, gameSlug string) (*KiosgamerSyncResult, error)
 	UpdateNominalKiosgamerCode(nominalID uint, kiosgamerCode string) error
@@ -126,7 +125,7 @@ type kiosgamerService struct {
 	nominalRepo  repository.NominalRepository
 	gameRepo     repository.GameRepository
 	cfg          *config.Config
-	httpClient   *http.Client
+	httpClient   tls_client.HttpClient
 	baseURL      *url.URL
 	mu           sync.Mutex
 	orderMu      sync.Mutex
@@ -139,15 +138,28 @@ func NewKiosgamerService(
 	gameRepo repository.GameRepository,
 	cfg *config.Config,
 ) KiosgamerService {
-	jar, _ := cookiejar.New(nil)
+	jar := tls_client.NewCookieJar()
 	baseURL, _ := url.Parse(strings.TrimRight(cfg.KiosgamerBaseURL, "/"))
+
+	options := []tls_client.HttpClientOption{
+		tls_client.WithTimeoutSeconds(35),
+		tls_client.WithClientProfile(profiles.Chrome_120),
+		tls_client.WithCookieJar(jar),
+		tls_client.WithRandomTLSExtensionOrder(),
+	}
+
+	client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), options...)
+	if err != nil {
+		fmt.Printf("Error creating TLS client: %v\n", err)
+	}
+
 	return &kiosgamerService{
 		repo:         repo,
 		providerRepo: providerRepo,
 		nominalRepo:  nominalRepo,
 		gameRepo:     gameRepo,
 		cfg:          cfg,
-		httpClient:   &http.Client{Timeout: 35 * time.Second, Jar: jar},
+		httpClient:   client,
 		baseURL:      baseURL,
 	}
 }
@@ -216,19 +228,19 @@ func (s *kiosgamerService) loadCredential() (*domain.KiosgamerCredential, string
 }
 
 func (s *kiosgamerService) setSessionCookie(sessionKey string) {
-	if sessionKey == "" || s.baseURL == nil || s.httpClient.Jar == nil {
+	if sessionKey == "" || s.baseURL == nil || s.httpClient == nil || s.httpClient.GetCookieJar() == nil {
 		return
 	}
-	s.httpClient.Jar.SetCookies(s.baseURL, []*http.Cookie{{
+	s.httpClient.GetCookieJar().SetCookies(s.baseURL, []*fhttp.Cookie{{
 		Name: "session_key", Value: sessionKey, Path: "/", Secure: true, HttpOnly: true,
 	}})
 }
 
 func (s *kiosgamerService) cookieValue(name string) string {
-	if s.httpClient == nil || s.httpClient.Jar == nil || s.baseURL == nil {
+	if s.httpClient == nil || s.httpClient.GetCookieJar() == nil || s.baseURL == nil {
 		return ""
 	}
-	for _, cookie := range s.httpClient.Jar.Cookies(s.baseURL) {
+	for _, cookie := range s.httpClient.GetCookieJar().Cookies(s.baseURL) {
 		if cookie.Name == name {
 			return cookie.Value
 		}
@@ -236,11 +248,11 @@ func (s *kiosgamerService) cookieValue(name string) string {
 	return ""
 }
 
-func (s *kiosgamerService) doJSON(ctx context.Context, method, path string, payload interface{}, out interface{}) (*http.Response, error) {
+func (s *kiosgamerService) doJSON(ctx context.Context, method, path string, payload interface{}, out interface{}) (*fhttp.Response, error) {
 	return s.doJSONWithHeaders(ctx, method, path, payload, out, nil)
 }
 
-func (s *kiosgamerService) doJSONWithHeaders(ctx context.Context, method, path string, payload interface{}, out interface{}, headers map[string]string) (*http.Response, error) {
+func (s *kiosgamerService) doJSONWithHeaders(ctx context.Context, method, path string, payload interface{}, out interface{}, headers map[string]string) (*fhttp.Response, error) {
 	var body io.Reader
 	if payload != nil {
 		b, err := json.Marshal(payload)
@@ -250,16 +262,25 @@ func (s *kiosgamerService) doJSONWithHeaders(ctx context.Context, method, path s
 		body = bytes.NewReader(b)
 	}
 	endpoint := strings.TrimRight(s.cfg.KiosgamerBaseURL, "/") + path
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	req, err := fhttp.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
 		return nil, err
 	}
+
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	req.Header.Set("Accept-Language", "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7")
 	req.Header.Set("Referer", "https://kiosgamer.co.id/")
-	req.Header.Set("User-Agent", "IRXPlay-Kiosgamer-Provider/1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Sec-Ch-Ua", `"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"`)
+	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+	req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+
 	for key, value := range headers {
 		if value != "" {
 			req.Header.Set(key, value)
@@ -379,8 +400,8 @@ func (s *kiosgamerService) RecoverSession(ctx context.Context) error {
 	}
 
 	var newSession string
-	if s.httpClient.Jar != nil && s.baseURL != nil {
-		for _, cookie := range s.httpClient.Jar.Cookies(s.baseURL) {
+	if s.httpClient.GetCookieJar() != nil && s.baseURL != nil {
+		for _, cookie := range s.httpClient.GetCookieJar().Cookies(s.baseURL) {
 			if cookie.Name == "session_key" {
 				newSession = cookie.Value
 				break
@@ -478,20 +499,8 @@ func (s *kiosgamerService) GenerateTOTP(at time.Time) (string, error) {
 	return fmt.Sprintf("%06d", binaryCode%1000000), nil
 }
 
-// ── PlaceOrder ────────────────────────────────────────────────────────────────
-// Executes the flow observed from Kiosgamer's web client:
-//  1. Ensure/repair Kiosgamer + Garena SSO session.
-//  2. POST /auth/player_id_login to bind the target player to this session.
-//  3. GET /shop/apps/roles and select packed_role_id (Free Fire commonly returns 0).
-//  4. POST /preflight, then read the __csrf__ cookie.
-//  5. Generate the current TOTP and POST /shop/pay/init using the Garena Shell channel.
-//  6. Poll /shop/pay/poll using the returned display_id.
-//
-// Kiosgamer keeps player/login state in the session cookie. Therefore the stateful
-// player-login -> pay-init section is serialized with orderMu so two orders cannot
-// overwrite each other's selected player inside the same Kiosgamer session.
 func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, customerID, serverID, gameSlug string) (*KiosgamerOrderResult, error) {
-	_ = refID // Kiosgamer uses display_id as its provider transaction identifier.
+	_ = refID
 
 	itemID, err := strconv.Atoi(strings.TrimSpace(productCode))
 	if err != nil || itemID <= 0 {
@@ -503,7 +512,6 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 
 	appID := s.resolveAppID(gameSlug)
 
-	// The session stores player context. Keep this section single-flight per account.
 	s.orderMu.Lock()
 
 	info, err := s.EnsureSession(ctx)
@@ -512,19 +520,13 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 		return nil, fmt.Errorf("kiosgamer: session error before order: %w", err)
 	}
 
-	// Best-effort refresh of the Garena SSO session. A healthy Kiosgamer session
-	// is already enough to continue the order flow; check_session can legitimately
-	// report no separate Garena web session even while get_user_info/multi is valid.
-	// Do not turn that condition into a hard Reauth Required error.
 	if err := s.ensureGarenaTransactionSession(ctx); err != nil {
 		if errors.Is(err, ErrKiosgamerChallengeRequired) || errors.Is(err, ErrKiosgamerSessionExpired) {
 			s.orderMu.Unlock()
 			return nil, err
 		}
-		// Keep using the healthy Kiosgamer session returned by EnsureSession.
 	}
 
-	// Step 1: bind/validate the target player.
 	playerPayload := map[string]interface{}{
 		"app_id":   appID,
 		"login_id": customerID,
@@ -555,14 +557,12 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 		return &KiosgamerOrderResult{Status: "failed", Message: fmt.Sprintf("Player ID %s tidak ditemukan di Kiosgamer", customerID)}, nil
 	}
 
-	// Step 2: obtain the packed role selected by Kiosgamer for the player.
 	packedRoleID, err := s.fetchPackedRoleID(ctx, appID, serverID)
 	if err != nil {
 		s.orderMu.Unlock()
 		return &KiosgamerOrderResult{Status: "failed", Message: fmt.Sprintf("Gagal mengambil role/player Kiosgamer: %v", err)}, nil
 	}
 
-	// Step 3: preflight sets/refreshes CSRF state used by pay/init.
 	if _, err := s.doJSON(ctx, http.MethodPost, "/preflight", nil, nil); err != nil {
 		s.orderMu.Unlock()
 		return nil, fmt.Errorf("kiosgamer preflight failed: %w", err)
@@ -573,7 +573,6 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 		return &KiosgamerOrderResult{Status: "failed", Message: "Kiosgamer tidak mengembalikan CSRF token setelah preflight"}, nil
 	}
 
-	// Generate the OTP as late as possible. Avoid using a token in its final seconds.
 	if sec := time.Now().Unix() % 30; sec >= 27 {
 		wait := time.Duration(30-sec+1) * time.Second
 		select {
@@ -627,7 +626,6 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 		"x-csrf-token": csrfToken,
 	})
 
-	// Player context is no longer needed after pay/init, so allow the next order to start.
 	s.orderMu.Unlock()
 
 	if err != nil {
@@ -649,7 +647,6 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 		return &KiosgamerOrderResult{OrderID: initResp.DisplayID, Status: "failed", Message: errMsg}, nil
 	}
 
-	// Step 5: poll using display_id. The browser does the same on /result.
 	return s.pollKiosgamerOrder(ctx, initResp.DisplayID)
 }
 
@@ -660,9 +657,6 @@ func (s *kiosgamerService) ensureGarenaTransactionSession(ctx context.Context) e
 		return fmt.Errorf("kiosgamer Garena SSO check failed: %w", err)
 	}
 	if !session.Login || session.SessionKey == "" {
-		// No separate Garena browser session is available for silent SSO refresh.
-		// This is not the same as an expired Kiosgamer session: PlaceOrder has
-		// already verified the current Kiosgamer session with EnsureSession.
 		return nil
 	}
 
@@ -727,8 +721,6 @@ func (s *kiosgamerService) fetchPackedRoleID(ctx context.Context, appID int, ser
 
 	entriesRaw, ok := raw[strconv.Itoa(appID)]
 	if !ok {
-		// Free Fire commonly uses packed_role_id=0, but only fall back when the
-		// endpoint returned a valid JSON object without an explicit error field.
 		if errRaw, hasErr := raw["error"]; hasErr && len(errRaw) > 0 {
 			return 0, fmt.Errorf("roles endpoint error: %s", strings.TrimSpace(string(errRaw)))
 		}
@@ -772,7 +764,6 @@ func (s *kiosgamerService) pollKiosgamerOrder(ctx context.Context, displayID str
 			if errors.Is(err, ErrKiosgamerSessionExpired) || errors.Is(err, ErrKiosgamerChallengeRequired) {
 				return nil, err
 			}
-			// Do not create/retry a new order after init succeeded. Keep it pending.
 			last = map[string]interface{}{"message": err.Error()}
 			continue
 		}
@@ -803,12 +794,10 @@ func (s *kiosgamerService) pollKiosgamerOrder(ctx context.Context, displayID str
 }
 
 func parseKiosgamerPoll(v map[string]interface{}) (status, message, serial string) {
-	// Prefer explicit fields from the top-level response.
 	status = normalizeKiosgamerStatus(firstString(v, "status", "result", "state", "transaction_status"))
 	message = firstString(v, "message", "msg", "error", "error_message")
 	serial = firstString(v, "sn", "serial_number", "serial", "voucher_code")
 
-	// Some responses nest the transaction under data/transaction/exec.
 	for _, key := range []string{"data", "transaction", "exec"} {
 		if nested, ok := v[key].(map[string]interface{}); ok {
 			if status == "pending" || status == "" {
@@ -868,46 +857,21 @@ func truncateString(v string, max int) string {
 	return v[:max] + "..."
 }
 
-// resolveAppID maps a product code or game slug to the Garena game app_id.
-// Free Fire (FF):  app_id = 100067
-// Call of Duty Mobile (CODM): app_id = 100082
 func (s *kiosgamerService) resolveAppID(identifier string) int {
 	code := strings.ToLower(strings.TrimSpace(identifier))
 	switch {
 	case strings.Contains(code, "codm"), strings.Contains(code, "call-of-duty"), strings.Contains(code, "duty"):
 		return 100082
 	default:
-		// Default to Free Fire
 		return 100067
 	}
 }
 
-func (s *kiosgamerService) buildOrderResult(orderID, status, message, sn string) *KiosgamerOrderResult {
-	normalized := strings.ToLower(strings.TrimSpace(status))
-	resultStatus := "pending"
-	switch normalized {
-	case "success", "sukses", "completed", "done":
-		resultStatus = "success"
-	case "failed", "gagal", "error", "cancel":
-		resultStatus = "failed"
-	}
-	return &KiosgamerOrderResult{
-		OrderID:      orderID,
-		Status:       resultStatus,
-		Message:      message,
-		SerialNumber: sn,
-	}
-}
-
-// ── FetchCatalog ─────────────────────────────────────────────────────────────
-// Retrieves the real-time product list from Kiosgamer's public channels endpoint.
-// Prioritizes the official "Garena Shells" payment channel (Channel 208070 / Currency GS)
-// to get the exact Garena Shell cost and accurate item_id.
 func (s *kiosgamerService) FetchCatalog(ctx context.Context, gameSlug string) ([]KiosgamerCatalogItem, error) {
 	appID := s.resolveAppID(gameSlug)
 	endpoint := fmt.Sprintf("https://kiosgamer.co.id/api/shop/apps/channels?app_id=%d&region=CO.ID&language=id", appID)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := fhttp.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create catalog request: %w", err)
 	}
@@ -967,7 +931,6 @@ func (s *kiosgamerService) FetchCatalog(ctx context.Context, gameSlug string) ([
 		}
 	}
 
-	// 1. Build a price lookup from IDR channels (like QRIS or ShopeePay) for reference
 	idrPriceByAmount := make(map[int]float64)
 	idrPriceByName := make(map[string]float64)
 	for _, ch := range parsed.Channels {
@@ -989,7 +952,6 @@ func (s *kiosgamerService) FetchCatalog(ctx context.Context, gameSlug string) ([
 	var items []KiosgamerCatalogItem
 	seenItemIDs := make(map[int]bool)
 
-	// 2. Primary: Extract items from "Garena Shells" channel (Channel 208070 or currency == "GS")
 	var shellChannelIndex = -1
 	for i, ch := range parsed.Channels {
 		if ch.Channel == 208070 || strings.EqualFold(ch.Name, "Garena Shells") {
@@ -1006,7 +968,7 @@ func (s *kiosgamerService) FetchCatalog(ctx context.Context, gameSlug string) ([
 			itemType := "points"
 			itemName := ""
 			itemDesc := ""
-			shellCount := int(it.CurrencyAmount) // exact Garena Shell count, e.g. 3, 24, 33, 66, 100, 300, 150
+			shellCount := int(it.CurrencyAmount)
 
 			if it.RebateCard != nil && it.RebateCard.Name != "" {
 				itemType = "membership"
@@ -1022,7 +984,6 @@ func (s *kiosgamerService) FetchCatalog(ctx context.Context, gameSlug string) ([
 				itemName = fmt.Sprintf("Item #%d", it.ItemID)
 			}
 
-			// Estimate or lookup IDR price (1 Shell ≈ Rp 330 or exact IDR channel price)
 			priceIDR := float64(shellCount * 330)
 			if it.AppPointAmount > 0 && idrPriceByAmount[it.AppPointAmount] > 0 {
 				priceIDR = idrPriceByAmount[it.AppPointAmount]
@@ -1045,7 +1006,6 @@ func (s *kiosgamerService) FetchCatalog(ctx context.Context, gameSlug string) ([
 		}
 	}
 
-	// 3. Fallback: If any other items exist in IDR channels not in shell channel, include them
 	for _, ch := range parsed.Channels {
 		for _, it := range ch.Items {
 			if seenItemIDs[it.ItemID] {
@@ -1093,8 +1053,6 @@ func (s *kiosgamerService) FetchCatalog(ctx context.Context, gameSlug string) ([
 	return items, nil
 }
 
-// ── AutoSyncMapping ──────────────────────────────────────────────────────────
-// Automatically maps database Nominals with Kiosgamer Catalog Items based on amount / name.
 func (s *kiosgamerService) AutoSyncMapping(ctx context.Context, gameID uint, gameSlug string) (*KiosgamerSyncResult, error) {
 	catalog, err := s.FetchCatalog(ctx, gameSlug)
 	if err != nil {
@@ -1126,11 +1084,9 @@ func (s *kiosgamerService) AutoSyncMapping(ctx context.Context, gameID uint, gam
 		matched := false
 		nomNameLower := strings.ToLower(nom.Name)
 
-		// 1. Try matching by membership/special name
 		for _, cat := range catalog {
 			catNameLower := strings.ToLower(cat.Name)
 			if cat.ItemType == "membership" || cat.ItemType == "bundle" {
-				// E.g. "Member Mingguan", "Mingguan Lite", "Member Bulanan", "BP Card"
 				if strings.Contains(nomNameLower, "lite") && strings.Contains(catNameLower, "lite") {
 					nom.KiosgamerProductCode = cat.ProductCode
 					_ = s.nominalRepo.Update(nom)
@@ -1170,11 +1126,9 @@ func (s *kiosgamerService) AutoSyncMapping(ctx context.Context, gameID uint, gam
 			continue
 		}
 
-		// 2. Try matching by point amount (e.g. 5, 50, 70, 140, 355, 720, 7290, 63 CP, 128 CP, etc)
 		for _, cat := range catalog {
 			if cat.ItemType == "points" && cat.Amount > 0 {
 				amountStr := strconv.Itoa(cat.Amount)
-				// Check if the nominal name contains the exact amount with word boundaries
 				words := strings.Fields(strings.ReplaceAll(strings.ReplaceAll(nomNameLower, "dm", " dm"), "cp", " cp"))
 				isAmountMatch := false
 				for _, w := range words {
@@ -1205,8 +1159,6 @@ func (s *kiosgamerService) AutoSyncMapping(ctx context.Context, gameID uint, gam
 	return result, nil
 }
 
-// ── UpdateNominalKiosgamerCode ──────────────────────────────────────────────
-// Manually update or override the Kiosgamer Product Code for a nominal.
 func (s *kiosgamerService) UpdateNominalKiosgamerCode(nominalID uint, kiosgamerCode string) error {
 	nom, err := s.nominalRepo.FindByID(nominalID)
 	if err != nil {
