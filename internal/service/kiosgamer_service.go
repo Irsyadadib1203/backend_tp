@@ -228,12 +228,36 @@ func (s *kiosgamerService) loadCredential() (*domain.KiosgamerCredential, string
 	return cred, sessionKey, nil
 }
 
-func (s *kiosgamerService) setSessionCookie(sessionKey string) {
-	if sessionKey == "" || s.baseURL == nil || s.httpClient == nil || s.httpClient.GetCookieJar() == nil {
+func (s *kiosgamerService) setSessionCookie(cookieInput string) {
+	if cookieInput == "" || s.baseURL == nil || s.httpClient == nil || s.httpClient.GetCookieJar() == nil {
 		return
 	}
+	cookieInput = strings.TrimSpace(cookieInput)
+
+	// Mendukung jika user menempelkan seluruh cookie browser (datadome, session_key, __csrf__)
+	if strings.Contains(cookieInput, "=") {
+		parts := strings.Split(cookieInput, ";")
+		var cookies []*fhttp.Cookie
+		for _, part := range parts {
+			kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+			if len(kv) == 2 {
+				name := strings.TrimSpace(kv[0])
+				val := strings.TrimSpace(kv[1])
+				if name != "" && val != "" {
+					cookies = append(cookies, &fhttp.Cookie{
+						Name: name, Value: val, Path: "/", Secure: true, HttpOnly: true,
+					})
+				}
+			}
+		}
+		if len(cookies) > 0 {
+			s.httpClient.GetCookieJar().SetCookies(s.baseURL, cookies)
+			return
+		}
+	}
+
 	s.httpClient.GetCookieJar().SetCookies(s.baseURL, []*fhttp.Cookie{{
-		Name: "session_key", Value: sessionKey, Path: "/", Secure: true, HttpOnly: true,
+		Name: "session_key", Value: cookieInput, Path: "/", Secure: true, HttpOnly: true,
 	}})
 }
 
@@ -330,15 +354,19 @@ func (s *kiosgamerService) doJSONWithHeaders(ctx context.Context, method, path s
 	}
 	defer resp.Body.Close()
 
-	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && resp.Header.Get("X-DD-B") != "" {
-		return nil, fmt.Errorf("%w at %s %s", ErrKiosgamerChallengeRequired, method, path)
-	}
-
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return resp, err
 	}
 	resp.Body = io.NopCloser(bytes.NewReader(raw))
+
+	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && resp.Header.Get("X-DD-B") != "" {
+		detail := strings.TrimSpace(string(raw))
+		if detail != "" {
+			return resp, fmt.Errorf("%w at %s %s: %s", ErrKiosgamerChallengeRequired, method, path, truncateString(detail, 300))
+		}
+		return resp, fmt.Errorf("%w at %s %s", ErrKiosgamerChallengeRequired, method, path)
+	}
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return resp, fmt.Errorf("%w at %s %s", ErrKiosgamerSessionExpired, method, path)
