@@ -28,9 +28,16 @@ type DepositRequest struct {
 	UserID        uint          `gorm:"index;not null" json:"user_id"`
 	Amount        float64       `gorm:"type:decimal(15,2);not null" json:"amount"`
 	UniqueCode    int           `gorm:"default:0" json:"unique_code"`
-	TotalAmount   float64       `gorm:"type:decimal(15,2);not null" json:"total_amount"`
-	PaymentMethod string        `gorm:"size:50;not null" json:"payment_method"`
-	ProofImageURL string        `gorm:"size:255" json:"proof_image_url"`
+	TotalAmount         float64       `gorm:"type:decimal(15,2);not null" json:"total_amount"`
+	AdminFee            float64       `gorm:"type:decimal(15,2);default:0" json:"admin_fee"`
+	PaymentType         string        `gorm:"size:20;default:'manual'" json:"payment_type"` // "instant" (Tripay) or "manual"
+	PaymentMethod       string        `gorm:"size:50;not null" json:"payment_method"`
+	PaymentReference    string        `gorm:"size:100" json:"payment_reference"` // PayCode / VA No
+	TripayReference     string        `gorm:"size:100" json:"tripay_reference"`
+	CheckoutURL         string        `gorm:"size:255" json:"checkout_url,omitempty"`
+	QRURL               string        `gorm:"size:255" json:"qr_url,omitempty"`
+	PaymentInstructions string        `gorm:"type:text" json:"payment_instructions,omitempty"`
+	ProofImageURL       string        `gorm:"size:255" json:"proof_image_url"`
 	Status        DepositStatus `gorm:"size:30;default:'pending';index" json:"status"`
 	Notes         string        `gorm:"size:255" json:"notes"`
 	ApprovedBy    *uint         `json:"approved_by,omitempty"`

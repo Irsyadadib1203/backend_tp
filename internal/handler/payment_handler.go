@@ -19,6 +19,7 @@ import (
 
 type PaymentHandler struct {
 	txService             service.TransactionService
+	depositService        service.DepositService
 	paymentRepo           repository.PaymentRepository
 	tripayPrivateKey      string
 	genericWebhookSecrets map[string]string
@@ -26,12 +27,14 @@ type PaymentHandler struct {
 
 func NewPaymentHandler(
 	txService service.TransactionService,
+	depositService service.DepositService,
 	paymentRepo repository.PaymentRepository,
 	tripayPrivateKey string,
 	genericWebhookSecrets map[string]string,
 ) *PaymentHandler {
 	return &PaymentHandler{
 		txService:             txService,
+		depositService:        depositService,
 		paymentRepo:           paymentRepo,
 		tripayPrivateKey:      tripayPrivateKey,
 		genericWebhookSecrets: genericWebhookSecrets,
@@ -113,11 +116,19 @@ func (h *PaymentHandler) HandleTripayCallback(c *gin.Context) {
 	}
 
 	if payload.Status == "PAID" {
-		// txService.HandlePaymentSuccess must itself re-check the transaction's
-		// expected amount against payload.TotalAmount and be idempotent
-		// (Tripay may retry the same callback more than once).
-		if err := h.txService.HandlePaymentSuccess(payload.MerchantRef, payload.Reference, payload.TotalAmount); err != nil {
-			log.Printf("[TripayCallback] HandlePaymentSuccess error for ref %s: %v", payload.MerchantRef, err)
+		if strings.HasPrefix(payload.MerchantRef, "DEP-") {
+			if h.depositService != nil {
+				if err := h.depositService.HandleTripayDepositSuccess(payload.MerchantRef, payload.Reference, payload.TotalAmount); err != nil {
+					log.Printf("[TripayCallback] Deposit HandlePaymentSuccess error for ref %s: %v", payload.MerchantRef, err)
+				}
+			}
+		} else {
+			// txService.HandlePaymentSuccess must itself re-check the transaction's
+			// expected amount against payload.TotalAmount and be idempotent
+			// (Tripay may retry the same callback more than once).
+			if err := h.txService.HandlePaymentSuccess(payload.MerchantRef, payload.Reference, payload.TotalAmount); err != nil {
+				log.Printf("[TripayCallback] HandlePaymentSuccess error for ref %s: %v", payload.MerchantRef, err)
+			}
 		}
 	}
 

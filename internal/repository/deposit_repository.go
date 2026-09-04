@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"time"
+
 	"gorm.io/gorm"
 
 	"topup-backend/internal/domain"
@@ -14,6 +16,7 @@ type DepositRepository interface {
 	ListByUser(userID uint, offset, limit int) ([]domain.DepositRequest, int64, error)
 	ListAdmin(offset, limit int, status string) ([]domain.DepositRequest, int64, error)
 	ListMutations(userID uint, offset, limit int) ([]domain.BalanceMutation, int64, error)
+	MarkAsApprovedIfPending(id uint, tripayRef string, approvedAt time.Time) (bool, error)
 }
 
 type depositRepository struct {
@@ -87,4 +90,21 @@ func (r *depositRepository) ListMutations(userID uint, offset, limit int) ([]dom
 	}
 	err := query.Preload("User").Order("id DESC").Offset(offset).Limit(limit).Find(&mutations).Error
 	return mutations, total, err
+}
+
+func (r *depositRepository) MarkAsApprovedIfPending(id uint, tripayRef string, approvedAt time.Time) (bool, error) {
+	updates := map[string]interface{}{
+		"status":      domain.DepositApproved,
+		"approved_at": approvedAt,
+	}
+	if tripayRef != "" {
+		updates["tripay_reference"] = tripayRef
+	}
+	result := r.db.Model(&domain.DepositRequest{}).
+		Where("id = ? AND status = ?", id, domain.DepositPending).
+		Updates(updates)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
 }

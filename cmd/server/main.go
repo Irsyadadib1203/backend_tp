@@ -59,7 +59,7 @@ func main() {
 	digiflazzSellerService := service.NewDigiflazzSellerService(userRepo, nominalRepo, txRepo, digiflazzBuyerService, webhookService)
 	gameService := service.NewGameService(gameRepo, nominalRepo, providerRepo, digiflazzBuyerService)
 	txService := service.NewTransactionService(txRepo, nominalRepo, gameRepo, userRepo, paymentRepo, providerRepo, digiflazzBuyerService, kiosgamerService)
-	depositService := service.NewDepositService(depositRepo, userRepo)
+	depositService := service.NewDepositService(depositRepo, userRepo, paymentRepo, nil)
 	ipService := service.NewIPWhitelistService(ipRepo)
 	rbacService := service.NewRBACService(rolePermRepo)
 
@@ -74,9 +74,10 @@ func main() {
 	rbacHandler := handler.NewRBACHandler(rbacService)
 	tripayChannelService := service.NewTripayChannelService(cfg.TripayAPIKey, cfg.TripayPrivateKey, cfg.TripayMerchantCode, cfg.TripayBaseURL, paymentRepo)
 	txService.SetTripayService(tripayChannelService)
+	depositService.SetTripayService(tripayChannelService)
 	adminHandler := handler.NewAdminHandler(gameService, txService, depositService, digiflazzBuyerService, userRepo, providerRepo, paymentRepo, bannerRepo, articleRepo, tripayChannelService)
 	ipHandler := handler.NewIPWhitelistHandler(ipService)
-	paymentHandler := handler.NewPaymentHandler(txService, paymentRepo, cfg.TripayPrivateKey, cfg.GenericWebhookSecrets)
+	paymentHandler := handler.NewPaymentHandler(txService, depositService, paymentRepo, cfg.TripayPrivateKey, cfg.GenericWebhookSecrets)
 
 	// 5.1 Start Background Auto-Sync Scheduler (Sync prices & cut-off status every 1 hour)
 	autoSyncScheduler := scheduler.NewAutoSyncScheduler(gameService, 1*time.Hour)
