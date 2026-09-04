@@ -299,8 +299,11 @@ func (s *digiflazzSellerService) ProcessH2HTransaction(req *SellerTransactionReq
 			tx.Status = domain.StatusFailed
 			now := time.Now()
 			tx.CompletedAt = &now
-			// Auto refund to partner
-			_ = s.userRepo.UpdateBalance(user.ID, price, domain.MutationCredit, "REFUND", invoiceNumber, "Pengembalian dana transaksi gagal")
+			// Auto refund to partner (idempotent)
+			hasRefunded, _ := s.userRepo.HasMutation("REFUND", invoiceNumber)
+			if !hasRefunded {
+				_ = s.userRepo.UpdateBalance(user.ID, price, domain.MutationCredit, "REFUND", invoiceNumber, "Pengembalian dana transaksi gagal")
+			}
 		} else {
 			tx.Status = domain.StatusProcessing
 		}

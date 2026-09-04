@@ -15,6 +15,7 @@ type UserRepository interface {
 	FindByAPIKey(key string) (*domain.User, *domain.APIKey, error)
 	Update(user *domain.User) error
 	UpdateBalance(userID uint, amount float64, mutationType domain.MutationType, refType, refID, desc string) error
+	HasMutation(refType, refID string) (bool, error)
 	List(offset, limit int, role string) ([]domain.User, int64, error)
 	Delete(id uint) error
 	CreateAPIKey(apiKey *domain.APIKey) error
@@ -106,6 +107,14 @@ func (r *userRepository) UpdateBalance(userID uint, amount float64, mutationType
 		}
 		return tx.Create(&mutation).Error
 	})
+}
+
+func (r *userRepository) HasMutation(refType, refID string) (bool, error) {
+	var count int64
+	err := r.db.Model(&domain.BalanceMutation{}).
+		Where("reference_type = ? AND reference_id = ?", refType, refID).
+		Count(&count).Error
+	return count > 0, err
 }
 
 func (r *userRepository) List(offset, limit int, role string) ([]domain.User, int64, error) {

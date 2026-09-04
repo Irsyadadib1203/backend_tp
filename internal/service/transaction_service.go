@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"time"
@@ -184,6 +185,98 @@ func (s *transactionService) CreateOrder(req *CreateOrderRequest) (*domain.Trans
 	return tx, nil
 }
 
+// safeRefundTransaction mengembalikan saldo pengguna secara aman dan idempotent (mencegah double-refund).
+// Mendukung metode pembayaran SALDO dan SALDO_H2H.
+func (s *transactionService) safeRefundTransaction(tx *domain.Transaction, reason string) error {
+	if tx == nil || tx.UserID == nil || *tx.UserID == 0 {
+		return nil
+	}
+	if tx.PaymentMethod != "SALDO" && tx.PaymentMethod != "SALDO_H2H" {
+		return nil
+	}
+
+	// Idempotency check: pastikan invoice ini belum pernah menerima mutasi REFUND
+	hasRefunded, err := s.userRepo.HasMutation("REFUND", tx.InvoiceNumber)
+	if err == nil && hasRefunded {
+		log.Printf("[SafeRefund] Invoice %s already refunded previously, skipping double credit.", tx.InvoiceNumber)
+		return nil
+	}
+
+	log.Printf("[SafeRefund] Refunding Rp %.0f to user ID %d for invoice %s (Reason: %s)", tx.TotalAmount, *tx.UserID, tx.InvoiceNumber, reason)
+	return s.userRepo.UpdateBalance(
+		*tx.UserID,
+		tx.TotalAmount,
+		domain.MutationCredit,
+		"REFUND",
+		tx.InvoiceNumber,
+		reason,
+	)
+}
+
+// isInternalOrProviderBalanceError mendeteksi apakah kendala berasal dari sisi kita / teknis
+// (sesi/anti-bot challenge, saldo provider kita habis, konfigurasi belum siap, jaringan, timeout).
+// Transaksi dengan error ini HARUS STUCK di 'Processing' agar bisa diproses ulang oleh admin tanpa refund prematur.
+func isInternalOrProviderBalanceError(msg string) bool {
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "saldo") ||
+		strings.Contains(m, "balance") ||
+		strings.Contains(m, "shell") ||
+		strings.Contains(m, "challenge") ||
+		strings.Contains(m, "captcha") ||
+		strings.Contains(m, "session") ||
+		strings.Contains(m, "reauth") ||
+		strings.Contains(m, "timeout") ||
+		strings.Contains(m, "timed out") ||
+		strings.Contains(m, "connection") ||
+		strings.Contains(m, "preflight") ||
+		strings.Contains(m, "totp") ||
+		strings.Contains(m, "uid") ||
+		strings.Contains(m, "konfigurasi") ||
+		strings.Contains(m, "modal") ||
+		strings.Contains(m, "harga naik") ||
+		strings.Contains(m, "harga modal") ||
+		strings.Contains(m, "server") ||
+		strings.Contains(m, "maintenance") ||
+		strings.Contains(m, "jaringan")
+}
+
+// isUserOrProductFatalError mendeteksi apakah error murni karena kesalahan input pelanggan atau produk tutup/tidak ada.
+// Transaksi dengan error ini LANGSUNG di-Failed dan di-Refund ke pelanggan.
+func isUserOrProductFatalError(msg string) bool {
+	m := strings.ToLower(msg)
+	// ID pelanggan salah / tidak ditemukan
+	if strings.Contains(m, "tidak ditemukan") ||
+		strings.Contains(m, "not found") ||
+		strings.Contains(m, "invalid") ||
+		strings.Contains(m, "salah") ||
+		strings.Contains(m, "unregistered") ||
+		strings.Contains(m, "tujuan salah") ||
+		strings.Contains(m, "nomor salah") ||
+		strings.Contains(m, "id salah") ||
+		strings.Contains(m, "user id") ||
+		strings.Contains(m, "player id") ||
+		strings.Contains(m, "karakter") ||
+		strings.Contains(m, "role") ||
+		strings.Contains(m, "banned") ||
+		strings.Contains(m, "diblokir") {
+		return true
+	}
+
+	// Produk tidak ada / tidak aktif / ditutup dari pusat
+	if strings.Contains(m, "produk tidak") ||
+		strings.Contains(m, "product not") ||
+		strings.Contains(m, "tidak tersedia") ||
+		strings.Contains(m, "ditutup") ||
+		strings.Contains(m, "cut off") ||
+		strings.Contains(m, "out of stock") ||
+		strings.Contains(m, "gangguan pusat") ||
+		strings.Contains(m, "tidak aktif") {
+		return true
+	}
+
+	return false
+}
+
 func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 	nominal, err := s.nominalRepo.FindByID(tx.NominalID)
 	if err != nil || nominal == nil {
@@ -192,15 +285,15 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 
 	// -------------------------------------------------------------------------
 	// White-Label Margin Guard (Anti-Jual Rugi):
-	// If the provider modal exceeds the customer's payment, do NOT fire provider.
-	// Keep transaction in 'processing' safely so admin balance is protected.
+	// Jika harga modal provider melebihi harga jual pelanggan,
+	// biarkan STUCK di 'processing' demi keamanan saldo admin (tanpa refund otomatis).
 	// -------------------------------------------------------------------------
 	if nominal.BasePrice > tx.SellingPrice {
 		tx.Status = domain.StatusProcessing
-		tx.ProviderStatus = "Pending"
-		tx.ProviderMessage = "Dalam antrean pemrosesan server"
+		tx.ProviderStatus = "Pending (Harga Naik)"
+		tx.ProviderMessage = "Harga modal provider melebihi pembayaran pelanggan (tertahan di antrean server)"
 		_ = s.txRepo.Update(tx)
-		_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, "Dalam antrean pemrosesan server")
+		_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, tx.ProviderMessage)
 		return nil
 	}
 
@@ -221,23 +314,16 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 		// Gunakan KiosgamerProductCode (item_id Kiosgamer), bukan ProviderProductCode (SKU Digiflazz)
 		kiosgamerSKU := nominal.KiosgamerProductCode
 		if kiosgamerSKU == "" {
-			// Fallback: tandai gagal karena SKU Kiosgamer belum dimapping
-			tx.Status = domain.StatusFailed
+			// Error dari sisi kita (belum konfigurasi item_id): STUCK DI PROCESSING (tanpa auto-refund)
+			tx.Status = domain.StatusProcessing
 			tx.ProviderStatus = "Konfigurasi Error"
-			tx.ProviderMessage = fmt.Sprintf("SKU Kiosgamer belum dikonfigurasi untuk produk '%s'. Silakan isi item_id di halaman Nominals atau gunakan Auto-Sync SKU di Kiosgamer Center.", nominal.Name)
-			now := time.Now()
-			tx.CompletedAt = &now
+			tx.ProviderMessage = fmt.Sprintf("SKU Kiosgamer belum dikonfigurasi untuk '%s'. Silakan isi item_id di Nominals lalu retry.", nominal.Name)
 			_ = s.txRepo.Update(tx)
-			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, tx.ProviderMessage)
-			// Auto-refund jika bayar dengan saldo
-			if tx.PaymentMethod == "SALDO" && tx.UserID != nil {
-				_ = s.userRepo.UpdateBalance(*tx.UserID, tx.TotalAmount, domain.MutationCredit, "REFUND", tx.InvoiceNumber, "Pengembalian dana: SKU Kiosgamer belum dikonfigurasi")
-			}
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, tx.ProviderMessage)
 			return errors.New(tx.ProviderMessage)
 		}
 
 		// Execute actual top-up via Kiosgamer menggunakan item_id yang benar
-		// Ambil slug game untuk resolusi app_id yang akurat (FF vs CODM)
 		gameSlug := ""
 		if s.gameRepo != nil {
 			if g, err := s.gameRepo.FindByID(tx.GameID); err == nil && g != nil {
@@ -264,23 +350,58 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 		}
 		if err != nil {
 			tx.RetryCount++
+			errLower := strings.ToLower(err.Error())
+
 			switch {
-			case errors.Is(err, ErrKiosgamerChallengeRequired):
+			case errors.Is(err, ErrKiosgamerChallengeRequired) || strings.Contains(errLower, "challenge") || strings.Contains(errLower, "anti-bot"):
+				// Error challenge anti-bot (dari sisi kita/sesi): STUCK DI PROCESSING
+				tx.Status = domain.StatusProcessing
 				tx.ProviderStatus = "Challenge Required"
 				tx.ProviderMessage = fmt.Sprintf("Kiosgamer anti-bot challenge: %v", err)
-			case errors.Is(err, ErrKiosgamerReauthRequired):
-				tx.ProviderStatus = "Reauth Required"
-				tx.ProviderMessage = fmt.Sprintf("Kiosgamer re-authentication required: %v", err)
-			case errors.Is(err, ErrKiosgamerSessionExpired), errors.Is(err, ErrKiosgamerNotConfigured):
+				_ = s.txRepo.Update(tx)
+				return err
+
+			case errors.Is(err, ErrKiosgamerReauthRequired) || errors.Is(err, ErrKiosgamerSessionExpired) || errors.Is(err, ErrKiosgamerNotConfigured) || strings.Contains(errLower, "session") || strings.Contains(errLower, "reauth"):
+				// Error sesi Kiosgamer (dari sisi kita): STUCK DI PROCESSING
+				tx.Status = domain.StatusProcessing
 				tx.ProviderStatus = "Session Error"
 				tx.ProviderMessage = fmt.Sprintf("Kiosgamer session error: %v", err)
+				_ = s.txRepo.Update(tx)
+				return err
+
+			case strings.Contains(errLower, "saldo") || strings.Contains(errLower, "shell") || strings.Contains(errLower, "balance") || strings.Contains(errLower, "uid") || strings.Contains(errLower, "totp") || strings.Contains(errLower, "preflight") || strings.Contains(errLower, "timeout") || strings.Contains(errLower, "connection"):
+				// Error saldo provider kita atau koneksi: STUCK DI PROCESSING
+				tx.Status = domain.StatusProcessing
+				tx.ProviderStatus = "Provider Pending"
+				tx.ProviderMessage = fmt.Sprintf("Kiosgamer kendala teknis: %v", err)
+				_ = s.txRepo.Update(tx)
+				return err
+
 			default:
-				// Error non-session: player tidak ditemukan, produk tidak ada di Kiosgamer, dll.
-				tx.ProviderStatus = "Provider Error"
-				tx.ProviderMessage = fmt.Sprintf("Kiosgamer provider error: %v", err)
+				// Periksa apakah error fatal karena ID salah atau produk tidak ada
+				if isUserOrProductFatalError(err.Error()) {
+					// ID salah / tidak ditemukan / produk tidak ada: LANGSUNG GAGAL & REFUND!
+					tx.Status = domain.StatusFailed
+					tx.ProviderStatus = "Gagal"
+					tx.ProviderMessage = fmt.Sprintf("Kiosgamer gagal: %v", err)
+					now := time.Now()
+					tx.CompletedAt = &now
+					_ = s.txRepo.Update(tx)
+					_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, tx.ProviderMessage)
+					_ = s.safeRefundTransaction(tx, fmt.Sprintf("Pengembalian dana: %s", tx.ProviderMessage))
+					sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+						"status": "failed", "invoice": tx.InvoiceNumber, "completed_at": now,
+					})
+					return err
+				}
+
+				// Error lainnya (kendala server/provider): STUCK DI PROCESSING
+				tx.Status = domain.StatusProcessing
+				tx.ProviderStatus = "Provider Pending"
+				tx.ProviderMessage = fmt.Sprintf("Kiosgamer: %v", err)
+				_ = s.txRepo.Update(tx)
+				return err
 			}
-			_ = s.txRepo.Update(tx)
-			return err
 		}
 
 		// Map Kiosgamer result → transaction status
@@ -305,18 +426,23 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 			})
 
 		case "failed":
-			tx.Status = domain.StatusFailed
-			tx.ProviderStatus = "Gagal"
-			now := time.Now()
-			tx.CompletedAt = &now
-			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, fmt.Sprintf("Kiosgamer gagal: %s", result.Message))
-			// Auto-refund if paid with balance
-			if tx.PaymentMethod == "SALDO" && tx.UserID != nil {
-				_ = s.userRepo.UpdateBalance(*tx.UserID, tx.TotalAmount, domain.MutationCredit, "REFUND", tx.InvoiceNumber, "Pengembalian dana: top up Kiosgamer gagal")
+			// Jika gagal karena saldo shell atau kendala internal kita: STUCK DI PROCESSING
+			if isInternalOrProviderBalanceError(result.Message) {
+				tx.Status = domain.StatusProcessing
+				tx.ProviderStatus = "Pending (Kendala Provider)"
+				_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, fmt.Sprintf("Kiosgamer: %s", result.Message))
+			} else {
+				// Gagal karena ID pelanggan salah / produk tutup: FAILED & AUTO-REFUND
+				tx.Status = domain.StatusFailed
+				tx.ProviderStatus = "Gagal"
+				now := time.Now()
+				tx.CompletedAt = &now
+				_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, fmt.Sprintf("Kiosgamer gagal: %s", result.Message))
+				_ = s.safeRefundTransaction(tx, "Pengembalian dana: top up Kiosgamer gagal")
+				sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+					"status": "failed", "invoice": tx.InvoiceNumber, "completed_at": now,
+				})
 			}
-			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
-				"status": "failed", "invoice": tx.InvoiceNumber,
-			})
 
 		default: // pending or unknown
 			tx.Status = domain.StatusProcessing
@@ -342,6 +468,10 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 			"timestamp": time.Now().Format(time.RFC3339),
 		})
 		tx.ProviderCallbackData = string(errJSON)
+
+		// Kendala koneksi/request Digiflazz: STUCK DI PROCESSING (tanpa auto-refund)
+		tx.Status = domain.StatusProcessing
+		tx.ProviderStatus = "Pending"
 		_ = s.txRepo.Update(tx)
 		return err
 	}
@@ -363,17 +493,22 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 			"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now,
 		})
 	} else if resp.Data.Status == "Gagal" {
-		tx.Status = domain.StatusFailed
-		now := time.Now()
-		tx.CompletedAt = &now
-		_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, fmt.Sprintf("Provider failed: %s", resp.Data.Message))
-		// Auto refund if paid with SALDO
-		if tx.PaymentMethod == "SALDO" && tx.UserID != nil {
-			_ = s.userRepo.UpdateBalance(*tx.UserID, tx.TotalAmount, domain.MutationCredit, "REFUND", tx.InvoiceNumber, "Pengembalian dana top up gagal")
+		// Jika gagal karena saldo Digiflazz kita habis atau kendala internal: STUCK DI PROCESSING
+		if isInternalOrProviderBalanceError(resp.Data.Message) {
+			tx.Status = domain.StatusProcessing
+			tx.ProviderStatus = "Pending (Kendala Provider)"
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, fmt.Sprintf("Digiflazz: %s", resp.Data.Message))
+		} else {
+			// Gagal karena nomor/ID salah atau produk tidak ada: FAILED & AUTO-REFUND
+			tx.Status = domain.StatusFailed
+			now := time.Now()
+			tx.CompletedAt = &now
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, fmt.Sprintf("Provider failed: %s", resp.Data.Message))
+			_ = s.safeRefundTransaction(tx, "Pengembalian dana top up gagal")
+			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+				"status": "failed", "invoice": tx.InvoiceNumber, "completed_at": now,
+			})
 		}
-		sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
-			"status": "failed", "invoice": tx.InvoiceNumber, "completed_at": now,
-		})
 	} else {
 		tx.Status = domain.StatusProcessing
 		_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, "Waiting for provider callback")
@@ -421,17 +556,22 @@ func (s *transactionService) HandleDigiflazzCallback(payload *DigiflazzCallbackP
 			"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now,
 		})
 	} else if status == "Gagal" {
-		tx.Status = domain.StatusFailed
-		now := time.Now()
-		tx.CompletedAt = &now
-		_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, fmt.Sprintf("Digiflazz callback: %s", payload.Data.Message))
-		// Refund if paid with saldo
-		if tx.PaymentMethod == "SALDO" && tx.UserID != nil {
-			_ = s.userRepo.UpdateBalance(*tx.UserID, tx.TotalAmount, domain.MutationCredit, "REFUND", tx.InvoiceNumber, "Pengembalian dana callback gagal")
+		// Jika gagal karena kendala saldo provider kita / teknis: STUCK DI PROCESSING
+		if isInternalOrProviderBalanceError(payload.Data.Message) {
+			tx.Status = domain.StatusProcessing
+			tx.ProviderStatus = "Pending (Kendala Provider)"
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, fmt.Sprintf("Digiflazz callback: %s", payload.Data.Message))
+		} else {
+			// ID salah / produk tidak ada: FAILED & AUTO-REFUND
+			tx.Status = domain.StatusFailed
+			now := time.Now()
+			tx.CompletedAt = &now
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, fmt.Sprintf("Digiflazz callback: %s", payload.Data.Message))
+			_ = s.safeRefundTransaction(tx, "Pengembalian dana callback gagal")
+			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+				"status": "failed", "invoice": tx.InvoiceNumber, "completed_at": now,
+			})
 		}
-		sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
-			"status": "failed", "invoice": tx.InvoiceNumber, "completed_at": now,
-		})
 	}
 
 	return s.txRepo.Update(tx)
@@ -471,7 +611,7 @@ func (s *transactionService) HandlePaymentSuccess(invoiceNumber, paymentRef stri
 		"status": "processing", "invoice": tx.InvoiceNumber,
 	})
 
-	// Fulfill order via worker pool
+	// Fire async fulfillment worker
 	targetTx := tx
 	worker.GlobalPool.Submit(func() {
 		_ = s.FulfillOrder(targetTx)
@@ -504,6 +644,25 @@ func (s *transactionService) ManualRetry(transactionID uint) error {
 	tx, err := s.txRepo.FindByID(transactionID)
 	if err != nil || tx == nil {
 		return errors.New("transaction not found")
+	}
+
+	// Jika transaksi sebelumnya berstatus GAGAL atau REFUNDED (atau sudah pernah menerima mutasi refund),
+	// saldo pengguna telah dikembalikan ke akunnya. Kita WAJIB memotong kembali saldo agar pesanan tidak gratis!
+	if (tx.PaymentMethod == "SALDO" || tx.PaymentMethod == "SALDO_H2H") && tx.UserID != nil {
+		hasRefunded, _ := s.userRepo.HasMutation("REFUND", tx.InvoiceNumber)
+		if hasRefunded || tx.Status == domain.StatusFailed || tx.Status == domain.StatusRefunded {
+			user, err := s.userRepo.FindByID(*tx.UserID)
+			if err != nil || user == nil {
+				return errors.New("akun pengguna tidak ditemukan")
+			}
+			if user.Balance < tx.TotalAmount {
+				return fmt.Errorf("saldo akun tidak mencukupi untuk diproses ulang (Saldo: Rp %.0f, Butuh: Rp %.0f)", user.Balance, tx.TotalAmount)
+			}
+			err = s.userRepo.UpdateBalance(*tx.UserID, tx.TotalAmount, domain.MutationDebit, "TRANSACTION_RETRY", tx.InvoiceNumber, fmt.Sprintf("Pemotongan saldo proses ulang transaksi %s", tx.InvoiceNumber))
+			if err != nil {
+				return fmt.Errorf("gagal memotong saldo untuk proses ulang: %w", err)
+			}
+		}
 	}
 
 	// Reset status ke Processing agar FulfillOrder dipanggil ulang.
@@ -557,8 +716,6 @@ func (s *transactionService) CheckProviderStatus(transactionID uint) (*domain.Tr
 				if err := json.Unmarshal([]byte(tx.ProviderCallbackData), &parsed); err == nil {
 					if id, ok := parsed["order_id"].(string); ok && id != "" && id != "-" {
 						displayID = id
-					} else if id, ok := parsed["display_id"].(string); ok && id != "" && id != "-" {
-						displayID = id
 					}
 				}
 			}
@@ -568,10 +725,9 @@ func (s *transactionService) CheckProviderStatus(transactionID uint) (*domain.Tr
 		if displayID != "" && displayID != "-" {
 			result, err = s.kiosgamerService.PollOrder(context.Background(), displayID)
 		} else {
-			// Jika belum ada displayID, periksa riwayat transaksi akun Kiosgamer untuk game terkait
-			appID := 100067 // default Free Fire
+			appID := 100067
 			if s.gameRepo != nil {
-				if g, err := s.gameRepo.FindByID(tx.GameID); err == nil && g != nil {
+				if g, gErr := s.gameRepo.FindByID(tx.GameID); gErr == nil && g != nil {
 					if strings.Contains(strings.ToLower(g.Slug), "codm") || strings.Contains(strings.ToLower(g.Slug), "call-of-duty") {
 						appID = 100054
 					}
@@ -602,17 +758,22 @@ func (s *transactionService) CheckProviderStatus(transactionID uint) (*domain.Tr
 				"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now,
 			})
 		} else if result.Status == "failed" {
-			tx.Status = domain.StatusFailed
-			tx.ProviderStatus = "Gagal"
-			now := time.Now()
-			tx.CompletedAt = &now
-			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, fmt.Sprintf("Kiosgamer gagal: %s", result.Message))
-			if tx.PaymentMethod == "SALDO" && tx.UserID != nil {
-				_ = s.userRepo.UpdateBalance(*tx.UserID, tx.TotalAmount, domain.MutationCredit, "REFUND", tx.InvoiceNumber, "Pengembalian dana: top up Kiosgamer gagal")
+			// Jika gagal karena kendala saldo shell atau teknis kita: STUCK DI PROCESSING
+			if isInternalOrProviderBalanceError(result.Message) {
+				tx.Status = domain.StatusProcessing
+				tx.ProviderStatus = "Pending (Kendala Provider)"
+				_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, fmt.Sprintf("Kiosgamer: %s", result.Message))
+			} else {
+				tx.Status = domain.StatusFailed
+				tx.ProviderStatus = "Gagal"
+				now := time.Now()
+				tx.CompletedAt = &now
+				_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, fmt.Sprintf("Kiosgamer gagal: %s", result.Message))
+				_ = s.safeRefundTransaction(tx, "Pengembalian dana: top up Kiosgamer gagal")
+				sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+					"status": "failed", "invoice": tx.InvoiceNumber,
+				})
 			}
-			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
-				"status": "failed", "invoice": tx.InvoiceNumber,
-			})
 		} else {
 			tx.ProviderStatus = "Pending"
 		}
@@ -644,16 +805,21 @@ func (s *transactionService) CheckProviderStatus(transactionID uint) (*domain.Tr
 				"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now,
 			})
 		} else if resp.Data.Status == "Gagal" {
-			tx.Status = domain.StatusFailed
-			now := time.Now()
-			tx.CompletedAt = &now
-			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, fmt.Sprintf("Digiflazz gagal: %s", resp.Data.Message))
-			if tx.PaymentMethod == "SALDO" && tx.UserID != nil {
-				_ = s.userRepo.UpdateBalance(*tx.UserID, tx.TotalAmount, domain.MutationCredit, "REFUND", tx.InvoiceNumber, "Pengembalian dana top up gagal")
+			// Jika gagal karena kendala saldo Digiflazz kita / teknis: STUCK DI PROCESSING
+			if isInternalOrProviderBalanceError(resp.Data.Message) {
+				tx.Status = domain.StatusProcessing
+				tx.ProviderStatus = "Pending (Kendala Provider)"
+				_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, fmt.Sprintf("Digiflazz: %s", resp.Data.Message))
+			} else {
+				tx.Status = domain.StatusFailed
+				now := time.Now()
+				tx.CompletedAt = &now
+				_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, fmt.Sprintf("Digiflazz gagal: %s", resp.Data.Message))
+				_ = s.safeRefundTransaction(tx, "Pengembalian dana top up gagal")
+				sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+					"status": "failed", "invoice": tx.InvoiceNumber,
+				})
 			}
-			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
-				"status": "failed", "invoice": tx.InvoiceNumber,
-			})
 		}
 
 		_ = s.txRepo.Update(tx)
@@ -675,7 +841,8 @@ func (s *transactionService) ManualSetSuccess(transactionID uint, notes string) 
 	// If paid with SALDO / SALDO_H2H and was previously failed/refunded,
 	// the funds were already refunded to the user. We must re-deduct the balance!
 	if (tx.PaymentMethod == "SALDO" || tx.PaymentMethod == "SALDO_H2H") && tx.UserID != nil {
-		if tx.Status == domain.StatusFailed || tx.Status == domain.StatusRefunded {
+		hasRefunded, _ := s.userRepo.HasMutation("REFUND", tx.InvoiceNumber)
+		if hasRefunded || tx.Status == domain.StatusFailed || tx.Status == domain.StatusRefunded {
 			user, err := s.userRepo.FindByID(*tx.UserID)
 			if err != nil || user == nil {
 				return errors.New("user account not found")
@@ -727,11 +894,12 @@ func (s *transactionService) ManualRefund(transactionID uint, notes string) erro
 	}
 
 	if tx.Status == domain.StatusRefunded {
-		return errors.New("transaction already refunded")
+		return errors.New("transaksi sudah pernah direfund sebelumnya")
 	}
 
-	if tx.UserID != nil {
-		_ = s.userRepo.UpdateBalance(*tx.UserID, tx.TotalAmount, domain.MutationCredit, "REFUND", tx.InvoiceNumber, fmt.Sprintf("Manual refund by admin: %s", notes))
+	// Idempotent safe refund (hanya kredit ke user jika belum pernah menerima mutasi refund)
+	if err := s.safeRefundTransaction(tx, fmt.Sprintf("Manual refund by admin: %s", notes)); err != nil {
+		return fmt.Errorf("gagal refund saldo: %w", err)
 	}
 
 	now := time.Now()
