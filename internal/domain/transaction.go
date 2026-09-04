@@ -55,6 +55,9 @@ type Transaction struct {
 	PaymentMethod        string            `gorm:"size:50" json:"payment_method"`
 	PaymentReference     string            `gorm:"size:100" json:"payment_reference"`
 	PaymentVerifiedAt    *time.Time        `json:"payment_verified_at"`
+	CheckoutURL          string            `gorm:"size:255" json:"checkout_url,omitempty"`
+	QRURL                string            `gorm:"size:255" json:"qr_url,omitempty"`
+	PaymentInstructions  string            `gorm:"type:text" json:"payment_instructions,omitempty"`
 	
 	// Provider (Digiflazz) Execution Details
 	RefID                string            `gorm:"size:100;index" json:"ref_id"` // Reference passed to provider

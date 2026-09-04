@@ -1,6 +1,10 @@
 package service
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,12 +20,12 @@ import (
 // TripayChannel mirrors the shape of one entry returned by
 // GET {base_url}/merchant/payment-channel
 type TripayChannel struct {
-	Group    string `json:"group"`
-	Code     string `json:"code"`
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	IconURL  string `json:"icon_url"`
-	Active   bool   `json:"active"`
+	Group       string `json:"group"`
+	Code        string `json:"code"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	IconURL     string `json:"icon_url"`
+	Active      bool   `json:"active"`
 	FeeMerchant struct {
 		Flat    float64 `json:"flat"`
 		Percent float64 `json:"percent"`
@@ -39,9 +43,9 @@ type TripayChannel struct {
 }
 
 type tripayChannelListResponse struct {
-	Success bool             `json:"success"`
-	Message string           `json:"message"`
-	Data    []TripayChannel  `json:"data"`
+	Success bool            `json:"success"`
+	Message string          `json:"message"`
+	Data    []TripayChannel `json:"data"`
 }
 
 // SyncResult reports what a sync run did, so the admin can see it worked
@@ -52,6 +56,57 @@ type SyncResult struct {
 	Skipped []string `json:"skipped"` // channels Tripay returned but we could not map safely
 }
 
+type TripayOrderItem struct {
+	SKU      string `json:"sku,omitempty"`
+	Name     string `json:"name"`
+	Price    int64  `json:"price"`
+	Quantity int    `json:"quantity"`
+}
+
+type TripayCreateTxRequest struct {
+	Method        string            `json:"method"`
+	MerchantRef   string            `json:"merchant_ref"`
+	Amount        int64             `json:"amount"`
+	CustomerName  string            `json:"customer_name"`
+	CustomerEmail string            `json:"customer_email"`
+	CustomerPhone string            `json:"customer_phone"`
+	OrderItems    []TripayOrderItem `json:"order_items"`
+	CallbackURL   string            `json:"callback_url,omitempty"`
+	ReturnURL     string            `json:"return_url,omitempty"`
+	ExpiredTime   int64             `json:"expired_time,omitempty"`
+	Signature     string            `json:"signature"`
+}
+
+type TripayCreateTxResponse struct {
+	Success bool                     `json:"success"`
+	Message string                   `json:"message"`
+	Data    *TripayTransactionDetail `json:"data"`
+}
+
+type TripayTransactionDetail struct {
+	Reference      string              `json:"reference"`
+	MerchantRef    string              `json:"merchant_ref"`
+	PaymentMethod  string              `json:"payment_method"`
+	PaymentName    string              `json:"payment_name"`
+	Amount         int64               `json:"amount"`
+	FeeCustomer    int64               `json:"fee_customer"`
+	TotalFee       int64               `json:"total_fee"`
+	AmountReceived int64               `json:"amount_received"`
+	PayCode        string              `json:"pay_code"`
+	PayURL         string              `json:"pay_url"`
+	CheckoutURL    string              `json:"checkout_url"`
+	Status         string              `json:"status"` // "UNPAID"
+	ExpiredTime    int64               `json:"expired_time"`
+	QRString       string              `json:"qr_string"`
+	QRURL          string              `json:"qr_url"`
+	Instructions   []TripayInstruction `json:"instructions"`
+}
+
+type TripayInstruction struct {
+	Title string   `json:"title"`
+	Steps []string `json:"steps"`
+}
+
 type TripayChannelService interface {
 	// FetchChannels calls Tripay's payment-channel API and returns the raw list.
 	FetchChannels() ([]TripayChannel, error)
@@ -59,21 +114,27 @@ type TripayChannelService interface {
 	// payment_methods, using total_fee (flat+percent) so the full cost of
 	// the channel is charged to the buyer rather than absorbed by the merchant.
 	SyncPaymentMethods() (*SyncResult, error)
+	// CreateTransaction creates a closed payment transaction in Tripay (returns VA/QRIS/link).
+	CreateTransaction(req *TripayCreateTxRequest) (*TripayTransactionDetail, error)
 }
 
 type tripayChannelService struct {
-	apiKey      string
-	baseURL     string
-	httpClient  *http.Client
-	paymentRepo repository.PaymentRepository
+	apiKey       string
+	privateKey   string
+	merchantCode string
+	baseURL      string
+	httpClient   *http.Client
+	paymentRepo  repository.PaymentRepository
 }
 
-func NewTripayChannelService(apiKey, baseURL string, paymentRepo repository.PaymentRepository) TripayChannelService {
+func NewTripayChannelService(apiKey, privateKey, merchantCode, baseURL string, paymentRepo repository.PaymentRepository) TripayChannelService {
 	return &tripayChannelService{
-		apiKey:      apiKey,
-		baseURL:     strings.TrimRight(baseURL, "/"),
-		httpClient:  &http.Client{Timeout: 15 * time.Second},
-		paymentRepo: paymentRepo,
+		apiKey:       apiKey,
+		privateKey:   privateKey,
+		merchantCode: merchantCode,
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		httpClient:   &http.Client{Timeout: 15 * time.Second},
+		paymentRepo:  paymentRepo,
 	}
 }
 
@@ -184,4 +245,54 @@ func (s *tripayChannelService) SyncPaymentMethods() (*SyncResult, error) {
 	}
 
 	return result, nil
+}
+
+func (s *tripayChannelService) CreateTransaction(req *TripayCreateTxRequest) (*TripayTransactionDetail, error) {
+	if s.apiKey == "" || s.privateKey == "" || s.merchantCode == "" {
+		return nil, fmt.Errorf("Tripay credentials (API key, private key, merchant code) belum lengkap dikonfigurasi di .env")
+	}
+
+	// Signature Tripay: HMAC-SHA256(merchantCode + merchantRef + amount, privateKey)
+	mac := hmac.New(sha256.New, []byte(s.privateKey))
+	dataToSign := fmt.Sprintf("%s%s%d", s.merchantCode, req.MerchantRef, req.Amount)
+	mac.Write([]byte(dataToSign))
+	req.Signature = hex.EncodeToString(mac.Sum(nil))
+
+	jsonBody, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	url := s.baseURL + "/transaction/create"
+	httpReq, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+s.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("gagal terhubung ke Tripay: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusBadRequest {
+		return nil, fmt.Errorf("Tripay mengembalikan HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var parsed TripayCreateTxResponse
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("gagal membaca respon Tripay: %w", err)
+	}
+	if !parsed.Success || parsed.Data == nil {
+		return nil, fmt.Errorf("Tripay API: %s", parsed.Message)
+	}
+
+	return parsed.Data, nil
 }

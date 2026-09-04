@@ -47,6 +47,9 @@ type TransactionService interface {
 	CheckProviderStatus(transactionID uint) (*domain.Transaction, error)
 	ManualSetSuccess(transactionID uint, notes string) error
 	ManualRefund(transactionID uint, notes string) error
+
+	// Tripay Integration
+	SetTripayService(tripayService TripayChannelService)
 }
 
 type transactionService struct {
@@ -58,6 +61,11 @@ type transactionService struct {
 	providerRepo     repository.ProviderRepository
 	digiflazzBuyer   DigiflazzBuyerService
 	kiosgamerService KiosgamerService
+	tripayService    TripayChannelService
+}
+
+func (s *transactionService) SetTripayService(tripayService TripayChannelService) {
+	s.tripayService = tripayService
 }
 
 func NewTransactionService(
@@ -165,6 +173,67 @@ func (s *transactionService) CreateOrder(req *CreateOrderRequest) (*domain.Trans
 		now := time.Now()
 		tx.PaymentVerifiedAt = &now
 		tx.Status = domain.StatusProcessing
+	} else if s.tripayService != nil {
+		// Integrasi Closed Payment Gateway Tripay
+		customerName := strings.TrimSpace(req.Nickname)
+		if customerName == "" {
+			customerName = strings.TrimSpace(req.CustomerID)
+		}
+		if customerName == "" {
+			customerName = "Customer"
+		}
+
+		customerEmail := strings.TrimSpace(req.CustomerEmail)
+		if customerEmail == "" {
+			customerEmail = "customer@example.com"
+		}
+
+		customerPhone := strings.TrimSpace(req.CustomerPhone)
+		if customerPhone == "" {
+			customerPhone = "081234567890"
+		}
+
+		tripayReq := &TripayCreateTxRequest{
+			Method:        req.PaymentMethod,
+			MerchantRef:   invoiceNumber,
+			Amount:        int64(math.Round(totalAmount)),
+			CustomerName:  customerName,
+			CustomerEmail: customerEmail,
+			CustomerPhone: customerPhone,
+			OrderItems: []TripayOrderItem{
+				{
+					SKU:      nominal.ProviderProductCode,
+					Name:     fmt.Sprintf("%s - %s", game.Name, nominal.Name),
+					Price:    int64(math.Round(sellingPrice)),
+					Quantity: 1,
+				},
+			},
+			ExpiredTime: time.Now().Add(24 * time.Hour).Unix(),
+		}
+
+		tripayDetail, err := s.tripayService.CreateTransaction(tripayReq)
+		if err != nil {
+			log.Printf("[Tripay] Failed to create transaction for invoice %s: %v", invoiceNumber, err)
+			return nil, fmt.Errorf("gagal membuat transaksi Tripay: %w", err)
+		}
+
+		if tripayDetail != nil {
+			tx.ProviderOrderID = tripayDetail.Reference
+			if tripayDetail.PayCode != "" {
+				tx.PaymentReference = tripayDetail.PayCode
+			} else if tripayDetail.CheckoutURL != "" {
+				tx.PaymentReference = tripayDetail.CheckoutURL
+			}
+			tx.CheckoutURL = tripayDetail.CheckoutURL
+			if tripayDetail.PayURL != "" && tx.CheckoutURL == "" {
+				tx.CheckoutURL = tripayDetail.PayURL
+			}
+			tx.QRURL = tripayDetail.QRURL
+			if len(tripayDetail.Instructions) > 0 {
+				instrBytes, _ := json.Marshal(tripayDetail.Instructions)
+				tx.PaymentInstructions = string(instrBytes)
+			}
+		}
 	}
 
 	if err := s.txRepo.Create(tx); err != nil {
