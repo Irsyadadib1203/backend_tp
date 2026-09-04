@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -118,6 +119,8 @@ type KiosgamerService interface {
 	PollOrder(ctx context.Context, displayID string) (*KiosgamerOrderResult, error)
 	// CheckRecentOrder memeriksa riwayat transaksi akun Kiosgamer untuk mendeteksi transaksi yang sukses
 	CheckRecentOrder(ctx context.Context, appID int) (*KiosgamerOrderResult, error)
+	// KeepAlive melakukan heartbeat sesi dan memperbarui cookie berotasi secara otomatis
+	KeepAlive(ctx context.Context) error
 
 	FetchCatalog(ctx context.Context, gameSlug string) ([]KiosgamerCatalogItem, error)
 	AutoSyncMapping(ctx context.Context, gameID uint, gameSlug string) (*KiosgamerSyncResult, error)
@@ -264,6 +267,47 @@ func (s *kiosgamerService) setSessionCookie(cookieInput string) {
 	s.httpClient.GetCookieJar().SetCookies(s.baseURL, []*fhttp.Cookie{{
 		Name: "session_key", Value: cookieInput, Path: "/", Secure: true, HttpOnly: true,
 	}})
+}
+
+func (s *kiosgamerService) getAllCookiesString() string {
+	if s.httpClient == nil || s.httpClient.GetCookieJar() == nil || s.baseURL == nil {
+		return ""
+	}
+	cookies := s.httpClient.GetCookieJar().Cookies(s.baseURL)
+	if len(cookies) == 0 {
+		return ""
+	}
+	var pairs []string
+	for _, c := range cookies {
+		if c.Name != "" && c.Value != "" {
+			pairs = append(pairs, fmt.Sprintf("%s=%s", c.Name, c.Value))
+		}
+	}
+	return strings.Join(pairs, "; ")
+}
+
+func (s *kiosgamerService) persistCurrentCookies() error {
+	fullCookies := s.getAllCookiesString()
+	if fullCookies == "" {
+		return nil
+	}
+	p, err := s.provider()
+	if err != nil {
+		return err
+	}
+	cred, err := s.repo.GetByProviderID(p.ID)
+	if err != nil {
+		return err
+	}
+	if cred == nil {
+		return nil
+	}
+	enc, err := appcrypto.EncryptString(fullCookies, s.cfg.AppSecret)
+	if err != nil {
+		return err
+	}
+	cred.SessionKeyEncrypted = enc
+	return s.repo.Upsert(cred)
 }
 
 func (s *kiosgamerService) cookieValue(name string) string {
@@ -912,6 +956,39 @@ func (s *kiosgamerService) CheckRecentOrder(ctx context.Context, appID int) (*Ki
 		Status:  "success",
 		Message: fmt.Sprintf("Kiosgamer top up terkonfirmasi dari riwayat akun (Display ID: %s)", latest.DisplayID),
 	}, nil
+}
+
+// KeepAlive melakukan heartbeat sesi secara berkala, memverifikasi akun, dan otomatis menyimpan cookie yang diperbarui (rotasi datadome/session_key).
+// PENTING: Tidak boleh memegang s.mu di sini karena HealthCheck dan RecoverSession sudah mengelola lock-nya sendiri secara internal.
+func (s *kiosgamerService) KeepAlive(ctx context.Context) error {
+	// 1. HealthCheck memverifikasi dan memperbarui expiry/UID
+	info, err := s.HealthCheck(ctx)
+	if err != nil {
+		// Coba recover jika sesi SSO masih bisa dipulihkan
+		log.Printf("[Kiosgamer KeepAlive] HealthCheck failed (%v), attempting session recovery...", err)
+		if recoverErr := s.RecoverSession(ctx); recoverErr != nil {
+			return fmt.Errorf("keep-alive failed: %w (recovery error: %v)", err, recoverErr)
+		}
+		// Cek ulang setelah recover
+		info, err = s.HealthCheck(ctx)
+		if err != nil {
+			return fmt.Errorf("keep-alive failed after recovery: %w", err)
+		}
+	}
+
+	// 2. Sentuh endpoint channels Kiosgamer untuk memicu rotasi cookie DataDome yang aman
+	var channels map[string]interface{}
+	_, _ = s.doJSON(ctx, http.MethodGet, "/shop/apps/channels?app_id=100067&region=CO.ID&language=id", nil, &channels)
+
+	// 3. Simpan seluruh kumpulan cookie aktif terbaru (termasuk datadome & session_key) kembali ke database terenkripsi
+	if persistErr := s.persistCurrentCookies(); persistErr != nil {
+		log.Printf("[Kiosgamer KeepAlive] Warning: Failed to persist rotated cookies: %v", persistErr)
+	}
+
+	if info != nil && info.OAuth != nil {
+		log.Printf("[Kiosgamer KeepAlive] Session healthy for user %s (UID: %d). Cookies synchronized.", info.OAuth.Username, info.OAuth.UID)
+	}
+	return nil
 }
 
 func parseKiosgamerPoll(v map[string]interface{}) (status, message, serial string) {

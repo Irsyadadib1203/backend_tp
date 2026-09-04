@@ -81,6 +81,10 @@ func main() {
 	autoSyncScheduler := scheduler.NewAutoSyncScheduler(gameService, 1*time.Hour)
 	autoSyncScheduler.Start()
 
+	// 5.2 Start Background Kiosgamer Keep-Alive Scheduler (Heartbeat & auto-persist rotated cookies every 20 minutes)
+	kiosKeepAliveScheduler := scheduler.NewKiosgamerKeepAliveScheduler(kiosgamerService, 20*time.Minute)
+	kiosKeepAliveScheduler.Start()
+
 	// 6. Router Setup
 	r := gin.Default()
 	r.MaxMultipartMemory = 8 << 20 // 8 MB
@@ -338,6 +342,7 @@ func main() {
 
 	// Stop background services gracefully
 	autoSyncScheduler.Stop()
+	kiosKeepAliveScheduler.Stop()
 	worker.GlobalPool.Stop(10 * time.Second)
 
 	log.Println("[Server] Server exited cleanly.")

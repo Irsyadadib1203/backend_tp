@@ -84,3 +84,77 @@ func (s *AutoSyncScheduler) Stop() {
 		s.wg.Wait()
 	})
 }
+
+// ---------------------------------------------------------------------------
+// KiosgamerKeepAliveScheduler
+// Memanggil KeepAlive secara berkala untuk menjaga sesi & cookie Kiosgamer
+// tetap aktif tanpa harus input manual setiap hari.
+// ---------------------------------------------------------------------------
+
+type KiosgamerKeepAliveScheduler struct {
+	kiosgamerService service.KiosgamerService
+	interval         time.Duration
+	ctx              context.Context
+	cancel           context.CancelFunc
+	wg               sync.WaitGroup
+	stopOnce         sync.Once
+}
+
+func NewKiosgamerKeepAliveScheduler(kiosgamerService service.KiosgamerService, interval time.Duration) *KiosgamerKeepAliveScheduler {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &KiosgamerKeepAliveScheduler{
+		kiosgamerService: kiosgamerService,
+		interval:         interval,
+		ctx:              ctx,
+		cancel:           cancel,
+	}
+}
+
+// Start begins the periodic keep-alive heartbeat in the background
+func (k *KiosgamerKeepAliveScheduler) Start() {
+	k.wg.Add(1)
+	go func() {
+		defer k.wg.Done()
+		log.Printf("[KiosgamerKeepAlive] Scheduler started (Interval: %v)", k.interval)
+
+		// Jalankan langsung saat server boot (tanpa delay) agar cookie langsung ter-sync
+		k.runKeepAlive()
+
+		ticker := time.NewTicker(k.interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				k.runKeepAlive()
+			case <-k.ctx.Done():
+				log.Println("[KiosgamerKeepAlive] Scheduler stopped.")
+				return
+			}
+		}
+	}()
+}
+
+func (k *KiosgamerKeepAliveScheduler) runKeepAlive() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[KiosgamerKeepAlive] Recovered from panic: %v", r)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(k.ctx, 60*time.Second)
+	defer cancel()
+
+	if err := k.kiosgamerService.KeepAlive(ctx); err != nil {
+		log.Printf("[KiosgamerKeepAlive] Warning: %v", err)
+		return
+	}
+}
+
+// Stop gracefully terminates the keep-alive scheduler
+func (k *KiosgamerKeepAliveScheduler) Stop() {
+	k.stopOnce.Do(func() {
+		k.cancel()
+		k.wg.Wait()
+	})
+}
