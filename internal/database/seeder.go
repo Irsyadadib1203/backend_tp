@@ -75,26 +75,7 @@ func SeedInitialData(db *gorm.DB) {
 		log.Println("[Seeder] Created Kiosgamer Provider config")
 	}
 
-	// 3. Seed Payment Method "Saldo Akun" saja (yang wajib ada untuk sistem)
-	//    Payment method lainnya (QRIS, VA, dll) harus ditambah manual via Admin Panel
-	var saldoMethodCount int64
-	db.Model(&domain.PaymentMethod{}).Where("code = ?", "SALDO").Count(&saldoMethodCount)
-	if saldoMethodCount == 0 {
-		db.Create(&domain.PaymentMethod{
-			Code:         "SALDO",
-			Name:         "Saldo Akun Member",
-			Category:     domain.PaymentCatBalance,
-			FixedFee:     0,
-			PercentFee:   0,
-			MinAmount:    1000,
-			MaxAmount:    10000000,
-			ImageURL:     "/images/payments/wallet.png",
-			Instructions: "Pembayaran langsung memotong saldo akun Anda secara instan.",
-			IsActive:     true,
-			SortOrder:    1,
-		})
-		log.Println("[Seeder] Created 'Saldo Akun' payment method")
-	}
+	
 
 	// 3b. Seed Payment Methods populer sebagai fallback
 	//     (akan di-update otomatis saat Tripay Sync dijalankan dari Admin Panel)
