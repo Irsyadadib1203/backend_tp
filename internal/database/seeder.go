@@ -96,6 +96,104 @@ func SeedInitialData(db *gorm.DB) {
 		log.Println("[Seeder] Created 'Saldo Akun' payment method")
 	}
 
+	// 3b. Seed Payment Methods populer sebagai fallback
+	//     (akan di-update otomatis saat Tripay Sync dijalankan dari Admin Panel)
+	fallbackMethods := []domain.PaymentMethod{
+		{
+			Code: "QRIS", Name: "QRIS (Semua Dompet Digital)",
+			Category:     domain.PaymentCatQRIS,
+			FixedFee:     0, PercentFee: 0.7,
+			MinAmount: 1000, MaxAmount: 10000000,
+			ImageURL:     "/images/payments/qris.png",
+			Instructions: "Scan QR code menggunakan aplikasi dompet digital atau mobile banking Anda.",
+			IsActive:     true, SortOrder: 2,
+		},
+		{
+			Code: "GOPAY", Name: "GoPay",
+			Category:     domain.PaymentCatEWallet,
+			FixedFee:     0, PercentFee: 1.5,
+			MinAmount: 1000, MaxAmount: 10000000,
+			ImageURL:     "/images/payments/gopay.png",
+			Instructions: "Pembayaran melalui aplikasi Gojek / GoPay.",
+			IsActive:     true, SortOrder: 3,
+		},
+		{
+			Code: "OVO", Name: "OVO",
+			Category:     domain.PaymentCatEWallet,
+			FixedFee:     0, PercentFee: 1.5,
+			MinAmount: 1000, MaxAmount: 10000000,
+			ImageURL:     "/images/payments/ovo.png",
+			Instructions: "Pembayaran melalui aplikasi OVO.",
+			IsActive:     true, SortOrder: 4,
+		},
+		{
+			Code: "DANA", Name: "DANA",
+			Category:     domain.PaymentCatEWallet,
+			FixedFee:     0, PercentFee: 1.5,
+			MinAmount: 1000, MaxAmount: 10000000,
+			ImageURL:     "/images/payments/dana.png",
+			Instructions: "Pembayaran melalui aplikasi DANA.",
+			IsActive:     true, SortOrder: 5,
+		},
+		{
+			Code: "SHOPEE_PAY", Name: "ShopeePay",
+			Category:     domain.PaymentCatEWallet,
+			FixedFee:     0, PercentFee: 1.5,
+			MinAmount: 1000, MaxAmount: 10000000,
+			ImageURL:     "/images/payments/shopeepay.png",
+			Instructions: "Pembayaran melalui aplikasi Shopee.",
+			IsActive:     true, SortOrder: 6,
+		},
+		{
+			Code: "BCAVA", Name: "BCA Virtual Account",
+			Category:     domain.PaymentCatVirtualAccount,
+			FixedFee:     4000, PercentFee: 0,
+			MinAmount: 10000, MaxAmount: 100000000,
+			ImageURL:     "/images/payments/bca.png",
+			Instructions: "Transfer ke nomor Virtual Account BCA yang tertera pada invoice.",
+			IsActive:     true, SortOrder: 7,
+		},
+		{
+			Code: "BRIVA", Name: "BRI Virtual Account",
+			Category:     domain.PaymentCatVirtualAccount,
+			FixedFee:     4000, PercentFee: 0,
+			MinAmount: 10000, MaxAmount: 100000000,
+			ImageURL:     "/images/payments/bri.png",
+			Instructions: "Transfer ke nomor Virtual Account BRI yang tertera pada invoice.",
+			IsActive:     true, SortOrder: 8,
+		},
+		{
+			Code: "MANDIRIVA", Name: "Mandiri Virtual Account",
+			Category:     domain.PaymentCatVirtualAccount,
+			FixedFee:     4000, PercentFee: 0,
+			MinAmount: 10000, MaxAmount: 100000000,
+			ImageURL:     "/images/payments/mandiri.png",
+			Instructions: "Bayar ke nomor Virtual Account Mandiri via ATM, m-Banking, atau internet banking.",
+			IsActive:     true, SortOrder: 9,
+		},
+		{
+			Code: "BNIVA", Name: "BNI Virtual Account",
+			Category:     domain.PaymentCatVirtualAccount,
+			FixedFee:     4000, PercentFee: 0,
+			MinAmount: 10000, MaxAmount: 100000000,
+			ImageURL:     "/images/payments/bni.png",
+			Instructions: "Transfer ke nomor Virtual Account BNI yang tertera pada invoice.",
+			IsActive:     true, SortOrder: 10,
+		},
+	}
+
+	for _, pm := range fallbackMethods {
+		var count int64
+		db.Model(&domain.PaymentMethod{}).Where("code = ?", pm.Code).Count(&count)
+		if count == 0 {
+			if err := db.Create(&pm).Error; err != nil {
+				log.Printf("[Seeder] Failed to create payment method %s: %v", pm.Code, err)
+			} else {
+				log.Printf("[Seeder] Created payment method: %s", pm.Name)
+			}
+		}
+	}
+
 	// 4. Seed Global IP Whitelist Localhost (untuk development)
 	var globalIpCount int64
 	db.Model(&domain.IPWhitelist{}).Where("user_id IS NULL AND ip_address = ?", "127.0.0.1").Count(&globalIpCount)
