@@ -5,7 +5,7 @@ import "time"
 // Banner adalah model untuk slide promo carousel di halaman utama frontend.
 type Banner struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
-	Title     string    `gorm:"size:200;not null" json:"title"`
+	Title     string    `gorm:"size:200;default:null" json:"title"`
 	Subtitle  string    `gorm:"type:text" json:"subtitle"`
 	ImageURL  string    `gorm:"size:500;not null" json:"image_url"`
 	LinkURL   string    `gorm:"size:500" json:"link_url"`

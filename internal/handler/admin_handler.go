@@ -588,6 +588,10 @@ func (h *AdminHandler) CreateBanner(c *gin.Context) {
 		response.BadRequest(c, "Invalid banner data", err.Error())
 		return
 	}
+	if b.ImageURL == "" {
+		response.BadRequest(c, "image_url is required", nil)
+		return
+	}
 	if err := h.bannerRepo.Create(&b); err != nil {
 		response.InternalServerError(c, "Failed to create banner", err)
 		return
