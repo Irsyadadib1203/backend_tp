@@ -50,9 +50,28 @@ func (s *nicknameService) CheckNickname(gameCode, userID, serverID string) (*Nic
 	case "MOBILE_LEGENDS", "MLBB", "MOBILE-LEGENDS":
 		return s.checkMLBB(userID, serverID)
 	case "FREE_FIRE", "FF", "FREE-FIRE":
-		return s.checkFreeFire(userID)
-	case "GENSHIN_IMPACT", "GENSHIN":
-		return s.checkGenshin(userID, serverID)
+		return s.checkGoPayPrepare("FREEFIRE", "FREE_FIRE", "Free Fire", userID, serverID)
+	case "PUBG_MOBILE", "PUBGM", "PUBG-MOBILE":
+		return s.checkGoPayPrepare("PUBGM", "PUBG_MOBILE", "PUBG Mobile", userID, serverID)
+	case "AOV", "ARENA_OF_VALOR", "ARENA-OF-VALOR", "ARENAOFVALOR":
+		return s.checkGoPayPrepare("AOV", "AOV", "Arena of Valor", userID, serverID)
+	case "CALL_OF_DUTY", "CODM", "CALL-OF-DUTY", "CALLOFDUTY":
+		return s.checkGoPayPrepare("CALL_OF_DUTY", "CALL_OF_DUTY", "Call of Duty Mobile", userID, serverID)
+	case "HOK", "HONOR_OF_KINGS", "HONOR-OF-KINGS", "HONOROFKINGS":
+		return s.checkGoPayPrepare("HOK", "HOK", "Honor of Kings", userID, serverID)
+	case "GENSHIN_IMPACT", "GENSHIN", "GENSHIN-IMPACT":
+		return s.checkHoyoverse("GENSHIN_IMPACT", "Traveler", userID, serverID)
+	case "HONKAI_STAR_RAIL", "HSR", "HONKAI-STAR-RAIL", "HONKAISTARRAIL":
+		return s.checkHoyoverse("HONKAI_STAR_RAIL", "Trailblazer", userID, serverID)
+	case "VALORANT", "VALO":
+		return &NicknameCheckResult{
+			Success:  true,
+			GameCode: "VALORANT",
+			UserID:   userID,
+			ServerID: serverID,
+			Nickname: userID,
+			Message:  "Riot ID valid",
+		}, nil
 	default:
 		// Generic or mock validator for testing & other games
 		return &NicknameCheckResult{
@@ -135,22 +154,19 @@ func (s *nicknameService) checkMLBB(userID, zoneID string) (*NicknameCheckResult
 	return nil, errors.New("User ID atau Zone ID Mobile Legends tidak ditemukan")
 }
 
-func (s *nicknameService) checkFreeFire(userID string) (*NicknameCheckResult, error) {
-	url := fmt.Sprintf("https://gopay.co.id/games/v1/order/prepare/FREEFIRE?userId=%s&zoneId=", userID)
+// checkGoPayPrepare menangani pengecekan nickname via GoPay Prepare API (Free Fire, PUBGM, AOV, CODM, HOK)
+func (s *nicknameService) checkGoPayPrepare(gopayCode, returnCode, gameName, userID, zoneID string) (*NicknameCheckResult, error) {
+	url := fmt.Sprintf("https://gopay.co.id/games/v1/order/prepare/%s?userId=%s&zoneId=%s", gopayCode, userID, zoneID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+	req.Header.Set("Accept", "application/json")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return &NicknameCheckResult{
-			Success:  true,
-			GameCode: "FREE_FIRE",
-			UserID:   userID,
-			Nickname: fmt.Sprintf("Survivor_%s", userID),
-		}, nil
+		return nil, fmt.Errorf("layanan verifikasi %s sedang tidak tersedia", gameName)
 	}
 	defer resp.Body.Close()
 
@@ -159,45 +175,78 @@ func (s *nicknameService) checkFreeFire(userID string) (*NicknameCheckResult, er
 		return nil, err
 	}
 
-	var jsonResp struct {
+	// 1. Format jika response string langsung: {"data": "Nickname123", "message": "success"}
+	var jsonRespStr struct {
 		Data    string `json:"data"`
 		Message string `json:"message"`
 	}
-
-	if err := json.Unmarshal(body, &jsonResp); err == nil && jsonResp.Data != "" {
+	if err := json.Unmarshal(body, &jsonRespStr); err == nil && jsonRespStr.Data != "" {
 		return &NicknameCheckResult{
 			Success:  true,
-			GameCode: "FREE_FIRE",
+			GameCode: returnCode,
 			UserID:   userID,
-			Nickname: jsonResp.Data,
+			ServerID: zoneID,
+			Nickname: jsonRespStr.Data,
 		}, nil
 	}
 
-	return nil, errors.New("Player ID Free Fire tidak valid")
-}
-
-func (s *nicknameService) checkGenshin(userID, serverID string) (*NicknameCheckResult, error) {
-	if len(userID) != 9 && len(userID) != 10 {
-		return nil, errors.New("UID Genshin Impact harus 9 atau 10 digit")
+	// 2. Format jika response nested object: {"data": {"username": "Nickname123"}}
+	var jsonRespObj struct {
+		Data struct {
+			Username string `json:"username"`
+			Name     string `json:"name"`
+		} `json:"data"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &jsonRespObj); err == nil {
+		name := jsonRespObj.Data.Username
+		if name == "" {
+			name = jsonRespObj.Data.Name
+		}
+		if name != "" {
+			return &NicknameCheckResult{
+				Success:  true,
+				GameCode: returnCode,
+				UserID:   userID,
+				ServerID: zoneID,
+				Nickname: name,
+			}, nil
+		}
+		if jsonRespObj.Message != "" {
+			return nil, errors.New(jsonRespObj.Message)
+		}
 	}
 
-	serverName := "Asia"
-	switch string(userID[0]) {
-	case "6":
-		serverName = "America (NA)"
-	case "7":
-		serverName = "Europe (EU)"
-	case "8", "18":
-		serverName = "Asia"
-	case "9":
-		serverName = "TW/HK/MO"
+	return nil, fmt.Errorf("Player ID %s tidak valid atau tidak ditemukan", gameName)
+}
+
+// checkHoyoverse menangani UID dan Server untuk Genshin Impact & Honkai: Star Rail
+func (s *nicknameService) checkHoyoverse(gameCode, charTitle, userID, serverID string) (*NicknameCheckResult, error) {
+	if len(userID) < 8 || len(userID) > 11 {
+		return nil, fmt.Errorf("UID %s harus berupa 9-10 digit angka", strings.ReplaceAll(gameCode, "_", " "))
+	}
+
+	serverName := serverID
+	if serverName == "" {
+		switch string(userID[0]) {
+		case "6":
+			serverName = "America"
+		case "7":
+			serverName = "Europe"
+		case "8", "18":
+			serverName = "Asia"
+		case "9":
+			serverName = "TW,HK,MO"
+		default:
+			serverName = "Asia"
+		}
 	}
 
 	return &NicknameCheckResult{
 		Success:  true,
-		GameCode: "GENSHIN_IMPACT",
+		GameCode: gameCode,
 		UserID:   userID,
 		ServerID: serverName,
-		Nickname: fmt.Sprintf("Traveler_%s (%s)", userID, serverName),
+		Nickname: fmt.Sprintf("%s_%s (%s)", charTitle, userID, serverName),
 	}, nil
 }
