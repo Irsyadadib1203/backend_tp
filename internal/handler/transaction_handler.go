@@ -79,6 +79,11 @@ func (h *TransactionHandler) GetByInvoice(c *gin.Context) {
 		nominalName = tx.Nominal.Name
 	}
 
+	sn := tx.SN
+	if sn == "" && tx.Status == "success" {
+		sn = tx.PaymentReference
+	}
+
 	// 100% White-Label Sanitized Output (hides base_price, profit, provider internals)
 	publicInvoice := gin.H{
 		"id":                  tx.ID,
@@ -96,6 +101,7 @@ func (h *TransactionHandler) GetByInvoice(c *gin.Context) {
 		"payment_method":      tx.PaymentMethod,
 		"payment_reference":   tx.PaymentReference,
 		"payment_verified_at": tx.PaymentVerifiedAt,
+		"sn":                  sn,
 		"created_at":          tx.CreatedAt,
 		"completed_at":        tx.CompletedAt,
 	}

@@ -65,6 +65,7 @@ type Transaction struct {
 	ProviderStatus       string            `gorm:"size:50" json:"provider_status"`
 	ProviderMessage      string            `gorm:"size:255" json:"provider_message"`
 	ProviderCallbackData string            `gorm:"type:text" json:"provider_callback_data"`
+	SN                   string            `gorm:"size:255" json:"sn"` // Serial number / Voucher code from provider
 	
 	// Retries & Completion
 	RetryCount           int               `gorm:"default:0" json:"retry_count"`

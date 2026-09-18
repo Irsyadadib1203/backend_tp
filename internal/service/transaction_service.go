@@ -45,7 +45,7 @@ type TransactionService interface {
 	// Admin overrides
 	ManualRetry(transactionID uint) error
 	CheckProviderStatus(transactionID uint) (*domain.Transaction, error)
-	ManualSetSuccess(transactionID uint, notes string) error
+	ManualSetSuccess(transactionID uint, notes string, sn string) error
 	ManualRefund(transactionID uint, notes string) error
 
 	// Tripay Integration
@@ -486,12 +486,17 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 		case "success":
 			tx.Status = domain.StatusSuccess
 			tx.ProviderStatus = "Sukses"
-			tx.PaymentReference = result.SerialNumber
+			if result.SerialNumber != "" {
+				tx.SN = result.SerialNumber
+			}
+			if tx.PaymentReference == "" {
+				tx.PaymentReference = result.SerialNumber
+			}
 			now := time.Now()
 			tx.CompletedAt = &now
 			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusSuccess, "Kiosgamer: top up berhasil diproses")
 			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
-				"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now,
+				"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now, "sn": tx.SN,
 			})
 
 		case "failed":
@@ -548,7 +553,12 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 	tx.ProviderStatus = resp.Data.Status
 	tx.ProviderMessage = resp.Data.Message
 	tx.ProviderOrderID = resp.Data.RefID
-	tx.PaymentReference = resp.Data.SN
+	if resp.Data.SN != "" {
+		tx.SN = resp.Data.SN
+	}
+	if tx.PaymentReference == "" && resp.Data.SN != "" {
+		tx.PaymentReference = resp.Data.SN
+	}
 
 	respJSON, _ := json.Marshal(resp.Data)
 	tx.ProviderCallbackData = string(respJSON)
@@ -559,7 +569,7 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 		tx.CompletedAt = &now
 		_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusSuccess, "Provider completed transaction successfully")
 		sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
-			"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now,
+			"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now, "sn": tx.SN,
 		})
 	} else if resp.Data.Status == "Gagal" {
 		// Jika gagal karena saldo Digiflazz kita habis atau kendala internal: STUCK DI PROCESSING
@@ -611,7 +621,12 @@ func (s *transactionService) HandleDigiflazzCallback(payload *DigiflazzCallbackP
 	status := payload.Data.Status
 	tx.ProviderStatus = status
 	tx.ProviderMessage = payload.Data.Message
-	tx.PaymentReference = payload.Data.SN
+	if payload.Data.SN != "" {
+		tx.SN = payload.Data.SN
+	}
+	if tx.PaymentReference == "" && payload.Data.SN != "" {
+		tx.PaymentReference = payload.Data.SN
+	}
 
 	callbackJSON, _ := json.Marshal(payload.Data)
 	tx.ProviderCallbackData = string(callbackJSON)
@@ -622,7 +637,7 @@ func (s *transactionService) HandleDigiflazzCallback(payload *DigiflazzCallbackP
 		tx.CompletedAt = &now
 		_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusSuccess, "Digiflazz callback: Sukses")
 		sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
-			"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now,
+			"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now, "sn": tx.SN,
 		})
 	} else if status == "Gagal" {
 		// Jika gagal karena kendala saldo provider kita / teknis: STUCK DI PROCESSING
@@ -861,7 +876,12 @@ func (s *transactionService) CheckProviderStatus(transactionID uint) (*domain.Tr
 		tx.ProviderStatus = resp.Data.Status
 		tx.ProviderMessage = resp.Data.Message
 		tx.ProviderOrderID = resp.Data.RefID
-		tx.PaymentReference = resp.Data.SN
+		if resp.Data.SN != "" {
+			tx.SN = resp.Data.SN
+		}
+		if tx.PaymentReference == "" && resp.Data.SN != "" {
+			tx.PaymentReference = resp.Data.SN
+		}
 		respJSON, _ := json.Marshal(resp.Data)
 		tx.ProviderCallbackData = string(respJSON)
 
@@ -871,7 +891,7 @@ func (s *transactionService) CheckProviderStatus(transactionID uint) (*domain.Tr
 			tx.CompletedAt = &now
 			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusSuccess, "Digiflazz: terkonfirmasi sukses")
 			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
-				"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now,
+				"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now, "sn": tx.SN,
 			})
 		} else if resp.Data.Status == "Gagal" {
 			// Jika gagal karena kendala saldo Digiflazz kita / teknis: STUCK DI PROCESSING
@@ -886,7 +906,7 @@ func (s *transactionService) CheckProviderStatus(transactionID uint) (*domain.Tr
 				_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, fmt.Sprintf("Digiflazz gagal: %s", resp.Data.Message))
 				_ = s.safeRefundTransaction(tx, "Pengembalian dana top up gagal")
 				sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
-					"status": "failed", "invoice": tx.InvoiceNumber,
+					"status": "failed", "invoice": tx.InvoiceNumber, "completed_at": now,
 				})
 			}
 		}
@@ -897,7 +917,7 @@ func (s *transactionService) CheckProviderStatus(transactionID uint) (*domain.Tr
 	return tx, nil
 }
 
-func (s *transactionService) ManualSetSuccess(transactionID uint, notes string) error {
+func (s *transactionService) ManualSetSuccess(transactionID uint, notes string, sn string) error {
 	tx, err := s.txRepo.FindByID(transactionID)
 	if err != nil || tx == nil {
 		return errors.New("transaction not found")
@@ -932,6 +952,11 @@ func (s *transactionService) ManualSetSuccess(transactionID uint, notes string) 
 	if tx.PaymentVerifiedAt == nil {
 		tx.PaymentVerifiedAt = &now
 	}
+	if sn != "" {
+		tx.SN = sn
+	} else if notes != "" && tx.SN == "" {
+		tx.SN = notes
+	}
 	if notes != "" {
 		tx.ProviderMessage = "Manual success: " + notes
 		if tx.PaymentReference == "" {
@@ -942,7 +967,7 @@ func (s *transactionService) ManualSetSuccess(transactionID uint, notes string) 
 	manualSuccessJSON, _ := json.Marshal(map[string]interface{}{
 		"source":        "ADMIN_MANUAL_ACTION",
 		"status":        "Sukses",
-		"sn":            tx.PaymentReference,
+		"sn":            tx.SN,
 		"notes":         notes,
 		"completed_at":  now.Format(time.RFC3339),
 	})
@@ -951,7 +976,7 @@ func (s *transactionService) ManualSetSuccess(transactionID uint, notes string) 
 	_ = s.txRepo.Update(tx)
 	err = s.txRepo.UpdateStatus(transactionID, domain.StatusSuccess, fmt.Sprintf("Manual success by admin: %s", notes))
 	sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
-		"status": "success", "invoice": tx.InvoiceNumber, "completed_at": tx.CompletedAt,
+		"status": "success", "invoice": tx.InvoiceNumber, "completed_at": tx.CompletedAt, "sn": tx.SN,
 	})
 	return err
 }

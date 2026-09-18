@@ -2,6 +2,7 @@ package handler
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -285,15 +286,9 @@ func (h *AdminHandler) ManualSuccessTx(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 
 	notes := req.Notes
-	if req.SN != "" {
-		if notes != "" {
-			notes = req.SN + " | " + notes
-		} else {
-			notes = req.SN
-		}
-	}
+	sn := strings.TrimSpace(req.SN)
 
-	if err := h.txService.ManualSetSuccess(uint(id), notes); err != nil {
+	if err := h.txService.ManualSetSuccess(uint(id), notes, sn); err != nil {
 		response.BadRequest(c, err.Error(), nil)
 		return
 	}
