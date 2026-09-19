@@ -741,3 +741,109 @@ func (h *AdminHandler) BatchSwitchProvider(c *gin.Context) {
 
 	response.BadRequest(c, "Either nominal_ids or game_id must be provided", nil)
 }
+
+// ====================== PROFILE (Self) ======================
+
+// GetMyProfile returns the logged-in admin's own profile.
+func (h *AdminHandler) GetMyProfile(c *gin.Context) {
+	userID, _ := c.Get("user_id")
+	user, err := h.userRepo.FindByID(userID.(uint))
+	if err != nil || user == nil {
+		response.NotFound(c, "Admin not found")
+		return
+	}
+	response.Success(c, "Profile loaded", gin.H{
+		"id":           user.ID,
+		"name":         user.Name,
+		"email":        user.Email,
+		"phone_number": user.PhoneNumber,
+		"role":         user.Role,
+		"tier":         user.Tier,
+	})
+}
+
+// UpdateMyProfile lets the logged-in admin update their name, email, and phone.
+func (h *AdminHandler) UpdateMyProfile(c *gin.Context) {
+	userID, _ := c.Get("user_id")
+	user, err := h.userRepo.FindByID(userID.(uint))
+	if err != nil || user == nil {
+		response.NotFound(c, "Admin not found")
+		return
+	}
+
+	var req struct {
+		Name        string `json:"name"`
+		Email       string `json:"email"`
+		PhoneNumber string `json:"phone_number"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid data", err.Error())
+		return
+	}
+
+	if req.Name != "" {
+		user.Name = req.Name
+	}
+	if req.Email != "" {
+		// Check email not already used by another user
+		existing, _ := h.userRepo.FindByEmail(req.Email)
+		if existing != nil && existing.ID != user.ID {
+			response.BadRequest(c, "Email sudah digunakan oleh akun lain", nil)
+			return
+		}
+		user.Email = req.Email
+	}
+	if req.PhoneNumber != "" {
+		user.PhoneNumber = req.PhoneNumber
+	}
+
+	if err := h.userRepo.Update(user); err != nil {
+		response.InternalServerError(c, "Failed to update profile", err)
+		return
+	}
+
+	response.Success(c, "Profil berhasil diperbarui", gin.H{
+		"id":           user.ID,
+		"name":         user.Name,
+		"email":        user.Email,
+		"phone_number": user.PhoneNumber,
+	})
+}
+
+// ChangeMyPassword lets the logged-in admin change their own password.
+func (h *AdminHandler) ChangeMyPassword(c *gin.Context) {
+	userID, _ := c.Get("user_id")
+	user, err := h.userRepo.FindByID(userID.(uint))
+	if err != nil || user == nil {
+		response.NotFound(c, "Admin not found")
+		return
+	}
+
+	var req struct {
+		CurrentPassword string `json:"current_password" binding:"required"`
+		NewPassword     string `json:"new_password" binding:"required,min=6"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid data: "+err.Error(), nil)
+		return
+	}
+
+	if !crypto.CheckPasswordHash(req.CurrentPassword, user.Password) {
+		response.BadRequest(c, "Password lama tidak sesuai", nil)
+		return
+	}
+
+	hashed, err := crypto.HashPassword(req.NewPassword)
+	if err != nil {
+		response.InternalServerError(c, "Failed to hash password", err)
+		return
+	}
+
+	user.Password = hashed
+	if err := h.userRepo.Update(user); err != nil {
+		response.InternalServerError(c, "Failed to update password", err)
+		return
+	}
+
+	response.Success(c, "Password berhasil diubah", nil)
+}

@@ -193,6 +193,11 @@ func main() {
 			admin.GET("/rbac/permissions", middleware.RequireRole(domain.RoleSuperAdmin), rbacHandler.GetRolePermissions)
 			admin.POST("/rbac/permissions", middleware.RequireRole(domain.RoleSuperAdmin), rbacHandler.UpdateRolePermissions)
 
+			// Profile self-management (no extra permission needed — any admin can manage their own account)
+			admin.GET("/me", adminHandler.GetMyProfile)
+			admin.PUT("/me", adminHandler.UpdateMyProfile)
+			admin.PUT("/me/change-password", adminHandler.ChangeMyPassword)
+
 			// Dashboard
 			admin.GET("/dashboard/stats", middleware.RequirePermission(rbacService, domain.ResourceDashboard), adminHandler.GetDashboardStats)
 
