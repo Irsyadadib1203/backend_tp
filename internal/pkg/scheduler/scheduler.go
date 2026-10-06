@@ -100,6 +100,52 @@ type KiosgamerKeepAliveScheduler struct {
 	stopOnce         sync.Once
 }
 
+// ProviderBalanceRetryService is deliberately narrow so the scheduler cannot
+// perform arbitrary transaction mutations.
+type ProviderBalanceRetryService interface {
+	RetryDigiflazzBalanceHolds() (int, error)
+}
+
+type ProviderBalanceRetryScheduler struct {
+	service  ProviderBalanceRetryService
+	interval time.Duration
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	stopOnce sync.Once
+}
+
+func NewProviderBalanceRetryScheduler(service ProviderBalanceRetryService, interval time.Duration) *ProviderBalanceRetryScheduler {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &ProviderBalanceRetryScheduler{service: service, interval: interval, ctx: ctx, cancel: cancel}
+}
+
+func (s *ProviderBalanceRetryScheduler) Start() {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		log.Printf("[ProviderBalanceRetry] Scheduler started (interval: %s)", s.interval)
+		ticker := time.NewTicker(s.interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				count, err := s.service.RetryDigiflazzBalanceHolds()
+				if err != nil {
+					log.Printf("[ProviderBalanceRetry] Digiflazz check skipped: %v", err)
+				} else if count > 0 {
+					log.Printf("[ProviderBalanceRetry] Resubmitted %d Digiflazz balance-held transaction(s)", count)
+				}
+			case <-s.ctx.Done():
+				log.Println("[ProviderBalanceRetry] Scheduler stopped.")
+				return
+			}
+		}
+	}()
+}
+
+func (s *ProviderBalanceRetryScheduler) Stop() { s.stopOnce.Do(func() { s.cancel(); s.wg.Wait() }) }
+
 func NewKiosgamerKeepAliveScheduler(kiosgamerService service.KiosgamerService, interval time.Duration) *KiosgamerKeepAliveScheduler {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &KiosgamerKeepAliveScheduler{

@@ -30,6 +30,10 @@ type TransactionRepository interface {
 	// updated_at only when the transaction is still processing and stale, so
 	// concurrent schedulers do not issue duplicate status checks.
 	ClaimProcessingForReconciliation(id uint, staleBefore time.Time) (bool, error)
+	// FindProcessingBalanceHolds returns retry-safe transactions that stopped
+	// because the selected provider reported insufficient balance and has not
+	// returned a provider order ID.
+	FindProcessingBalanceHolds(providerID uint, batchSize int) ([]domain.Transaction, error)
 	ListRecent(limit int) ([]domain.Transaction, error)
 	ListByUser(userID uint, offset, limit int) ([]domain.Transaction, int64, error)
 	ListAdmin(offset, limit int, status, search, startDate, endDate string) ([]domain.Transaction, int64, error)
@@ -134,6 +138,16 @@ func (r *transactionRepository) ClaimProcessingForReconciliation(id uint, staleB
 		return false, result.Error
 	}
 	return result.RowsAffected > 0, nil
+}
+
+func (r *transactionRepository) FindProcessingBalanceHolds(providerID uint, batchSize int) ([]domain.Transaction, error) {
+	var txs []domain.Transaction
+	err := r.db.Preload("Nominal").Preload("Provider").
+		Where("status = ? AND provider_id = ?", domain.StatusProcessing, providerID).
+		Where("provider_order_id IS NULL OR provider_order_id = '' OR provider_order_id = '-' ").
+		Where("LOWER(provider_status) LIKE ? OR LOWER(provider_message) LIKE ? OR LOWER(provider_message) LIKE ?", "%saldo%", "%saldo%", "%balance%").
+		Order("updated_at ASC").Limit(batchSize).Find(&txs).Error
+	return txs, err
 }
 
 func (r *transactionRepository) UpdateStatus(id uint, newStatus domain.TransactionStatus, reason string) error {

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	appconfig "topup-backend/config"
 	"topup-backend/internal/protocol/otomaxhttp"
 	"topup-backend/internal/provider"
 	"topup-backend/internal/repository"
@@ -164,11 +165,21 @@ func (a *Adapter) load() (*otomaxhttp.Client, *provider.DeclarativeProviderConfi
 	if !strings.EqualFold(cfg.Protocol, "otomax_http") {
 		return nil, nil, nil, fmt.Errorf("provider protocol must be otomax_http")
 	}
+	apiKey := record.APIKey
+	if strings.TrimSpace(cfg.EncryptedSecret) != "" {
+		if appconfig.AppConfig == nil {
+			return nil, nil, nil, errors.New("application configuration is unavailable for secret decryption")
+		}
+		apiKey, err = provider.DecryptConfigSecret(cfg.EncryptedSecret, appconfig.AppConfig.AppSecret)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("decrypt OtoMax API key: %w", err)
+		}
+	}
 	client, err := otomaxhttp.NewClient(cfg.BaseURL, a.httpClient)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	return client, cfg, &domainProvider{APIKey: record.APIKey}, nil
+	return client, cfg, &domainProvider{APIKey: apiKey}, nil
 }
 
 // domainProvider prevents protocol details from depending on the domain model.
@@ -266,6 +277,7 @@ func pendingResult(reason string) *provider.Result {
 }
 
 func callbackInvoiceNumber(raw string) string {
+	raw = string(provider.ResponseFromExchange(raw))
 	if strings.TrimSpace(raw) == "" {
 		return ""
 	}

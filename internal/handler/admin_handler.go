@@ -1,14 +1,17 @@
 package handler
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
+	appconfig "topup-backend/config"
 	"topup-backend/internal/domain"
 	"topup-backend/internal/pkg/crypto"
 	"topup-backend/internal/pkg/response"
+	"topup-backend/internal/provider"
 	"topup-backend/internal/repository"
 	"topup-backend/internal/service"
 )
@@ -51,8 +54,6 @@ func NewAdminHandler(
 		tripayChannelService: tripayChannelService,
 	}
 }
-
-
 
 func (h *AdminHandler) GetDashboardStats(c *gin.Context) {
 	stats, err := h.txService.GetDashboardStats()
@@ -373,12 +374,12 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 	}
 
 	var req struct {
-		Name        string      `json:"name"`
-		Role        domain.Role `json:"role"`
-		Tier        domain.Tier `json:"tier"`
-		IsActive    *bool       `json:"is_active"`
-		BalanceAdj  float64     `json:"balance_adjustment"` // Add or subtract
-		Reason      string      `json:"adjustment_reason"`
+		Name       string      `json:"name"`
+		Role       domain.Role `json:"role"`
+		Tier       domain.Tier `json:"tier"`
+		IsActive   *bool       `json:"is_active"`
+		BalanceAdj float64     `json:"balance_adjustment"` // Add or subtract
+		Reason     string      `json:"adjustment_reason"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -698,7 +699,164 @@ func (h *AdminHandler) GetProviders(c *gin.Context) {
 		response.InternalServerError(c, "Failed to load providers", err)
 		return
 	}
-	response.Success(c, "Providers loaded", providers)
+	// Never expose provider credentials/configuration through the list used by
+	// Nominal dropdowns and the browser.
+	safe := make([]gin.H, 0, len(providers))
+	for _, item := range providers {
+		safe = append(safe, gin.H{"id": item.ID, "name": item.Name, "code": item.Code, "base_url": item.BaseURL, "is_active": item.IsActive, "api_key_configured": item.APIKey != "" || strings.Contains(item.Config, "encrypted_secret")})
+	}
+	response.Success(c, "Providers loaded", safe)
+}
+
+type ProviderReferenceSettingsRequest struct {
+	InvoiceTemplate string `json:"invoice_template"`
+	RefIDTemplate   string `json:"ref_id_template"`
+}
+
+func (h *AdminHandler) GetProviderReferenceSettings(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	record, err := h.providerRepo.GetByID(uint(id))
+	if err != nil || record == nil {
+		response.NotFound(c, "Provider tidak ditemukan")
+		return
+	}
+	reference := provider.ParseReferenceConfig(record.Config)
+	response.Success(c, "Provider reference settings loaded", gin.H{"id": record.ID, "name": record.Name, "code": record.Code, "invoice_template": reference.InvoiceTemplate, "ref_id_template": reference.RefIDTemplate, "tokens": []string{"{date}", "{time}", "{timestamp}", "{unix}", "{random}", "{customer_id}", "{server_id}", "{nominal_id}", "{provider_code}"}})
+}
+
+func (h *AdminHandler) SaveProviderReferenceSettings(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	record, err := h.providerRepo.GetByID(uint(id))
+	if err != nil || record == nil {
+		response.NotFound(c, "Provider tidak ditemukan")
+		return
+	}
+	var req ProviderReferenceSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Format reference tidak valid", err.Error())
+		return
+	}
+	if len(req.InvoiceTemplate) > 120 || len(req.RefIDTemplate) > 120 {
+		response.BadRequest(c, "Template reference maksimal 120 karakter", nil)
+		return
+	}
+	configJSON, err := provider.WithReferenceConfig(record.Config, provider.ReferenceConfig{InvoiceTemplate: req.InvoiceTemplate, RefIDTemplate: req.RefIDTemplate})
+	if err != nil {
+		response.BadRequest(c, "Konfigurasi provider tidak dapat diperbarui", err.Error())
+		return
+	}
+	record.Config = configJSON
+	if err := h.providerRepo.Update(record); err != nil {
+		response.InternalServerError(c, "Gagal menyimpan format reference", err)
+		return
+	}
+	response.Success(c, "Format invoice dan ref ID tersimpan", provider.ParseReferenceConfig(record.Config))
+}
+
+// FFZStoreSettingsRequest only accepts the operational values needed by the
+// built-in OtoMax adapter. Request bodies never accept arbitrary templates.
+type FFZStoreSettingsRequest struct {
+	Name     string `json:"name"`
+	BaseURL  string `json:"base_url" binding:"required"`
+	APIKey   string `json:"api_key"`
+	IsActive bool   `json:"is_active"`
+}
+
+const ffzStoreCode = "FFZSTORE"
+
+func ffzStoreConfig(baseURL, encryptedSecret string) provider.DeclarativeProviderConfig {
+	return provider.DeclarativeProviderConfig{
+		Protocol:        "otomax_http",
+		BaseURL:         baseURL,
+		EncryptedSecret: encryptedSecret,
+		Purchase: &provider.EndpointConfig{Method: "GET", Path: "/v1/otomax/order", TimeoutSeconds: 20,
+			Query: map[string]string{"apikey": "{{secret.apikey}}", "product_code": "{{product_code}}", "user_id": "{{customer_id}}", "server_id": "{{server_id}}", "trx_id": "{{ref_id}}", "callback_url": "{{callback_url}}"}},
+		Status: &provider.EndpointConfig{Method: "GET", Path: "/v1/otomax/status/{{provider_order_id}}", TimeoutSeconds: 20,
+			Query: map[string]string{"apikey": "{{secret.apikey}}"}},
+		Balance: &provider.EndpointConfig{Method: "GET", Path: "/v1/otomax/user", TimeoutSeconds: 20,
+			Query: map[string]string{"apikey": "{{secret.apikey}}"}},
+	}
+}
+
+// GetFFZStoreSettings returns no secrets; the client only learns whether an
+// API key has been configured.
+func (h *AdminHandler) GetFFZStoreSettings(c *gin.Context) {
+	record, err := h.providerRepo.GetByCode(ffzStoreCode)
+	if err != nil || record == nil {
+		response.Success(c, "FFZStore settings loaded", gin.H{"configured": false, "name": "FFZStore", "base_url": "https://api.ffzstore.com", "is_active": false, "api_key_configured": false})
+		return
+	}
+	baseURL := record.BaseURL
+	apiKeyConfigured := strings.TrimSpace(record.APIKey) != ""
+	if cfg, parseErr := provider.ValidateProviderConfig(record.Config); parseErr == nil {
+		baseURL = cfg.BaseURL
+		apiKeyConfigured = apiKeyConfigured || strings.TrimSpace(cfg.EncryptedSecret) != ""
+	}
+	response.Success(c, "FFZStore settings loaded", gin.H{"configured": true, "id": record.ID, "name": record.Name, "base_url": baseURL, "is_active": record.IsActive, "api_key_configured": apiKeyConfigured})
+}
+
+// SaveFFZStoreSettings creates or updates the single built-in FFZStore
+// provider. The API key is AES-GCM encrypted in Config, never returned, and
+// the endpoint templates are server-owned to avoid arbitrary outbound calls.
+func (h *AdminHandler) SaveFFZStoreSettings(c *gin.Context) {
+	var req FFZStoreSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid FFZStore settings", err.Error())
+		return
+	}
+	if err := provider.ValidateEndpointURL(req.BaseURL); err != nil {
+		response.BadRequest(c, "Base URL FFZStore tidak valid", err.Error())
+		return
+	}
+	if appconfig.AppConfig == nil || strings.TrimSpace(appconfig.AppConfig.AppSecret) == "" {
+		response.InternalServerError(c, "Server encryption configuration is unavailable", nil)
+		return
+	}
+
+	record, lookupErr := h.providerRepo.GetByCode(ffzStoreCode)
+	if lookupErr != nil || record == nil {
+		record = &domain.Provider{Code: ffzStoreCode}
+	}
+	var previous provider.DeclarativeProviderConfig
+	if strings.TrimSpace(record.Config) != "" {
+		if cfg, err := provider.ValidateProviderConfig(record.Config); err == nil && cfg != nil {
+			previous = *cfg
+		}
+	}
+	encryptedSecret := previous.EncryptedSecret
+	if strings.TrimSpace(req.APIKey) != "" {
+		var err error
+		encryptedSecret, err = provider.EncryptConfigSecret(strings.TrimSpace(req.APIKey), appconfig.AppConfig.AppSecret)
+		if err != nil {
+			response.InternalServerError(c, "Failed to encrypt FFZStore API key", err)
+			return
+		}
+	}
+	if req.IsActive && encryptedSecret == "" {
+		response.BadRequest(c, "API key wajib diisi sebelum FFZStore diaktifkan", nil)
+		return
+	}
+	config := ffzStoreConfig(strings.TrimRight(strings.TrimSpace(req.BaseURL), "/"), encryptedSecret)
+	config.Reference = previous.Reference
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		response.InternalServerError(c, "Failed to build FFZStore configuration", err)
+		return
+	}
+	if _, err := provider.ValidateProviderConfig(string(configJSON)); err != nil {
+		response.BadRequest(c, "FFZStore configuration is invalid", err.Error())
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = "FFZStore"
+	}
+	record.Name, record.BaseURL, record.APIKey, record.Config, record.IsActive = name, strings.TrimRight(strings.TrimSpace(req.BaseURL), "/"), "", string(configJSON), req.IsActive
+	if err := h.providerRepo.Update(record); err != nil {
+		response.InternalServerError(c, "Failed to save FFZStore settings", err)
+		return
+	}
+	response.Success(c, "FFZStore settings saved", gin.H{"id": record.ID, "name": record.Name, "code": record.Code, "base_url": record.BaseURL, "is_active": record.IsActive, "api_key_configured": encryptedSecret != ""})
 }
 
 type BatchSwitchProviderRequest struct {

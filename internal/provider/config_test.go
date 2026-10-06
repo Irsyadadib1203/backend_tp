@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -134,5 +135,20 @@ func TestEncryptDecryptConfigSecret(t *testing.T) {
 	}
 	if dec != plain {
 		t.Fatalf("expected %q, got %q", plain, dec)
+	}
+}
+
+func TestReferenceConfigPreservesTemplatesAndRendersTokens(t *testing.T) {
+	raw, err := WithReferenceConfig(`{"protocol":"otomax_http","base_url":"https://api.ffzstore.com"}`, ReferenceConfig{InvoiceTemplate: "INV-{date}-{random}", RefIDTemplate: "REF-{provider_code}-{time}"})
+	if err != nil {
+		t.Fatalf("save reference config: %v", err)
+	}
+	parsed := ParseReferenceConfig(raw)
+	if parsed.InvoiceTemplate != "INV-{date}-{random}" || parsed.RefIDTemplate == "" {
+		t.Fatalf("unexpected reference config: %+v", parsed)
+	}
+	value := RenderReference(parsed.RefIDTemplate, "fallback", "DIGIFLAZZ", "123", "456", 7)
+	if value == "fallback" || !strings.HasPrefix(value, "REF-DIGIFLAZZ-") {
+		t.Fatalf("unexpected rendered reference: %q", value)
 	}
 }

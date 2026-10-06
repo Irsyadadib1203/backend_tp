@@ -75,6 +75,9 @@ func (r *fakeReconcilerTxRepo) ClaimProcessingForReconciliation(id uint, _ time.
 	r.claims[id] = true
 	return true, nil
 }
+func (r *fakeReconcilerTxRepo) FindProcessingBalanceHolds(uint, int) ([]domain.Transaction, error) {
+	return nil, nil
+}
 func (r *fakeReconcilerTxRepo) ListRecent(int) ([]domain.Transaction, error) { return nil, nil }
 func (r *fakeReconcilerTxRepo) ListByUser(uint, int, int) ([]domain.Transaction, int64, error) {
 	return nil, 0, nil

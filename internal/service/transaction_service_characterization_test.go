@@ -70,6 +70,9 @@ func (r *characterizationTxRepo) FindProcessingOlderThan(time.Duration, int) ([]
 func (r *characterizationTxRepo) ClaimProcessingForReconciliation(uint, time.Time) (bool, error) {
 	return true, nil
 }
+func (r *characterizationTxRepo) FindProcessingBalanceHolds(uint, int) ([]domain.Transaction, error) {
+	return nil, nil
+}
 func (r *characterizationTxRepo) ListRecent(int) ([]domain.Transaction, error) { return nil, nil }
 func (r *characterizationTxRepo) ListByUser(uint, int, int) ([]domain.Transaction, int64, error) {
 	return nil, 0, nil

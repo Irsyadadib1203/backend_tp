@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"topup-backend/internal/pkg/crypto"
 )
@@ -56,6 +57,77 @@ type DeclarativeProviderConfig struct {
 	HoldPatterns    []string          `json:"hold_message_patterns,omitempty"`
 	UnknownResponse string            `json:"unknown_response,omitempty"`
 	EncryptedSecret string            `json:"encrypted_secret,omitempty"`
+	Reference       *ReferenceConfig  `json:"reference,omitempty"`
+}
+
+// ReferenceConfig controls transaction identifiers generated for a provider.
+// Supported tokens: {date}, {time}, {timestamp}, {unix}, {random},
+// {customer_id}, {server_id}, {nominal_id}, and {provider_code}.
+type ReferenceConfig struct {
+	InvoiceTemplate string `json:"invoice_template,omitempty"`
+	RefIDTemplate   string `json:"ref_id_template,omitempty"`
+}
+
+func ParseReferenceConfig(raw string) ReferenceConfig {
+	var cfg DeclarativeProviderConfig
+	if json.Unmarshal([]byte(raw), &cfg) == nil && cfg.Reference != nil {
+		return *cfg.Reference
+	}
+	return ReferenceConfig{}
+}
+
+func WithReferenceConfig(raw string, reference ReferenceConfig) (string, error) {
+	var cfg DeclarativeProviderConfig
+	if strings.TrimSpace(raw) != "" && json.Unmarshal([]byte(raw), &cfg) != nil {
+		return "", errors.New("existing provider config is not valid JSON")
+	}
+	cfg.Reference = &reference
+	encoded, err := json.Marshal(cfg)
+	return string(encoded), err
+}
+
+func RenderReference(template, fallback, providerCode, customerID, serverID string, nominalID uint) string {
+	template = strings.TrimSpace(template)
+	if template == "" {
+		return fallback
+	}
+	now := time.Now()
+	replacer := strings.NewReplacer(
+		"{date}", now.Format("20060102"),
+		"{time}", now.Format("150405"),
+		"{timestamp}", now.Format("20060102150405"),
+		"{unix}", fmt.Sprintf("%d", now.Unix()),
+		"{random}", randomReferencePart(),
+		"{customer_id}", sanitizeReferencePart(customerID),
+		"{server_id}", sanitizeReferencePart(serverID),
+		"{nominal_id}", fmt.Sprintf("%d", nominalID),
+		"{provider_code}", sanitizeReferencePart(providerCode),
+	)
+	value := sanitizeReferencePart(replacer.Replace(template))
+	// A template without {random} needs a random suffix to preserve database
+	// uniqueness under simultaneous orders.
+	if !strings.Contains(template, "{random}") {
+		value += "-" + randomReferencePart()
+	}
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func randomReferencePart() string {
+	return strings.ToUpper(fmt.Sprintf("%x", time.Now().UnixNano()))[8:14]
+}
+
+func sanitizeReferencePart(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	var out strings.Builder
+	for _, character := range value {
+		if (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '-' || character == '_' || character == '(' || character == ')' {
+			out.WriteRune(character)
+		}
+	}
+	return out.String()
 }
 
 // ValidateProviderConfig parses and strictly validates declarative provider configuration (§3.5).

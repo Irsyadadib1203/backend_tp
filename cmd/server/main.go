@@ -104,6 +104,11 @@ func main() {
 	// 5.2 Start Background Kiosgamer Keep-Alive Scheduler (Heartbeat & auto-persist rotated cookies every 20 minutes)
 	kiosKeepAliveScheduler := scheduler.NewKiosgamerKeepAliveScheduler(kiosgamerService, 20*time.Minute)
 	kiosKeepAliveScheduler.Start()
+	if retryService, ok := txService.(scheduler.ProviderBalanceRetryService); ok {
+		providerBalanceRetryScheduler := scheduler.NewProviderBalanceRetryScheduler(retryService, 2*time.Minute)
+		providerBalanceRetryScheduler.Start()
+		defer providerBalanceRetryScheduler.Stop()
+	}
 
 	// 5.3 Start Reconciler (Fase 5) — disabled by default via RECONCILER_ENABLED=false.
 	// Enable only after registry mode has been verified in production.
@@ -259,6 +264,10 @@ func main() {
 
 			// Providers (Accessible if nominals or settings are allowed)
 			admin.GET("/providers", adminHandler.GetProviders)
+			admin.GET("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetFFZStoreSettings)
+			admin.PUT("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveFFZStoreSettings)
+			admin.GET("/providers/:id/reference-settings", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetProviderReferenceSettings)
+			admin.PUT("/providers/:id/reference-settings", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveProviderReferenceSettings)
 
 			// Digiflazz Sync & Balances
 			digi := admin.Group("/digiflazz", middleware.RequirePermission(rbacService, domain.ResourceDigiflazz))

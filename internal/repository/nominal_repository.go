@@ -131,7 +131,7 @@ func (r *nominalRepository) ListAllAdmin(offset, limit int, gameID uint, provide
 		return nil, 0, err
 	}
 
-	err := query.Preload("Game").Preload("Provider").
+	err := query.Preload("Game").Preload("Provider").Preload("ProviderProducts.Provider").
 		Order("game_id ASC, sort_order ASC, id DESC").
 		Offset(offset).Limit(limit).
 		Find(&nominals).Error

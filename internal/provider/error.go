@@ -23,6 +23,7 @@ type ProviderError struct {
 	Message             string
 	Cause               error
 	Raw                 []byte
+	RequestRaw          []byte
 	PersistBeforeStatus bool
 }
 

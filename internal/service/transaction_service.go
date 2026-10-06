@@ -138,6 +138,11 @@ func (s *transactionService) CreateOrder(req *CreateOrderRequest) (*domain.Trans
 	totalAmount := sellingPrice + adminFee
 	invoiceNumber := utils.GenerateInvoiceNumber()
 	refID := utils.GenerateRefID()
+	if configuredProvider, providerErr := s.providerRepo.GetByID(nominal.ProviderID); providerErr == nil && configuredProvider != nil {
+		reference := provider.ParseReferenceConfig(configuredProvider.Config)
+		invoiceNumber = provider.RenderReference(reference.InvoiceTemplate, invoiceNumber, configuredProvider.Code, req.CustomerID, req.ServerID, nominal.ID)
+		refID = provider.RenderReference(reference.RefIDTemplate, refID, configuredProvider.Code, req.CustomerID, req.ServerID, nominal.ID)
+	}
 
 	// If paying with SALDO
 	if req.PaymentMethod == "SALDO" {
@@ -548,7 +553,7 @@ func (s *transactionService) fulfillOrderLegacy(tx *domain.Transaction) error {
 	}
 
 	// Call Digiflazz Buyer API
-	resp, err := s.digiflazzBuyer.CreateTransaction(tx.RefID, nominal.ProviderProductCode, tx.CustomerID, false)
+	resp, err := s.digiflazzBuyer.CreateTransaction(tx.RefID, nominal.ProviderProductCode, provider.CustomerNumber(tx.CustomerID, tx.ServerID), false)
 	if err != nil {
 		tx.RetryCount++
 		tx.ProviderMessage = err.Error()
@@ -640,12 +645,19 @@ func (s *transactionService) fulfillOrderRegistry(tx *domain.Transaction) error 
 	if err != nil {
 		return err
 	}
+	requestSnapshot := provider.RequestSnapshot("purchase", p.Code(), tx.RefID, productCode, tx.CustomerID, tx.ServerID, tx.ProviderOrderID)
 	result, callErr := p.Purchase(context.Background(), provider.PurchaseRequest{
 		RefID: tx.RefID, ProductCode: productCode, ProductName: nominal.Name,
 		CustomerID: tx.CustomerID, ServerID: tx.ServerID, GameSlug: gameSlug,
 		ExistingProviderOrderID: tx.ProviderOrderID,
 		ProviderData:            tx.ProviderCallbackData,
 	})
+	if result != nil && len(result.RequestRaw) == 0 {
+		result.RequestRaw = requestSnapshot
+	}
+	if providerErr, ok := callErr.(*provider.ProviderError); ok && len(providerErr.RequestRaw) == 0 {
+		providerErr.RequestRaw = requestSnapshot
+	}
 	return s.applyResult(tx, result, callErr, providerResultSourceFulfill)
 }
 
@@ -671,17 +683,24 @@ func (s *transactionService) checkProviderStatusRegistry(transactionID uint, sou
 		// payload before falling back to CheckRecentOrder.
 		if tx.ProviderCallbackData != "" {
 			var saved map[string]interface{}
-			if json.Unmarshal([]byte(tx.ProviderCallbackData), &saved) == nil {
+			if json.Unmarshal(provider.ResponseFromExchange(tx.ProviderCallbackData), &saved) == nil {
 				if id, ok := saved["order_id"].(string); ok && id != "" && id != "-" {
 					providerOrderID = id
 				}
 			}
 		}
 	}
+	requestSnapshot := provider.RequestSnapshot("check_status", p.Code(), tx.RefID, productCode, tx.CustomerID, tx.ServerID, providerOrderID)
 	result, callErr := p.CheckStatus(context.Background(), provider.StatusRequest{
-		RefID: tx.RefID, ProductCode: productCode, CustomerID: tx.CustomerID,
+		RefID: tx.RefID, ProductCode: productCode, CustomerID: tx.CustomerID, ServerID: tx.ServerID,
 		GameSlug: gameSlug, ProviderOrderID: providerOrderID, ProviderData: tx.ProviderCallbackData,
 	})
+	if result != nil && len(result.RequestRaw) == 0 {
+		result.RequestRaw = requestSnapshot
+	}
+	if providerErr, ok := callErr.(*provider.ProviderError); ok && len(providerErr.RequestRaw) == 0 {
+		providerErr.RequestRaw = requestSnapshot
+	}
 	// A callback or manual action may have finalized the transaction while the
 	// provider request was in flight. Reconciliation must not reapply a stale
 	// result over that final state.
@@ -744,8 +763,8 @@ func (s *transactionService) applyResult(tx *domain.Transaction, result *provide
 		tx.Status = domain.StatusProcessing
 		tx.ProviderStatus = providerErr.ProviderStatus
 		tx.ProviderMessage = providerErr.Message
-		if len(providerErr.Raw) > 0 {
-			tx.ProviderCallbackData = string(providerErr.Raw)
+		if len(providerErr.Raw) > 0 || len(providerErr.RequestRaw) > 0 {
+			tx.ProviderCallbackData = string(provider.Exchange(source, providerErr.RequestRaw, providerErr.Raw))
 		}
 		if providerErr.Status == provider.StatusFailedFinal {
 			tx.Status = domain.StatusFailed
@@ -783,8 +802,8 @@ func (s *transactionService) applyResult(tx *domain.Transaction, result *provide
 	if result.UpdateSN && result.SN != "" {
 		tx.SN = result.SN
 	}
-	if len(result.Raw) > 0 {
-		tx.ProviderCallbackData = string(result.Raw)
+	if len(result.Raw) > 0 || len(result.RequestRaw) > 0 {
+		tx.ProviderCallbackData = string(provider.Exchange(source, result.RequestRaw, result.Raw))
 	}
 
 	switch result.Status {
@@ -1076,6 +1095,51 @@ func (s *transactionService) ManualRetry(transactionID uint) error {
 	return nil
 }
 
+// RetryDigiflazzBalanceHolds resumes only Digiflazz orders that are still
+// processing because a balance/shell shortage was reported and for which no
+// provider order was created. It intentionally does not debit the user again
+// and never retries final, refunded, or already-submitted provider orders.
+func (s *transactionService) RetryDigiflazzBalanceHolds() (int, error) {
+	if s.providerRegistry == nil {
+		return 0, errors.New("provider registry is not initialized")
+	}
+	p, ok := s.providerRegistry.Get(provider.DigiflazzCode)
+	if !ok {
+		return 0, errors.New("Digiflazz provider is not registered")
+	}
+	balance, err := p.Balance(context.Background())
+	if err != nil {
+		return 0, err
+	}
+	if balance <= 0 {
+		return 0, nil
+	}
+	record, err := s.providerRepo.GetByCode(provider.DigiflazzCode)
+	if err != nil || record == nil {
+		return 0, errors.New("Digiflazz provider configuration not found")
+	}
+	candidates, err := s.txRepo.FindProcessingBalanceHolds(record.ID, 20)
+	if err != nil {
+		return 0, err
+	}
+	retried := 0
+	for index := range candidates {
+		tx := &candidates[index]
+		claimed, claimErr := s.txRepo.ClaimProcessingForReconciliation(tx.ID, time.Now().Add(-time.Minute))
+		if claimErr != nil || !claimed {
+			continue
+		}
+		tx.ProviderStatus = "Retrying (saldo provider tersedia)"
+		tx.ProviderMessage = "Transaksi dijalankan ulang otomatis setelah saldo Digiflazz tersedia"
+		_ = s.txRepo.Update(tx)
+		if err := s.FulfillOrder(tx); err != nil {
+			log.Printf("[ProviderBalanceRetry] Digiflazz transaction %d remains pending: %v", tx.ID, err)
+		}
+		retried++
+	}
+	return retried, nil
+}
+
 // CheckProviderStatus HANYA memeriksa/mengambil status transaksi ke provider
 // (Kiosgamer poll / history, atau Digiflazz check-status) TANPA PERNAH membuat order baru atau memotong saldo.
 func (s *transactionService) CheckProviderStatus(transactionID uint) (*domain.Transaction, error) {
@@ -1195,7 +1259,7 @@ func (s *transactionService) checkProviderStatusLegacy(transactionID uint) (*dom
 	}
 
 	// Provider DIGIFLAZZ
-	resp, err := s.digiflazzBuyer.CheckTransactionStatus(tx.RefID, nominal.ProviderProductCode, tx.CustomerID)
+	resp, err := s.digiflazzBuyer.CheckTransactionStatus(tx.RefID, nominal.ProviderProductCode, provider.CustomerNumber(tx.CustomerID, tx.ServerID))
 	if err != nil {
 		return nil, fmt.Errorf("gagal cek status Digiflazz: %w", err)
 	}

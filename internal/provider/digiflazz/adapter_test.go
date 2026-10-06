@@ -19,12 +19,14 @@ type fakeBuyer struct {
 	callbackErr             error
 	createCalls, checkCalls int
 	callbackSignature       string
+	lastCustomerNo          string
 }
 
 func (f *fakeBuyer) GetPriceList() ([]service.DigiflazzPriceListItem, error) { return nil, nil }
 func (f *fakeBuyer) CheckBalance() (float64, error)                          { return 42, nil }
-func (f *fakeBuyer) CreateTransaction(string, string, string, bool) (*service.DigiflazzTransactionResponse, error) {
+func (f *fakeBuyer) CreateTransaction(_ string, _ string, customerNo string, _ bool) (*service.DigiflazzTransactionResponse, error) {
 	f.createCalls++
+	f.lastCustomerNo = customerNo
 	return f.create, f.createErr
 }
 func (f *fakeBuyer) CheckTransactionStatus(string, string, string) (*service.DigiflazzTransactionResponse, error) {
@@ -78,6 +80,14 @@ func TestPurchaseErrorAndExistingOrderUseProviderContract(t *testing.T) {
 	result, err = adapter.Purchase(context.Background(), provider.PurchaseRequest{RefID: "REF", ProductCode: "SKU", CustomerID: "USER", ExistingProviderOrderID: "DF-EXISTING"})
 	if err != nil || result == nil || buyer.createCalls != 1 || buyer.checkCalls != 1 {
 		t.Fatalf("result=%+v err=%v create=%d check=%d", result, err, buyer.createCalls, buyer.checkCalls)
+	}
+}
+
+func TestPurchaseCombinesCustomerAndServerIDForDigiflazz(t *testing.T) {
+	buyer := &fakeBuyer{create: response("Pending", "wait")}
+	_, err := New(buyer).Purchase(context.Background(), provider.PurchaseRequest{RefID: "REF", ProductCode: "SKU", CustomerID: "12345678", ServerID: "2001"})
+	if err != nil || buyer.lastCustomerNo != "12345678(2001)" {
+		t.Fatalf("err=%v customer_no=%q", err, buyer.lastCustomerNo)
 	}
 }
 

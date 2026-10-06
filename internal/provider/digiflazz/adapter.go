@@ -21,26 +21,37 @@ func New(buyer service.DigiflazzBuyerService) *Adapter { return &Adapter{buyer: 
 func (a *Adapter) Code() string { return provider.DigiflazzCode }
 
 func (a *Adapter) Purchase(_ context.Context, r provider.PurchaseRequest) (*provider.Result, error) {
+	requestRaw, _ := json.Marshal(map[string]interface{}{"action": "purchase", "ref_id": r.RefID, "buyer_sku_code": r.ProductCode, "customer_no": provider.CustomerNumber(r.CustomerID, r.ServerID), "testing": false})
 	if r.ExistingProviderOrderID != "" {
-		return a.CheckStatus(context.Background(), provider.StatusRequest{
+		result, err := a.CheckStatus(context.Background(), provider.StatusRequest{
 			RefID: r.RefID, ProductCode: r.ProductCode, CustomerID: r.CustomerID,
 			GameSlug: r.GameSlug, ProviderOrderID: r.ExistingProviderOrderID,
 		})
+		if result != nil {
+			result.RequestRaw = requestRaw
+		}
+		return result, err
 	}
-	resp, err := a.buyer.CreateTransaction(r.RefID, r.ProductCode, r.CustomerID, false)
+	resp, err := a.buyer.CreateTransaction(r.RefID, r.ProductCode, provider.CustomerNumber(r.CustomerID, r.ServerID), false)
 	if err != nil {
 		raw, _ := json.Marshal(map[string]interface{}{"error": err.Error(), "ref_id": r.RefID, "timestamp": time.Now().Format(time.RFC3339)})
-		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: errorKind(err.Error()), ProviderStatus: "Pending", Message: err.Error(), Cause: err, Raw: raw}
+		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: errorKind(err.Error()), ProviderStatus: "Pending", Message: err.Error(), Cause: err, Raw: raw, RequestRaw: requestRaw}
 	}
-	return resultFromResponse(resp, false), nil
+	result := resultFromResponse(resp, false)
+	result.RequestRaw = requestRaw
+	return result, nil
 }
 
 func (a *Adapter) CheckStatus(_ context.Context, r provider.StatusRequest) (*provider.Result, error) {
-	resp, err := a.buyer.CheckTransactionStatus(r.RefID, r.ProductCode, r.CustomerID)
+	customerNo := provider.CustomerNumber(r.CustomerID, r.ServerID)
+	requestRaw, _ := json.Marshal(map[string]interface{}{"action": "check_status", "ref_id": r.RefID, "buyer_sku_code": r.ProductCode, "customer_no": customerNo})
+	resp, err := a.buyer.CheckTransactionStatus(r.RefID, r.ProductCode, customerNo)
 	if err != nil {
-		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: errorKind(err.Error()), ProviderStatus: "Pending", Message: err.Error(), Cause: err}
+		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: errorKind(err.Error()), ProviderStatus: "Pending", Message: err.Error(), Cause: err, RequestRaw: requestRaw}
 	}
-	return resultFromResponse(resp, true), nil
+	result := resultFromResponse(resp, true)
+	result.RequestRaw = requestRaw
+	return result, nil
 }
 
 func (a *Adapter) Balance(context.Context) (float64, error) { return a.buyer.CheckBalance() }
