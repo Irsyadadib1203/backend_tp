@@ -79,6 +79,22 @@ func (r *userRepository) UpdateBalance(userID uint, amount float64, mutationType
 			return err
 		}
 
+		// safeRefundTransaction performs an optimistic pre-check for a useful
+		// no-op log, but callbacks and reconciliation can race. Repeat the refund
+		// guard while holding the user-row transaction so only one credit is ever
+		// applied for a refunded invoice.
+		if mutationType == domain.MutationCredit && refType == "REFUND" {
+			var existing int64
+			if err := tx.Model(&domain.BalanceMutation{}).
+				Where("user_id = ? AND reference_type = ? AND reference_id = ?", userID, refType, refID).
+				Count(&existing).Error; err != nil {
+				return err
+			}
+			if existing > 0 {
+				return nil
+			}
+		}
+
 		balanceBefore := user.Balance
 		var balanceAfter float64
 

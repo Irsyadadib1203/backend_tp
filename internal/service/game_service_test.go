@@ -1,8 +1,12 @@
 package service
 
 import (
+	"context"
+	"fmt"
 	"testing"
+
 	"topup-backend/internal/domain"
+	"topup-backend/internal/provider"
 )
 
 // Mock ProviderRepository
@@ -321,3 +325,197 @@ func TestBatchSwitchProvider_ToDigiflazz_AllSwitch(t *testing.T) {
 		t.Errorf("expected all nominals switched to ProviderID 1")
 	}
 }
+
+// Mock ProviderProductRepository
+type mockProviderProductRepo struct {
+	products map[string]*domain.ProviderProduct // key: nominalID_providerID
+}
+
+func newMockProviderProductRepo() *mockProviderProductRepo {
+	return &mockProviderProductRepo{products: make(map[string]*domain.ProviderProduct)}
+}
+
+func (m *mockProviderProductRepo) Create(pp *domain.ProviderProduct) error {
+	key := fmt.Sprintf("%d_%d", pp.NominalID, pp.ProviderID)
+	m.products[key] = pp
+	return nil
+}
+
+func (m *mockProviderProductRepo) Upsert(pp *domain.ProviderProduct) error {
+	key := fmt.Sprintf("%d_%d", pp.NominalID, pp.ProviderID)
+	m.products[key] = pp
+	return nil
+}
+
+func (m *mockProviderProductRepo) FindByNominalAndProvider(nominalID, providerID uint) (*domain.ProviderProduct, error) {
+	key := fmt.Sprintf("%d_%d", nominalID, providerID)
+	return m.products[key], nil
+}
+
+func (m *mockProviderProductRepo) FindByNominalAndProviderCode(nominalID uint, providerCode string) (*domain.ProviderProduct, error) {
+	for _, pp := range m.products {
+		if pp.NominalID == nominalID && pp.Provider != nil && pp.Provider.Code == providerCode {
+			return pp, nil
+		}
+	}
+	return nil, nil
+}
+
+func (m *mockProviderProductRepo) ListByNominalID(nominalID uint) ([]domain.ProviderProduct, error) {
+	var list []domain.ProviderProduct
+	for _, pp := range m.products {
+		if pp.NominalID == nominalID {
+			list = append(list, *pp)
+		}
+	}
+	return list, nil
+}
+
+func (m *mockProviderProductRepo) ListByProviderID(providerID uint) ([]domain.ProviderProduct, error) {
+	var list []domain.ProviderProduct
+	for _, pp := range m.products {
+		if pp.ProviderID == providerID {
+			list = append(list, *pp)
+		}
+	}
+	return list, nil
+}
+
+func (m *mockProviderProductRepo) Delete(id uint) error {
+	return nil
+}
+
+type mockGameSupportProvider struct {
+	code string
+}
+
+func (p *mockGameSupportProvider) Code() string                                              { return p.code }
+func (*mockGameSupportProvider) Purchase(context.Context, provider.PurchaseRequest) (*provider.Result, error)  { return nil, nil }
+func (*mockGameSupportProvider) CheckStatus(context.Context, provider.StatusRequest) (*provider.Result, error) { return nil, nil }
+func (*mockGameSupportProvider) Balance(context.Context) (float64, error)                    { return 0, nil }
+func (*mockGameSupportProvider) Supports(gameSlug string) bool {
+	return gameSlug == "free-fire" || gameSlug == "codm"
+}
+
+func TestBatchSwitchProvider_WithRegistryCapabilityGameSupport(t *testing.T) {
+	providerRepo := &mockProviderRepo{
+		providers: map[uint]*domain.Provider{
+			1: {ID: 1, Name: "Digiflazz", Code: "DIGIFLAZZ", IsActive: true},
+			2: {ID: 2, Name: "Kiosgamer", Code: "KIOSGAMER", IsActive: true},
+		},
+	}
+
+	gameFF := &domain.Game{ID: 1, Name: "Free Fire", Slug: "free-fire", IsActive: true}
+	gameML := &domain.Game{ID: 2, Name: "Mobile Legends", Slug: "mobile-legends", IsActive: true}
+
+	gameRepo := &mockGameRepo{
+		games: map[uint]*domain.Game{
+			1: gameFF,
+			2: gameML,
+		},
+	}
+
+	nominalRepo := &mockNominalRepo{
+		nominals: map[uint]*domain.Nominal{
+			101: {ID: 101, GameID: 1, Game: gameFF, Name: "Free Fire 50 Diamond", ProviderID: 1, ProviderProductCode: "FF50", KiosgamerProductCode: "1"},
+			102: {ID: 102, GameID: 1, Game: gameFF, Name: "Free Fire 12 Diamond", ProviderID: 1, ProviderProductCode: "FF12", KiosgamerProductCode: ""},
+			103: {ID: 103, GameID: 2, Game: gameML, Name: "Mobile Legends 86 Diamond", ProviderID: 1, ProviderProductCode: "ML86", KiosgamerProductCode: ""},
+		},
+	}
+
+	reg := provider.NewRegistry()
+	_ = reg.Register(&mockGameSupportProvider{code: "KIOSGAMER"})
+
+	svc := &gameService{
+		gameRepo:         gameRepo,
+		nominalRepo:      nominalRepo,
+		providerRepo:     providerRepo,
+		providerRegistry: reg,
+	}
+
+	res, err := svc.BatchSwitchProvider([]uint{101, 102, 103}, 2)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if res.SwitchedCount != 1 {
+		t.Errorf("expected SwitchedCount = 1, got %d", res.SwitchedCount)
+	}
+	if res.SkippedCount != 2 {
+		t.Errorf("expected SkippedCount = 2, got %d", res.SkippedCount)
+	}
+}
+
+func TestDualWriteNominal_CreateAndUpdate(t *testing.T) {
+	providerRepo := &mockProviderRepo{
+		providers: map[uint]*domain.Provider{
+			1: {ID: 1, Name: "Digiflazz", Code: "DIGIFLAZZ", IsActive: true},
+			2: {ID: 2, Name: "Kiosgamer", Code: "KIOSGAMER", IsActive: true},
+		},
+	}
+	gameFF := &domain.Game{ID: 1, Name: "Free Fire", Slug: "free-fire", IsActive: true}
+	gameRepo := &mockGameRepo{games: map[uint]*domain.Game{1: gameFF}}
+	nominalRepo := &mockNominalRepo{nominals: make(map[uint]*domain.Nominal)}
+	ppRepo := newMockProviderProductRepo()
+
+	svc := &gameService{
+		gameRepo:            gameRepo,
+		nominalRepo:         nominalRepo,
+		providerRepo:        providerRepo,
+		providerProductRepo: ppRepo,
+	}
+
+	// 1. Create nominal with both Digiflazz and Kiosgamer codes
+	nom := &domain.Nominal{
+		ID:                   201,
+		GameID:               1,
+		ProviderID:           1,
+		Name:                 "FF 100 Diamond",
+		BasePrice:            15000,
+		ProviderProductCode:  "DF-FF100",
+		KiosgamerProductCode: "KG-FF100",
+		IsActive:             true,
+	}
+
+	if err := svc.CreateNominal(nom); err != nil {
+		t.Fatalf("CreateNominal err: %v", err)
+	}
+
+	// Verify dual-write created provider_products rows
+	dfPP := ppRepo.products["201_1"]
+	if dfPP == nil || dfPP.ProductCode != "DF-FF100" {
+		t.Fatalf("expected Digiflazz provider_product DF-FF100, got %+v", dfPP)
+	}
+	kgPP := ppRepo.products["201_2"]
+	if kgPP == nil || kgPP.ProductCode != "KG-FF100" {
+		t.Fatalf("expected Kiosgamer provider_product KG-FF100, got %+v", kgPP)
+	}
+
+	// 2. Update nominal with empty ProviderProductCode: MUST NOT overwrite existing column with empty (§3.6, §5)
+	updateNom := &domain.Nominal{
+		ID:                   201,
+		GameID:               1,
+		ProviderID:           1,
+		Name:                 "FF 100 Diamond (Updated)",
+		BasePrice:            16000,
+		ProviderProductCode:  "", // empty in update payload
+		KiosgamerProductCode: "KG-FF100-V2",
+		IsActive:             true,
+	}
+
+	if err := svc.UpdateNominal(updateNom); err != nil {
+		t.Fatalf("UpdateNominal err: %v", err)
+	}
+
+	// Verify legacy column was not overwritten with empty
+	if updateNom.ProviderProductCode != "DF-FF100" {
+		t.Fatalf("expected ProviderProductCode preserved as DF-FF100, got %q", updateNom.ProviderProductCode)
+	}
+
+	// Verify Kiosgamer was updated
+	kgPPUpdated := ppRepo.products["201_2"]
+	if kgPPUpdated == nil || kgPPUpdated.ProductCode != "KG-FF100-V2" {
+		t.Fatalf("expected updated Kiosgamer code KG-FF100-V2, got %+v", kgPPUpdated)
+	}
+}
+

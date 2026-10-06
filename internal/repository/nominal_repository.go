@@ -35,7 +35,7 @@ func (r *nominalRepository) Create(nominal *domain.Nominal) error {
 
 func (r *nominalRepository) FindByID(id uint) (*domain.Nominal, error) {
 	var nominal domain.Nominal
-	err := r.db.Preload("Game").Preload("Provider").First(&nominal, id).Error
+	err := r.db.Preload("Game").Preload("Provider").Preload("ProviderProducts.Provider").First(&nominal, id).Error
 	if err != nil {
 		return nil, err
 	}

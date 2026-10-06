@@ -35,8 +35,9 @@ type Nominal struct {
 	DeletedAt           gorm.DeletedAt `gorm:"index" json:"-"`
 
 	// Relation
-	Game                *Game          `gorm:"foreignKey:GameID" json:"game,omitempty"`
-	Provider            *Provider      `gorm:"foreignKey:ProviderID" json:"provider,omitempty"`
+	Game             *Game             `gorm:"foreignKey:GameID" json:"game,omitempty"`
+	Provider         *Provider         `gorm:"foreignKey:ProviderID" json:"provider,omitempty"`
+	ProviderProducts []ProviderProduct `gorm:"foreignKey:NominalID" json:"provider_products,omitempty"`
 }
 
 func (n *Nominal) CalculatePrices() {

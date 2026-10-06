@@ -14,11 +14,13 @@ type Provider struct {
 	Username    string         `gorm:"size:100" json:"username"`
 	APIKey      string         `gorm:"size:255" json:"api_key"`
 	Balance     float64        `gorm:"type:decimal(15,2);default:0" json:"balance"`
+	Config      string         `gorm:"type:text" json:"config,omitempty"` // Declarative JSON config, secrets encrypted
 	IsActive    bool           `gorm:"default:true" json:"is_active"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
 
-	Nominals     []Nominal     `gorm:"foreignKey:ProviderID" json:"nominals,omitempty"`
-	Transactions []Transaction `gorm:"foreignKey:ProviderID" json:"transactions,omitempty"`
+	Nominals         []Nominal         `gorm:"foreignKey:ProviderID" json:"nominals,omitempty"`
+	Transactions     []Transaction     `gorm:"foreignKey:ProviderID" json:"transactions,omitempty"`
+	ProviderProducts []ProviderProduct `gorm:"foreignKey:ProviderID" json:"provider_products,omitempty"`
 }

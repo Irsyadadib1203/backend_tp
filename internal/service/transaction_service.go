@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 
@@ -14,19 +15,20 @@ import (
 	"topup-backend/internal/pkg/sse"
 	"topup-backend/internal/pkg/utils"
 	"topup-backend/internal/pkg/worker"
+	"topup-backend/internal/provider"
 	"topup-backend/internal/repository"
 )
 
 type CreateOrderRequest struct {
-	GameID        uint    `json:"game_id" binding:"required"`
-	NominalID     uint    `json:"nominal_id" binding:"required"`
-	CustomerID    string  `json:"customer_id" binding:"required"`
-	ServerID      string  `json:"server_id"`
-	CustomerPhone string  `json:"customer_phone"`
-	CustomerEmail string  `json:"customer_email"`
-	Nickname      string  `json:"nickname"`
-	PaymentMethod string  `json:"payment_method" binding:"required"`
-	UserID        *uint   `json:"user_id"`
+	GameID        uint   `json:"game_id" binding:"required"`
+	NominalID     uint   `json:"nominal_id" binding:"required"`
+	CustomerID    string `json:"customer_id" binding:"required"`
+	ServerID      string `json:"server_id"`
+	CustomerPhone string `json:"customer_phone"`
+	CustomerEmail string `json:"customer_email"`
+	Nickname      string `json:"nickname"`
+	PaymentMethod string `json:"payment_method" binding:"required"`
+	UserID        *uint  `json:"user_id"`
 }
 
 type TransactionService interface {
@@ -36,15 +38,19 @@ type TransactionService interface {
 	ListUserTransactions(userID uint, offset, limit int) ([]domain.Transaction, int64, error)
 	ListAdminTransactions(offset, limit int, status, search, startDate, endDate string) ([]domain.Transaction, int64, error)
 	GetDashboardStats() (map[string]interface{}, error)
-	
+
 	// Fulfill and Callback
 	FulfillOrder(tx *domain.Transaction) error
 	HandleDigiflazzCallback(payload *DigiflazzCallbackPayload) error
+	HandleProviderCallback(providerCode string, req *http.Request) (*domain.Transaction, *provider.Result, error)
 	HandlePaymentSuccess(invoiceNumber, paymentRef string, paidAmount float64) error
-	
+
 	// Admin overrides
 	ManualRetry(transactionID uint) error
 	CheckProviderStatus(transactionID uint) (*domain.Transaction, error)
+	// ReconcileProcessingTransaction is the background-only status-check path.
+	// It never purchases; registry results enter applyResult with source=reconcile.
+	ReconcileProcessingTransaction(transactionID uint) (*domain.Transaction, error)
 	ManualSetSuccess(transactionID uint, notes string, sn string) error
 	ManualRefund(transactionID uint, notes string) error
 
@@ -53,15 +59,19 @@ type TransactionService interface {
 }
 
 type transactionService struct {
-	txRepo           repository.TransactionRepository
-	nominalRepo      repository.NominalRepository
-	gameRepo         repository.GameRepository
-	userRepo         repository.UserRepository
-	paymentRepo      repository.PaymentRepository
-	providerRepo     repository.ProviderRepository
-	digiflazzBuyer   DigiflazzBuyerService
-	kiosgamerService KiosgamerService
-	tripayService    TripayChannelService
+	txRepo       repository.TransactionRepository
+	nominalRepo  repository.NominalRepository
+	gameRepo     repository.GameRepository
+	userRepo     repository.UserRepository
+	paymentRepo  repository.PaymentRepository
+	providerRepo repository.ProviderRepository
+	// Retained only for Fase 0 characterization fixtures. Transaction execution
+	// is registry-only; NewTransactionService never initializes these fields.
+	digiflazzBuyer         DigiflazzBuyerService
+	kiosgamerService       KiosgamerService
+	tripayService          TripayChannelService
+	providerRegistry       *provider.Registry
+	legacyCharacterization bool
 }
 
 func (s *transactionService) SetTripayService(tripayService TripayChannelService) {
@@ -75,8 +85,7 @@ func NewTransactionService(
 	userRepo repository.UserRepository,
 	paymentRepo repository.PaymentRepository,
 	providerRepo repository.ProviderRepository,
-	digiflazzBuyer DigiflazzBuyerService,
-	kiosgamerService KiosgamerService,
+	providerRegistry *provider.Registry,
 ) TransactionService {
 	return &transactionService{
 		txRepo:           txRepo,
@@ -85,8 +94,7 @@ func NewTransactionService(
 		userRepo:         userRepo,
 		paymentRepo:      paymentRepo,
 		providerRepo:     providerRepo,
-		digiflazzBuyer:   digiflazzBuyer,
-		kiosgamerService: kiosgamerService,
+		providerRegistry: providerRegistry,
 	}
 }
 
@@ -148,25 +156,25 @@ func (s *transactionService) CreateOrder(req *CreateOrderRequest) (*domain.Trans
 	}
 
 	tx := &domain.Transaction{
-		InvoiceNumber:  invoiceNumber,
-		Source:         domain.SourceWeb,
-		UserID:         req.UserID,
-		CustomerID:     req.CustomerID,
-		ServerID:       req.ServerID,
-		CustomerPhone:  req.CustomerPhone,
-		CustomerEmail:  req.CustomerEmail,
-		Nickname:       req.Nickname,
-		GameID:         game.ID,
-		NominalID:      nominal.ID,
-		ProviderID:     nominal.ProviderID,
-		BasePrice:      nominal.BasePrice,
-		SellingPrice:   sellingPrice,
-		AdminFee:       adminFee,
-		TotalAmount:    totalAmount,
-		Profit:         sellingPrice - nominal.BasePrice,
-		Status:         domain.StatusPending,
-		PaymentMethod:  req.PaymentMethod,
-		RefID:          refID,
+		InvoiceNumber: invoiceNumber,
+		Source:        domain.SourceWeb,
+		UserID:        req.UserID,
+		CustomerID:    req.CustomerID,
+		ServerID:      req.ServerID,
+		CustomerPhone: req.CustomerPhone,
+		CustomerEmail: req.CustomerEmail,
+		Nickname:      req.Nickname,
+		GameID:        game.ID,
+		NominalID:     nominal.ID,
+		ProviderID:    nominal.ProviderID,
+		BasePrice:     nominal.BasePrice,
+		SellingPrice:  sellingPrice,
+		AdminFee:      adminFee,
+		TotalAmount:   totalAmount,
+		Profit:        sellingPrice - nominal.BasePrice,
+		Status:        domain.StatusPending,
+		PaymentMethod: req.PaymentMethod,
+		RefID:         refID,
 	}
 
 	if req.PaymentMethod == "SALDO" {
@@ -347,6 +355,15 @@ func isUserOrProductFatalError(msg string) bool {
 }
 
 func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
+	if s.legacyCharacterization {
+		return s.fulfillOrderLegacy(tx)
+	}
+	return s.fulfillOrderRegistry(tx)
+}
+
+// fulfillOrderLegacy preserves pre-registry behavior exclusively for Fase 0
+// characterization fixtures; no production constructor can select this path.
+func (s *transactionService) fulfillOrderLegacy(tx *domain.Transaction) error {
 	nominal, err := s.nominalRepo.FindByID(tx.NominalID)
 	if err != nil || nominal == nil {
 		return errors.New("nominal not found")
@@ -530,7 +547,6 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 		return s.txRepo.Update(tx)
 	}
 
-
 	// Call Digiflazz Buyer API
 	resp, err := s.digiflazzBuyer.CreateTransaction(tx.RefID, nominal.ProviderProductCode, tx.CustomerID, false)
 	if err != nil {
@@ -599,6 +615,297 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 	return s.txRepo.Update(tx)
 }
 
+const (
+	providerResultSourceFulfill   = "fulfill"
+	providerResultSourceCheck     = "check"
+	providerResultSourceCallback  = "callback"
+	providerResultSourceReconcile = "reconcile"
+)
+
+func (s *transactionService) fulfillOrderRegistry(tx *domain.Transaction) error {
+	nominal, err := s.nominalRepo.FindByID(tx.NominalID)
+	if err != nil || nominal == nil {
+		return errors.New("nominal not found")
+	}
+	if nominal.BasePrice > tx.SellingPrice {
+		tx.Status = domain.StatusProcessing
+		tx.ProviderStatus = "Pending (Harga Naik)"
+		tx.ProviderMessage = "Harga modal provider melebihi pembayaran pelanggan (tertahan di antrean server)"
+		_ = s.txRepo.Update(tx)
+		_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, tx.ProviderMessage)
+		return nil
+	}
+
+	p, productCode, gameSlug, err := s.resolveRegistryProvider(tx, nominal)
+	if err != nil {
+		return err
+	}
+	result, callErr := p.Purchase(context.Background(), provider.PurchaseRequest{
+		RefID: tx.RefID, ProductCode: productCode, ProductName: nominal.Name,
+		CustomerID: tx.CustomerID, ServerID: tx.ServerID, GameSlug: gameSlug,
+		ExistingProviderOrderID: tx.ProviderOrderID,
+		ProviderData:            tx.ProviderCallbackData,
+	})
+	return s.applyResult(tx, result, callErr, providerResultSourceFulfill)
+}
+
+func (s *transactionService) checkProviderStatusRegistry(transactionID uint, source string) (*domain.Transaction, error) {
+	tx, err := s.txRepo.FindByID(transactionID)
+	if err != nil || tx == nil {
+		return nil, errors.New("transaksi tidak ditemukan")
+	}
+	if source == providerResultSourceReconcile && tx.Status != domain.StatusProcessing {
+		return tx, nil
+	}
+	nominal, err := s.nominalRepo.FindByID(tx.NominalID)
+	if err != nil || nominal == nil {
+		return nil, errors.New("nominal tidak ditemukan")
+	}
+	p, productCode, gameSlug, err := s.resolveRegistryProvider(tx, nominal)
+	if err != nil {
+		return nil, err
+	}
+	providerOrderID := tx.ProviderOrderID
+	if providerOrderID == "" || providerOrderID == "-" {
+		// Legacy CheckProviderStatus also recovers order_id from saved provider
+		// payload before falling back to CheckRecentOrder.
+		if tx.ProviderCallbackData != "" {
+			var saved map[string]interface{}
+			if json.Unmarshal([]byte(tx.ProviderCallbackData), &saved) == nil {
+				if id, ok := saved["order_id"].(string); ok && id != "" && id != "-" {
+					providerOrderID = id
+				}
+			}
+		}
+	}
+	result, callErr := p.CheckStatus(context.Background(), provider.StatusRequest{
+		RefID: tx.RefID, ProductCode: productCode, CustomerID: tx.CustomerID,
+		GameSlug: gameSlug, ProviderOrderID: providerOrderID, ProviderData: tx.ProviderCallbackData,
+	})
+	// A callback or manual action may have finalized the transaction while the
+	// provider request was in flight. Reconciliation must not reapply a stale
+	// result over that final state.
+	if source == providerResultSourceReconcile {
+		current, currentErr := s.txRepo.FindByID(transactionID)
+		if currentErr != nil || current == nil {
+			return nil, errors.New("transaksi tidak ditemukan")
+		}
+		if current.Status != domain.StatusProcessing {
+			return current, nil
+		}
+		tx = current
+	}
+	if err := s.applyResult(tx, result, callErr, source); err != nil {
+		return nil, registryCheckError(p.Code(), err)
+	}
+	return tx, nil
+}
+
+func (s *transactionService) resolveRegistryProvider(tx *domain.Transaction, nominal *domain.Nominal) (provider.Provider, string, string, error) {
+	if s.providerRegistry == nil {
+		return nil, "", "", errors.New("provider registry is not initialized")
+	}
+	code, err := provider.ResolveProviderCode(nominal, s.providerRepo)
+	if err != nil {
+		return nil, "", "", err
+	}
+	p, ok := s.providerRegistry.Get(code)
+	if !ok {
+		return nil, "", "", fmt.Errorf("provider %s is not registered", code)
+	}
+	productCode, err := provider.ResolveProductCode(nominal, code)
+	if err != nil {
+		return nil, "", "", err
+	}
+	gameSlug := ""
+	if s.gameRepo != nil {
+		if game, gameErr := s.gameRepo.FindByID(tx.GameID); gameErr == nil && game != nil {
+			gameSlug = game.Slug
+		}
+	}
+	return p, productCode, gameSlug, nil
+}
+
+// applyResult is the registry engine's only transaction-effect boundary.
+// Adapters provide normalized provider output; this method owns status,
+// persistence, refund, retry, and SSE behavior.
+func (s *transactionService) applyResult(tx *domain.Transaction, result *provider.Result, callErr error, source string) error {
+	if callErr != nil {
+		providerErr, ok := callErr.(*provider.ProviderError)
+		if !ok {
+			return callErr
+		}
+		if source == providerResultSourceCheck {
+			return providerErr
+		}
+		if providerErr.Kind != provider.ErrorConfiguration {
+			tx.RetryCount++
+		}
+		tx.Status = domain.StatusProcessing
+		tx.ProviderStatus = providerErr.ProviderStatus
+		tx.ProviderMessage = providerErr.Message
+		if len(providerErr.Raw) > 0 {
+			tx.ProviderCallbackData = string(providerErr.Raw)
+		}
+		if providerErr.Status == provider.StatusFailedFinal {
+			tx.Status = domain.StatusFailed
+			now := time.Now()
+			tx.CompletedAt = &now
+			if providerErr.PersistBeforeStatus {
+				_ = s.txRepo.Update(tx)
+			}
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, providerErr.Message)
+			_ = s.safeRefundTransaction(tx, fmt.Sprintf("Pengembalian dana: %s", providerErr.Message))
+			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+				"status": "failed", "invoice": tx.InvoiceNumber, "completed_at": now,
+			})
+			if !providerErr.PersistBeforeStatus {
+				_ = s.txRepo.Update(tx)
+			}
+			return providerErrorCause(providerErr)
+		}
+
+		_ = s.txRepo.Update(tx)
+		if providerErr.Kind == provider.ErrorConfiguration {
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, providerErr.Message)
+		}
+		return providerErrorCause(providerErr)
+	}
+	if result == nil {
+		return errors.New("provider returned no result")
+	}
+
+	if result.ProviderOrderID != "" {
+		tx.ProviderOrderID = result.ProviderOrderID
+	}
+	tx.ProviderStatus = result.ProviderStatus
+	tx.ProviderMessage = result.Message
+	if result.UpdateSN && result.SN != "" {
+		tx.SN = result.SN
+	}
+	if len(result.Raw) > 0 {
+		tx.ProviderCallbackData = string(result.Raw)
+	}
+
+	switch result.Status {
+	case provider.StatusSuccess:
+		tx.Status = domain.StatusSuccess
+		if result.PaymentReferencePolicy == provider.PaymentReferenceAlways || tx.PaymentReference == "" {
+			tx.PaymentReference = result.SN
+		}
+		now := time.Now()
+		tx.CompletedAt = &now
+		_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusSuccess, result.StatusReason)
+		successEvent := map[string]interface{}{"status": "success", "invoice": tx.InvoiceNumber, "completed_at": now}
+		if result.IncludeSNInSuccessEvent {
+			successEvent["sn"] = tx.SN
+		}
+		sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", successEvent)
+	case provider.StatusFailedFinal:
+		tx.Status = domain.StatusFailed
+		now := time.Now()
+		tx.CompletedAt = &now
+		_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusFailed, result.StatusReason)
+		_ = s.safeRefundTransaction(tx, refundReasonForResult(source, result))
+		failedEvent := map[string]interface{}{"status": "failed", "invoice": tx.InvoiceNumber}
+		if result.IncludeCompletedAtInFailedEvent {
+			failedEvent["completed_at"] = now
+		}
+		sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", failedEvent)
+	case provider.StatusFailedHold:
+		tx.Status = domain.StatusProcessing
+		_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, result.StatusReason)
+	case provider.StatusPending:
+		if source == providerResultSourceFulfill {
+			tx.Status = domain.StatusProcessing
+			_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, result.StatusReason)
+			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
+				"status": "processing", "invoice": tx.InvoiceNumber,
+			})
+		}
+	default:
+		return fmt.Errorf("unknown provider result status %d", result.Status)
+	}
+	return s.txRepo.Update(tx)
+}
+
+func providerErrorCause(err *provider.ProviderError) error {
+	if err.Cause != nil {
+		return err.Cause
+	}
+	return err
+}
+
+func registryCheckError(code string, err error) error {
+	name := strings.ToLower(code)
+	if len(name) > 0 {
+		name = strings.ToUpper(name[:1]) + name[1:]
+	}
+	var providerErr *provider.ProviderError
+	if errors.As(err, &providerErr) {
+		return fmt.Errorf("gagal cek status %s: %w", name, providerErrorCause(providerErr))
+	}
+	return fmt.Errorf("gagal cek status %s: %w", name, err)
+}
+
+func refundReasonForResult(source string, result *provider.Result) string {
+	if source == providerResultSourceCallback {
+		return "Pengembalian dana callback gagal"
+	}
+	if source == providerResultSourceFulfill && strings.HasPrefix(result.StatusReason, "Kiosgamer gagal:") {
+		return "Pengembalian dana: top up Kiosgamer gagal"
+	}
+	if source == providerResultSourceFulfill {
+		return "Pengembalian dana top up gagal"
+	}
+	if strings.HasPrefix(result.StatusReason, "Kiosgamer gagal:") {
+		return "Pengembalian dana: top up Kiosgamer gagal"
+	}
+	return "Pengembalian dana top up gagal"
+}
+
+func (s *transactionService) HandleProviderCallback(providerCode string, req *http.Request) (*domain.Transaction, *provider.Result, error) {
+	if s.providerRegistry == nil {
+		return nil, nil, errors.New("provider registry is not initialized")
+	}
+	p, ok := s.providerRegistry.Get(providerCode)
+	if !ok || p == nil {
+		return nil, nil, fmt.Errorf("provider %s not found in registry", providerCode)
+	}
+	parser, ok := p.(provider.CallbackParser)
+	if !ok || parser == nil {
+		return nil, nil, fmt.Errorf("provider %s does not support callbacks", providerCode)
+	}
+
+	result, refID, err := parser.ParseCallback(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	if strings.TrimSpace(refID) == "" {
+		return nil, nil, errors.New("empty callback data")
+	}
+
+	tx, err := s.txRepo.FindByRefID(refID)
+	if err != nil || tx == nil {
+		tx, err = s.txRepo.FindByInvoiceNumber(refID)
+	}
+	if err != nil || tx == nil {
+		return nil, nil, errors.New("transaction not found for callback")
+	}
+
+	// Idempotency (§5 Fase 4, rule 2): skip if already final
+	if isFinalTransactionStatus(tx.Status) {
+		return tx, result, nil
+	}
+
+	// Apply result through boundary (§3.4, §5)
+	if err := s.applyResult(tx, result, nil, providerResultSourceCallback); err != nil {
+		return nil, nil, err
+	}
+
+	return tx, result, nil
+}
+
 func (s *transactionService) HandleDigiflazzCallback(payload *DigiflazzCallbackPayload) error {
 	if payload == nil || payload.Data.RefID == "" {
 		return errors.New("empty callback data")
@@ -614,7 +921,7 @@ func (s *transactionService) HandleDigiflazzCallback(payload *DigiflazzCallbackP
 	}
 
 	// Idempotency: skip if already final
-	if tx.Status == domain.StatusSuccess || tx.Status == domain.StatusFailed {
+	if isFinalTransactionStatus(tx.Status) {
 		return nil
 	}
 
@@ -659,6 +966,10 @@ func (s *transactionService) HandleDigiflazzCallback(payload *DigiflazzCallbackP
 	}
 
 	return s.txRepo.Update(tx)
+}
+
+func isFinalTransactionStatus(status domain.TransactionStatus) bool {
+	return status == domain.StatusSuccess || status == domain.StatusFailed || status == domain.StatusRefunded
 }
 
 func (s *transactionService) HandlePaymentSuccess(invoiceNumber, paymentRef string, paidAmount float64) error {
@@ -768,6 +1079,23 @@ func (s *transactionService) ManualRetry(transactionID uint) error {
 // CheckProviderStatus HANYA memeriksa/mengambil status transaksi ke provider
 // (Kiosgamer poll / history, atau Digiflazz check-status) TANPA PERNAH membuat order baru atau memotong saldo.
 func (s *transactionService) CheckProviderStatus(transactionID uint) (*domain.Transaction, error) {
+	if s.legacyCharacterization {
+		return s.checkProviderStatusLegacy(transactionID)
+	}
+	return s.checkProviderStatusRegistry(transactionID, providerResultSourceCheck)
+}
+
+// ReconcileProcessingTransaction is intentionally separate from the admin
+// status-check entry point so the reconciler cannot fall back to a legacy
+// provider path. It performs CheckStatus only; it never creates a provider
+// order. Provider Result and ProviderError values are handled by applyResult.
+func (s *transactionService) ReconcileProcessingTransaction(transactionID uint) (*domain.Transaction, error) {
+	return s.checkProviderStatusRegistry(transactionID, providerResultSourceReconcile)
+}
+
+// checkProviderStatusLegacy preserves pre-registry behavior exclusively for Fase 0
+// characterization fixtures; no production constructor can select this path.
+func (s *transactionService) checkProviderStatusLegacy(transactionID uint) (*domain.Transaction, error) {
 	tx, err := s.txRepo.FindByID(transactionID)
 	if err != nil || tx == nil {
 		return nil, errors.New("transaksi tidak ditemukan")
@@ -965,11 +1293,11 @@ func (s *transactionService) ManualSetSuccess(transactionID uint, notes string, 
 	}
 
 	manualSuccessJSON, _ := json.Marshal(map[string]interface{}{
-		"source":        "ADMIN_MANUAL_ACTION",
-		"status":        "Sukses",
-		"sn":            tx.SN,
-		"notes":         notes,
-		"completed_at":  now.Format(time.RFC3339),
+		"source":       "ADMIN_MANUAL_ACTION",
+		"status":       "Sukses",
+		"sn":           tx.SN,
+		"notes":        notes,
+		"completed_at": now.Format(time.RFC3339),
 	})
 	tx.ProviderCallbackData = string(manualSuccessJSON)
 
@@ -1001,10 +1329,10 @@ func (s *transactionService) ManualRefund(transactionID uint, notes string) erro
 	tx.CompletedAt = &now
 
 	refundJSON, _ := json.Marshal(map[string]interface{}{
-		"source":        "ADMIN_MANUAL_REFUND",
-		"status":        "Refunded",
-		"notes":         notes,
-		"completed_at":  now.Format(time.RFC3339),
+		"source":       "ADMIN_MANUAL_REFUND",
+		"status":       "Refunded",
+		"notes":        notes,
+		"completed_at": now.Format(time.RFC3339),
 	})
 	tx.ProviderCallbackData = string(refundJSON)
 	_ = s.txRepo.Update(tx)

@@ -78,6 +78,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		&domain.GameProvider{},
 		&domain.Nominal{},
 		&domain.Provider{},
+		&domain.ProviderProduct{},
 		&domain.Transaction{},
 		&domain.TransactionStatusHistory{},
 		&domain.DepositRequest{},

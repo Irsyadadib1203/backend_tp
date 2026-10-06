@@ -21,6 +21,15 @@ type TransactionRepository interface {
 	// one that performed the transition, so concurrent/duplicate webhook
 	// callbacks can never both proceed to fulfillment.
 	MarkAsProcessingIfPending(id uint, paymentRef string, verifiedAt time.Time) (bool, error)
+	// FindProcessingOlderThan returns at most batchSize processing transactions
+	// whose updated_at (or created_at) is older than minAge, ordered by age
+	// ascending (oldest first). Used exclusively by the reconciler worker.
+	FindProcessingOlderThan(minAge time.Duration, batchSize int) ([]domain.Transaction, error)
+	// ClaimProcessingForReconciliation atomically reserves a stale processing
+	// transaction for one reconciliation attempt. The reservation advances
+	// updated_at only when the transaction is still processing and stale, so
+	// concurrent schedulers do not issue duplicate status checks.
+	ClaimProcessingForReconciliation(id uint, staleBefore time.Time) (bool, error)
 	ListRecent(limit int) ([]domain.Transaction, error)
 	ListByUser(userID uint, offset, limit int) ([]domain.Transaction, int64, error)
 	ListAdmin(offset, limit int, status, search, startDate, endDate string) ([]domain.Transaction, int64, error)
@@ -94,6 +103,33 @@ func (r *transactionRepository) MarkAsProcessingIfPending(id uint, paymentRef st
 			"payment_reference":   paymentRef,
 			"payment_verified_at": verifiedAt,
 		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
+// FindProcessingOlderThan returns at most batchSize processing transactions whose
+// updated_at is before (now - minAge), ordered oldest first. The reconciler uses
+// this to find stale transactions that may have been missed by push callbacks.
+func (r *transactionRepository) FindProcessingOlderThan(minAge time.Duration, batchSize int) ([]domain.Transaction, error) {
+	var txs []domain.Transaction
+	cutoff := time.Now().Add(-minAge)
+	err := r.db.Preload("Nominal").Preload("Provider").
+		Where("status = ? AND updated_at < ?", domain.StatusProcessing, cutoff).
+		Order("updated_at ASC").
+		Limit(batchSize).
+		Find(&txs).Error
+	return txs, err
+}
+
+// ClaimProcessingForReconciliation advances updated_at only for a transaction
+// that is still processing and stale. It deliberately does not change the
+// business status or hold a database lock while the provider is called.
+func (r *transactionRepository) ClaimProcessingForReconciliation(id uint, staleBefore time.Time) (bool, error) {
+	result := r.db.Model(&domain.Transaction{}).
+		Where("id = ? AND status = ? AND updated_at < ?", id, domain.StatusProcessing, staleBefore).
+		Update("updated_at", time.Now())
 	if result.Error != nil {
 		return false, result.Error
 	}
@@ -202,14 +238,14 @@ func (r *transactionRepository) GetDashboardStats() (map[string]interface{}, err
 	r.db.Model(&domain.Transaction{}).Where("status = ? AND created_at >= ?", domain.StatusSuccess, todayStart).Select("COALESCE(SUM(profit), 0)").Scan(&todayProfit)
 
 	return map[string]interface{}{
-		"total_orders":    totalOrders,
-		"success_orders":  successOrders,
-		"pending_orders":  pendingOrders,
-		"failed_orders":   failedOrders,
-		"total_revenue":   totalRevenue,
-		"total_profit":    totalProfit,
-		"today_orders":    todayOrders,
-		"today_revenue":   todayRevenue,
-		"today_profit":    todayProfit,
+		"total_orders":   totalOrders,
+		"success_orders": successOrders,
+		"pending_orders": pendingOrders,
+		"failed_orders":  failedOrders,
+		"total_revenue":  totalRevenue,
+		"total_profit":   totalProfit,
+		"today_orders":   todayOrders,
+		"today_revenue":  todayRevenue,
+		"today_profit":   todayProfit,
 	}, nil
 }

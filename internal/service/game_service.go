@@ -9,6 +9,7 @@ import (
 	"topup-backend/internal/domain"
 	"topup-backend/internal/pkg/cache"
 	"topup-backend/internal/pkg/utils"
+	"topup-backend/internal/provider"
 	"topup-backend/internal/repository"
 )
 
@@ -44,10 +45,12 @@ type GameService interface {
 }
 
 type gameService struct {
-	gameRepo       repository.GameRepository
-	nominalRepo    repository.NominalRepository
-	providerRepo   repository.ProviderRepository
-	digiflazzBuyer DigiflazzBuyerService
+	gameRepo            repository.GameRepository
+	nominalRepo         repository.NominalRepository
+	providerRepo        repository.ProviderRepository
+	digiflazzBuyer      DigiflazzBuyerService
+	providerProductRepo repository.ProviderProductRepository
+	providerRegistry    *provider.Registry
 }
 
 func NewGameService(
@@ -55,13 +58,23 @@ func NewGameService(
 	nominalRepo repository.NominalRepository,
 	providerRepo repository.ProviderRepository,
 	digiflazzBuyer DigiflazzBuyerService,
+	extra ...interface{},
 ) GameService {
-	return &gameService{
+	s := &gameService{
 		gameRepo:       gameRepo,
 		nominalRepo:    nominalRepo,
 		providerRepo:   providerRepo,
 		digiflazzBuyer: digiflazzBuyer,
 	}
+	for _, opt := range extra {
+		switch v := opt.(type) {
+		case repository.ProviderProductRepository:
+			s.providerProductRepo = v
+		case *provider.Registry:
+			s.providerRegistry = v
+		}
+	}
+	return s
 }
 
 func (s *gameService) GetPublicGames() ([]domain.Game, error) {
@@ -150,6 +163,27 @@ func (s *gameService) GetNominalByID(id uint) (*domain.Nominal, error) {
 	return s.nominalRepo.FindByID(id)
 }
 
+func (s *gameService) isGameSupportedByProvider(p *domain.Provider, game *domain.Game) bool {
+	if p == nil || game == nil {
+		return false
+	}
+	// Capability GameSupport via registry (§5 Fase 3)
+	if s.providerRegistry != nil {
+		if adapter, ok := s.providerRegistry.Get(p.Code); ok {
+			if gs, ok := adapter.(provider.GameSupport); ok {
+				return gs.Supports(game.Slug) || (game.Name != "" && gs.Supports(game.Name))
+			}
+			// Providers without GameSupport capability support all games by default
+			return true
+		}
+	}
+	// Fallback to legacy check for Kiosgamer
+	if strings.EqualFold(p.Code, "KIOSGAMER") {
+		return isKiosgamerSupportedGame(game)
+	}
+	return true
+}
+
 func (s *gameService) validateNominalProvider(nominal *domain.Nominal) error {
 	if nominal.ProviderID == 0 {
 		return nil
@@ -159,17 +193,22 @@ func (s *gameService) validateNominalProvider(nominal *domain.Nominal) error {
 		return nil
 	}
 
-	if strings.EqualFold(provider.Code, "KIOSGAMER") {
-		game, err := s.gameRepo.FindByID(nominal.GameID)
-		if err != nil || game == nil {
+	game, err := s.gameRepo.FindByID(nominal.GameID)
+	if err != nil || game == nil {
+		if strings.EqualFold(provider.Code, "KIOSGAMER") {
 			return errors.New("game target tidak ditemukan")
 		}
-		if !isKiosgamerSupportedGame(game) {
+		return nil
+	}
+
+	if !s.isGameSupportedByProvider(provider, game) {
+		if strings.EqualFold(provider.Code, "KIOSGAMER") {
 			return fmt.Errorf("provider Kiosgamer hanya mendukung game Free Fire & Call of Duty Mobile. Game '%s' tidak didukung", game.Name)
 		}
-		if strings.TrimSpace(nominal.KiosgamerProductCode) == "" {
-			return errors.New("SKU Kiosgamer wajib diisi jika memilih provider pemrosesan Kiosgamer")
-		}
+		return fmt.Errorf("provider %s tidak mendukung game '%s'", provider.Name, game.Name)
+	}
+	if strings.EqualFold(provider.Code, "KIOSGAMER") && strings.TrimSpace(nominal.KiosgamerProductCode) == "" {
+		return errors.New("SKU Kiosgamer wajib diisi jika memilih provider pemrosesan Kiosgamer")
 	}
 	return nil
 }
@@ -184,6 +223,7 @@ func (s *gameService) CreateNominal(nominal *domain.Nominal) error {
 	nominal.CalculatePrices()
 	err := s.nominalRepo.Create(nominal)
 	if err == nil {
+		s.dualWriteProviderProducts(nominal)
 		s.invalidateGameCache()
 	}
 	return err
@@ -193,12 +233,60 @@ func (s *gameService) UpdateNominal(nominal *domain.Nominal) error {
 	if err := s.validateNominalProvider(nominal); err != nil {
 		return err
 	}
+	// Dual-write safety: kolom lama tetap ditulis dan tidak boleh tertimpa kosong (§3.6, §5)
+	existing, _ := s.nominalRepo.FindByID(nominal.ID)
+	if existing != nil {
+		if strings.TrimSpace(nominal.ProviderProductCode) == "" && existing.ProviderProductCode != "" {
+			nominal.ProviderProductCode = existing.ProviderProductCode
+		}
+		if strings.TrimSpace(nominal.KiosgamerProductCode) == "" && existing.KiosgamerProductCode != "" {
+			nominal.KiosgamerProductCode = existing.KiosgamerProductCode
+		}
+		if strings.TrimSpace(nominal.SellerProductCode) == "" && existing.SellerProductCode != "" {
+			nominal.SellerProductCode = existing.SellerProductCode
+		}
+	}
 	nominal.CalculatePrices()
 	err := s.nominalRepo.Update(nominal)
 	if err == nil {
+		s.dualWriteProviderProducts(nominal)
 		s.invalidateGameCache()
 	}
 	return err
+}
+
+func (s *gameService) dualWriteProviderProducts(nominal *domain.Nominal) {
+	if s.providerProductRepo == nil || nominal == nil || nominal.ID == 0 {
+		return
+	}
+	if strings.TrimSpace(nominal.ProviderProductCode) != "" {
+		pID := nominal.ProviderID
+		if pID == 0 {
+			if p, err := s.providerRepo.GetByCode("DIGIFLAZZ"); err == nil && p != nil {
+				pID = p.ID
+			}
+		}
+		if pID > 0 {
+			costPrice := nominal.BasePrice
+			_ = s.providerProductRepo.Upsert(&domain.ProviderProduct{
+				NominalID:   nominal.ID,
+				ProviderID:  pID,
+				ProductCode: nominal.ProviderProductCode,
+				CostPrice:   &costPrice,
+				IsActive:    nominal.IsActive,
+			})
+		}
+	}
+	if strings.TrimSpace(nominal.KiosgamerProductCode) != "" {
+		if p, err := s.providerRepo.GetByCode("KIOSGAMER"); err == nil && p != nil {
+			_ = s.providerProductRepo.Upsert(&domain.ProviderProduct{
+				NominalID:   nominal.ID,
+				ProviderID:  p.ID,
+				ProductCode: nominal.KiosgamerProductCode,
+				IsActive:    nominal.IsActive,
+			})
+		}
+	}
 }
 
 func (s *gameService) DeleteNominal(id uint) error {
@@ -254,19 +342,23 @@ func (s *gameService) BatchSwitchProvider(nominalIDs []uint, providerID uint) (*
 				continue
 			}
 
-			// 1. Tolok Ukur Game Whitelist (Kiosgamer hanya mendukung Free Fire & CODM)
+			// 1. Tolok Ukur Game Whitelist (capability GameSupport)
 			game := nom.Game
 			if game == nil && nom.GameID > 0 {
 				game, _ = s.gameRepo.FindByID(nom.GameID)
 			}
 
-			if !isKiosgamerSupportedGame(game) {
+			if !s.isGameSupportedByProvider(provider, game) {
 				gameTitle := "Game ini"
 				if game != nil {
 					gameTitle = game.Name
 				}
 				result.SkippedCount++
-				result.SkippedItems = append(result.SkippedItems, fmt.Sprintf("%s (%s tidak didukung oleh Kiosgamer, tetap di provider saat ini)", nom.Name, gameTitle))
+				if strings.EqualFold(provider.Code, "KIOSGAMER") {
+					result.SkippedItems = append(result.SkippedItems, fmt.Sprintf("%s (%s tidak didukung oleh Kiosgamer, tetap di provider saat ini)", nom.Name, gameTitle))
+				} else {
+					result.SkippedItems = append(result.SkippedItems, fmt.Sprintf("%s (%s tidak didukung oleh %s, tetap di provider saat ini)", nom.Name, gameTitle, provider.Name))
+				}
 				continue
 			}
 
@@ -385,6 +477,20 @@ func (s *gameService) SyncDigiflazzProducts(targetGameID uint, brandFilter strin
 			return 0, err
 		}
 		s.invalidateGameCache()
+		if s.providerProductRepo != nil {
+			for _, nom := range syncedNominals {
+				if existing, err := s.nominalRepo.FindByProviderCode(nom.ProviderProductCode); err == nil && existing != nil {
+					costPrice := existing.BasePrice
+					_ = s.providerProductRepo.Upsert(&domain.ProviderProduct{
+						NominalID:   existing.ID,
+						ProviderID:  providerID,
+						ProductCode: existing.ProviderProductCode,
+						CostPrice:   &costPrice,
+						IsActive:    existing.IsActive,
+					})
+				}
+			}
+		}
 	}
 
 	return len(syncedNominals), nil
@@ -426,6 +532,7 @@ func (s *gameService) AutoSyncAllPrices() (int, error) {
 			nom.CalculatePrices()
 			if err := s.nominalRepo.Update(&nom); err == nil {
 				updatedCount++
+				s.dualWriteProviderProducts(&nom)
 			}
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -52,6 +53,11 @@ type Config struct {
 	// param). Format in env: "provider1:secret1,provider2:secret2".
 	// A provider with no entry here is never trusted by that route.
 	GenericWebhookSecrets map[string]string
+
+	// Reconciler (Fase 5) — disabled by default. Enable only after registry
+	// mode has been running in production without discrepancy.
+	ReconcilerEnabled bool
+	ReconcilerMinAge  time.Duration
 }
 
 var AppConfig *Config
@@ -100,6 +106,9 @@ func LoadConfig() *Config {
 		TripayBaseURL:      getEnv("TRIPAY_BASE_URL", "https://tripay.co.id/api-sandbox"),
 
 		GenericWebhookSecrets: parseProviderSecrets(getEnv("GENERIC_WEBHOOK_SECRETS", "")),
+
+		ReconcilerEnabled: strings.ToLower(strings.TrimSpace(getEnv("RECONCILER_ENABLED", "false"))) == "true",
+		ReconcilerMinAge:  parseReconcilerMinAge(getEnv("RECONCILER_MIN_AGE", "5m")),
 	}
 
 	AppConfig = cfg
@@ -140,4 +149,16 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// parseReconcilerMinAge parses a duration string (e.g. "5m", "10m", "1h").
+// Falls back to 5 minutes on parse error so a misconfigured value can never
+// accidentally cause zero-age reconciliation (which would reconcile fresh txns).
+func parseReconcilerMinAge(raw string) time.Duration {
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		log.Printf("[Config] Invalid RECONCILER_MIN_AGE=%q, falling back to 5m", raw)
+		return 5 * time.Minute
+	}
+	return d
 }

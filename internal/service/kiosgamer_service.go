@@ -128,15 +128,16 @@ type KiosgamerService interface {
 }
 
 type kiosgamerService struct {
-	repo         repository.KiosgamerRepository
-	providerRepo repository.ProviderRepository
-	nominalRepo  repository.NominalRepository
-	gameRepo     repository.GameRepository
-	cfg          *config.Config
-	httpClient   tls_client.HttpClient
-	baseURL      *url.URL
-	mu           sync.Mutex
-	orderMu      sync.Mutex
+	repo                repository.KiosgamerRepository
+	providerRepo        repository.ProviderRepository
+	nominalRepo         repository.NominalRepository
+	gameRepo            repository.GameRepository
+	providerProductRepo repository.ProviderProductRepository
+	cfg                 *config.Config
+	httpClient          tls_client.HttpClient
+	baseURL             *url.URL
+	mu                  sync.Mutex
+	orderMu             sync.Mutex
 }
 
 func NewKiosgamerService(
@@ -145,6 +146,7 @@ func NewKiosgamerService(
 	nominalRepo repository.NominalRepository,
 	gameRepo repository.GameRepository,
 	cfg *config.Config,
+	extra ...interface{},
 ) KiosgamerService {
 	// CookieJar bawaan untuk menyimpan cookie DataDome & session_key
 	jar := tls_client.NewCookieJar()
@@ -162,7 +164,7 @@ func NewKiosgamerService(
 		fmt.Printf("Error creating TLS client: %v\n", err)
 	}
 
-	return &kiosgamerService{
+	s := &kiosgamerService{
 		repo:         repo,
 		providerRepo: providerRepo,
 		nominalRepo:  nominalRepo,
@@ -171,6 +173,12 @@ func NewKiosgamerService(
 		httpClient:   client,
 		baseURL:      baseURL,
 	}
+	for _, opt := range extra {
+		if ppRepo, ok := opt.(repository.ProviderProductRepository); ok {
+			s.providerProductRepo = ppRepo
+		}
+	}
+	return s
 }
 
 func (s *kiosgamerService) provider() (*domain.Provider, error) {
@@ -1367,6 +1375,16 @@ func (s *kiosgamerService) AutoSyncMapping(ctx context.Context, gameID uint, gam
 				if isAmountMatch {
 					nom.KiosgamerProductCode = cat.ProductCode
 					_ = s.nominalRepo.Update(nom)
+					if s.providerProductRepo != nil {
+						if p, err := s.provider(); err == nil && p != nil {
+							_ = s.providerProductRepo.Upsert(&domain.ProviderProduct{
+								NominalID:   nom.ID,
+								ProviderID:  p.ID,
+								ProductCode: cat.ProductCode,
+								IsActive:    nom.IsActive,
+							})
+						}
+					}
 					result.MatchedCount++
 					result.MatchedItems = append(result.MatchedItems, fmt.Sprintf("%s -> Kiosgamer ID %s (%d %s - %d Shell)", nom.Name, cat.ProductCode, cat.Amount, cat.PointName, cat.GarenaShell))
 					matched = true
@@ -1393,6 +1411,24 @@ func (s *kiosgamerService) UpdateNominalKiosgamerCode(nominalID uint, kiosgamerC
 	if nom == nil {
 		return errors.New("nominal not found")
 	}
-	nom.KiosgamerProductCode = strings.TrimSpace(kiosgamerCode)
-	return s.nominalRepo.Update(nom)
+	cleanCode := strings.TrimSpace(kiosgamerCode)
+	// Kolom lama tetap ditulis dan tidak boleh tertimpa kosong (§3.6, §5)
+	if cleanCode != "" || nom.KiosgamerProductCode == "" {
+		nom.KiosgamerProductCode = cleanCode
+	}
+	if err := s.nominalRepo.Update(nom); err != nil {
+		return err
+	}
+	// Dual-write to provider_products
+	if s.providerProductRepo != nil && cleanCode != "" {
+		if p, err := s.provider(); err == nil && p != nil {
+			_ = s.providerProductRepo.Upsert(&domain.ProviderProduct{
+				NominalID:   nom.ID,
+				ProviderID:  p.ID,
+				ProductCode: cleanCode,
+				IsActive:    nom.IsActive,
+			})
+		}
+	}
+	return nil
 }

@@ -20,6 +20,10 @@ import (
 	"topup-backend/internal/middleware"
 	"topup-backend/internal/pkg/scheduler"
 	"topup-backend/internal/pkg/worker"
+	"topup-backend/internal/provider"
+	providerdigiflazz "topup-backend/internal/provider/digiflazz"
+	providerkiosgamer "topup-backend/internal/provider/kiosgamer"
+	providerotomax "topup-backend/internal/provider/otomax"
 	"topup-backend/internal/repository"
 	"topup-backend/internal/service"
 )
@@ -49,16 +53,29 @@ func main() {
 	articleRepo := repository.NewArticleRepository(db)
 	kiosgamerRepo := repository.NewKiosgamerRepository(db)
 	rolePermRepo := repository.NewRolePermissionRepository(db)
+	providerProductRepo := repository.NewProviderProductRepository(db)
 
 	// 4. Initialize Services
 	authService := service.NewAuthService(userRepo, cfg)
 	nicknameService := service.NewNicknameService()
 	digiflazzBuyerService := service.NewDigiflazzBuyerService(providerRepo, cfg)
-	kiosgamerService := service.NewKiosgamerService(kiosgamerRepo, providerRepo, nominalRepo, gameRepo, cfg)
+	kiosgamerService := service.NewKiosgamerService(kiosgamerRepo, providerRepo, nominalRepo, gameRepo, cfg, providerProductRepo)
+	// Provider registry is the sole transaction execution path after the
+	// multi-provider rollout; adapters retain provider-specific protocol work.
+	providerRegistry := provider.NewRegistry()
+	if err := providerRegistry.Register(providerdigiflazz.New(digiflazzBuyerService)); err != nil {
+		log.Fatalf("register Digiflazz provider adapter: %v", err)
+	}
+	if err := providerRegistry.Register(providerkiosgamer.New(kiosgamerService)); err != nil {
+		log.Fatalf("register Kiosgamer provider adapter: %v", err)
+	}
+	if err := providerRegistry.Register(providerotomax.New(providerotomax.FFZStoreCode, providerRepo)); err != nil {
+		log.Fatalf("register FFZStore OtoMax provider adapter: %v", err)
+	}
 	webhookService := service.NewWebhookService(providerRepo)
 	digiflazzSellerService := service.NewDigiflazzSellerService(userRepo, nominalRepo, txRepo, digiflazzBuyerService, webhookService)
-	gameService := service.NewGameService(gameRepo, nominalRepo, providerRepo, digiflazzBuyerService)
-	txService := service.NewTransactionService(txRepo, nominalRepo, gameRepo, userRepo, paymentRepo, providerRepo, digiflazzBuyerService, kiosgamerService)
+	gameService := service.NewGameService(gameRepo, nominalRepo, providerRepo, digiflazzBuyerService, providerProductRepo, providerRegistry)
+	txService := service.NewTransactionService(txRepo, nominalRepo, gameRepo, userRepo, paymentRepo, providerRepo, providerRegistry)
 	depositService := service.NewDepositService(depositRepo, userRepo, paymentRepo, nil)
 	ipService := service.NewIPWhitelistService(ipRepo)
 	rbacService := service.NewRBACService(rolePermRepo)
@@ -78,6 +95,7 @@ func main() {
 	adminHandler := handler.NewAdminHandler(gameService, txService, depositService, digiflazzBuyerService, userRepo, providerRepo, paymentRepo, bannerRepo, articleRepo, tripayChannelService)
 	ipHandler := handler.NewIPWhitelistHandler(ipService)
 	paymentHandler := handler.NewPaymentHandler(txService, depositService, paymentRepo, cfg.TripayPrivateKey, cfg.GenericWebhookSecrets)
+	providerCallbackHandler := handler.NewProviderCallbackHandler(txService, providerRegistry, providerRepo)
 
 	// 5.1 Start Background Auto-Sync Scheduler (Sync prices & cut-off status every 1 hour)
 	autoSyncScheduler := scheduler.NewAutoSyncScheduler(gameService, 1*time.Hour)
@@ -86,6 +104,19 @@ func main() {
 	// 5.2 Start Background Kiosgamer Keep-Alive Scheduler (Heartbeat & auto-persist rotated cookies every 20 minutes)
 	kiosKeepAliveScheduler := scheduler.NewKiosgamerKeepAliveScheduler(kiosgamerService, 20*time.Minute)
 	kiosKeepAliveScheduler.Start()
+
+	// 5.3 Start Reconciler (Fase 5) — disabled by default via RECONCILER_ENABLED=false.
+	// Enable only after registry mode has been verified in production.
+	reconcilerCtx, reconcilerCancel := context.WithCancel(context.Background())
+	if cfg.ReconcilerEnabled {
+		reconcilerCfg := service.DefaultReconcilerConfig(cfg.ReconcilerMinAge)
+		reconcilerWorker := service.NewReconcilerWorker(reconcilerCfg, txRepo, providerRegistry, txService)
+		go reconcilerWorker.Run(reconcilerCtx)
+		log.Printf("[Server] Reconciler enabled. minAge=%s", cfg.ReconcilerMinAge)
+	} else {
+		log.Println("[Server] Reconciler disabled (RECONCILER_ENABLED=false). Set RECONCILER_ENABLED=true to enable.")
+		_ = reconcilerCtx // suppress unused warning; cancel deferred below
+	}
 
 	// 6. Router Setup
 	r := gin.Default()
@@ -103,6 +134,10 @@ func main() {
 			"version": "2.0.0",
 		})
 	})
+
+	// Generic Provider Callback endpoint (§5 Fase 4: POST /api/callback/provider/:code)
+	r.POST("/api/callback/provider/:code", providerCallbackHandler.HandleCallback)
+	r.GET("/api/callback/provider/:code", providerCallbackHandler.HandleCallback)
 
 	// Global Public Rate Limiter (30 req/sec, burst 60)
 	publicLimiter := middleware.RateLimitMiddleware(rate.Limit(30), 60)
@@ -160,6 +195,8 @@ func main() {
 		// -------------------------------------------------------------
 		api.POST("/callback/digiflazz", digiflazzBuyerHandler.HandleCallback)
 		api.POST("/digiflazz/callback", digiflazzBuyerHandler.HandleCallback)
+		api.POST("/callback/provider/:code", providerCallbackHandler.HandleCallback)
+		api.GET("/callback/provider/:code", providerCallbackHandler.HandleCallback)
 		api.POST("/callback/tripay", paymentHandler.HandleTripayCallback)
 		api.POST("/callback/payment/:provider", paymentHandler.HandleGenericWebhook)
 
@@ -348,6 +385,7 @@ func main() {
 	}
 
 	// Stop background services gracefully
+	reconcilerCancel() // stop reconciler goroutine (no-op if disabled)
 	autoSyncScheduler.Stop()
 	kiosKeepAliveScheduler.Stop()
 	worker.GlobalPool.Stop(10 * time.Second)
