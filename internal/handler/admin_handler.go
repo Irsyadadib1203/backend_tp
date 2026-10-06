@@ -27,6 +27,7 @@ type AdminHandler struct {
 	bannerRepo           repository.BannerRepository
 	articleRepo          repository.ArticleRepository
 	tripayChannelService service.TripayChannelService
+	settingRepo          repository.SystemSettingRepository
 }
 
 func NewAdminHandler(
@@ -40,7 +41,12 @@ func NewAdminHandler(
 	bannerRepo repository.BannerRepository,
 	articleRepo repository.ArticleRepository,
 	tripayChannelService service.TripayChannelService,
+	settingRepos ...repository.SystemSettingRepository,
 ) *AdminHandler {
+	var settingRepo repository.SystemSettingRepository
+	if len(settingRepos) > 0 {
+		settingRepo = settingRepos[0]
+	}
 	return &AdminHandler{
 		gameService:          gameService,
 		txService:            txService,
@@ -52,6 +58,7 @@ func NewAdminHandler(
 		bannerRepo:           bannerRepo,
 		articleRepo:          articleRepo,
 		tripayChannelService: tripayChannelService,
+		settingRepo:          settingRepo,
 	}
 }
 
@@ -708,30 +715,27 @@ func (h *AdminHandler) GetProviders(c *gin.Context) {
 	response.Success(c, "Providers loaded", safe)
 }
 
-type ProviderReferenceSettingsRequest struct {
+type TransactionReferenceSettingsRequest struct {
 	InvoiceTemplate string `json:"invoice_template"`
 	RefIDTemplate   string `json:"ref_id_template"`
 }
 
-func (h *AdminHandler) GetProviderReferenceSettings(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	record, err := h.providerRepo.GetByID(uint(id))
-	if err != nil || record == nil {
-		response.NotFound(c, "Provider tidak ditemukan")
-		return
+func (h *AdminHandler) GetTransactionReferenceSettings(c *gin.Context) {
+	reference := provider.ReferenceConfig{}
+	if h.settingRepo != nil {
+		if setting, err := h.settingRepo.Get("transaction_reference_format"); err == nil && setting != nil {
+			reference = provider.ParseReferenceConfig(setting.Value)
+		}
 	}
-	reference := provider.ParseReferenceConfig(record.Config)
-	response.Success(c, "Provider reference settings loaded", gin.H{"id": record.ID, "name": record.Name, "code": record.Code, "invoice_template": reference.InvoiceTemplate, "ref_id_template": reference.RefIDTemplate, "tokens": []string{"{date}", "{time}", "{timestamp}", "{unix}", "{random}", "{customer_id}", "{server_id}", "{nominal_id}", "{provider_code}"}})
+	response.Success(c, "Global transaction reference settings loaded", gin.H{"invoice_template": reference.InvoiceTemplate, "ref_id_template": reference.RefIDTemplate, "tokens": []string{"{date}", "{time}", "{timestamp}", "{unix}", "{random}", "{customer_id}", "{server_id}", "{nominal_id}", "{provider_code}"}})
 }
 
-func (h *AdminHandler) SaveProviderReferenceSettings(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	record, err := h.providerRepo.GetByID(uint(id))
-	if err != nil || record == nil {
-		response.NotFound(c, "Provider tidak ditemukan")
+func (h *AdminHandler) SaveTransactionReferenceSettings(c *gin.Context) {
+	if h.settingRepo == nil {
+		response.InternalServerError(c, "System settings repository is unavailable", nil)
 		return
 	}
-	var req ProviderReferenceSettingsRequest
+	var req TransactionReferenceSettingsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Format reference tidak valid", err.Error())
 		return
@@ -740,17 +744,16 @@ func (h *AdminHandler) SaveProviderReferenceSettings(c *gin.Context) {
 		response.BadRequest(c, "Template reference maksimal 120 karakter", nil)
 		return
 	}
-	configJSON, err := provider.WithReferenceConfig(record.Config, provider.ReferenceConfig{InvoiceTemplate: req.InvoiceTemplate, RefIDTemplate: req.RefIDTemplate})
+	configJSON, err := provider.WithReferenceConfig("", provider.ReferenceConfig{InvoiceTemplate: req.InvoiceTemplate, RefIDTemplate: req.RefIDTemplate})
 	if err != nil {
 		response.BadRequest(c, "Konfigurasi provider tidak dapat diperbarui", err.Error())
 		return
 	}
-	record.Config = configJSON
-	if err := h.providerRepo.Update(record); err != nil {
+	if err := h.settingRepo.Set("transaction_reference_format", configJSON); err != nil {
 		response.InternalServerError(c, "Gagal menyimpan format reference", err)
 		return
 	}
-	response.Success(c, "Format invoice dan ref ID tersimpan", provider.ParseReferenceConfig(record.Config))
+	response.Success(c, "Format invoice dan ref ID global tersimpan", provider.ParseReferenceConfig(configJSON))
 }
 
 // FFZStoreSettingsRequest only accepts the operational values needed by the
@@ -837,7 +840,6 @@ func (h *AdminHandler) SaveFFZStoreSettings(c *gin.Context) {
 		return
 	}
 	config := ffzStoreConfig(strings.TrimRight(strings.TrimSpace(req.BaseURL), "/"), encryptedSecret)
-	config.Reference = previous.Reference
 	configJSON, err := json.Marshal(config)
 	if err != nil {
 		response.InternalServerError(c, "Failed to build FFZStore configuration", err)

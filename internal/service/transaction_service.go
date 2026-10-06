@@ -65,6 +65,7 @@ type transactionService struct {
 	userRepo     repository.UserRepository
 	paymentRepo  repository.PaymentRepository
 	providerRepo repository.ProviderRepository
+	settingRepo  repository.SystemSettingRepository
 	// Retained only for Fase 0 characterization fixtures. Transaction execution
 	// is registry-only; NewTransactionService never initializes these fields.
 	digiflazzBuyer         DigiflazzBuyerService
@@ -86,7 +87,12 @@ func NewTransactionService(
 	paymentRepo repository.PaymentRepository,
 	providerRepo repository.ProviderRepository,
 	providerRegistry *provider.Registry,
+	settingRepos ...repository.SystemSettingRepository,
 ) TransactionService {
+	var settingRepo repository.SystemSettingRepository
+	if len(settingRepos) > 0 {
+		settingRepo = settingRepos[0]
+	}
 	return &transactionService{
 		txRepo:           txRepo,
 		nominalRepo:      nominalRepo,
@@ -94,6 +100,7 @@ func NewTransactionService(
 		userRepo:         userRepo,
 		paymentRepo:      paymentRepo,
 		providerRepo:     providerRepo,
+		settingRepo:      settingRepo,
 		providerRegistry: providerRegistry,
 	}
 }
@@ -138,10 +145,12 @@ func (s *transactionService) CreateOrder(req *CreateOrderRequest) (*domain.Trans
 	totalAmount := sellingPrice + adminFee
 	invoiceNumber := utils.GenerateInvoiceNumber()
 	refID := utils.GenerateRefID()
-	if configuredProvider, providerErr := s.providerRepo.GetByID(nominal.ProviderID); providerErr == nil && configuredProvider != nil {
-		reference := provider.ParseReferenceConfig(configuredProvider.Config)
-		invoiceNumber = provider.RenderReference(reference.InvoiceTemplate, invoiceNumber, configuredProvider.Code, req.CustomerID, req.ServerID, nominal.ID)
-		refID = provider.RenderReference(reference.RefIDTemplate, refID, configuredProvider.Code, req.CustomerID, req.ServerID, nominal.ID)
+	if configuredProvider, providerErr := s.providerRepo.GetByID(nominal.ProviderID); providerErr == nil && configuredProvider != nil && s.settingRepo != nil {
+		if setting, settingErr := s.settingRepo.Get("transaction_reference_format"); settingErr == nil && setting != nil {
+			reference := provider.ParseReferenceConfig(setting.Value)
+			invoiceNumber = provider.RenderReference(reference.InvoiceTemplate, invoiceNumber, configuredProvider.Code, req.CustomerID, req.ServerID, nominal.ID)
+			refID = provider.RenderReference(reference.RefIDTemplate, refID, configuredProvider.Code, req.CustomerID, req.ServerID, nominal.ID)
+		}
 	}
 
 	// If paying with SALDO

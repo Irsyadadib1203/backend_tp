@@ -93,6 +93,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		&domain.Article{},
 		&domain.KiosgamerCredential{},
 		&domain.RolePermission{},
+		&domain.SystemSetting{},
 	)
 	if err != nil {
 		log.Fatalf("[Database] Migration error: %v", err)

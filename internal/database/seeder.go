@@ -75,15 +75,20 @@ func SeedInitialData(db *gorm.DB) {
 		log.Println("[Seeder] Created Kiosgamer Provider config")
 	}
 
-	
+	var ffzStoreCount int64
+	db.Model(&domain.Provider{}).Where("code = ?", "FFZSTORE").Count(&ffzStoreCount)
+	if ffzStoreCount == 0 {
+		db.Create(&domain.Provider{Name: "FFZStore", Code: "FFZSTORE", BaseURL: "https://api.ffzstore.com", IsActive: false})
+		log.Println("[Seeder] Created inactive FFZStore Provider config; configure it in Providers Center before activation")
+	}
 
 	// 3b. Seed Payment Methods populer sebagai fallback
 	//     (akan di-update otomatis saat Tripay Sync dijalankan dari Admin Panel)
 	fallbackMethods := []domain.PaymentMethod{
 		{
 			Code: "QRIS", Name: "QRIS (Semua Dompet Digital)",
-			Category:     domain.PaymentCatQRIS,
-			FixedFee:     0, PercentFee: 0.7,
+			Category: domain.PaymentCatQRIS,
+			FixedFee: 0, PercentFee: 0.7,
 			MinAmount: 1000, MaxAmount: 10000000,
 			ImageURL:     "/images/payments/qris.png",
 			Instructions: "Scan QR code menggunakan aplikasi dompet digital atau mobile banking Anda.",
@@ -91,8 +96,8 @@ func SeedInitialData(db *gorm.DB) {
 		},
 		{
 			Code: "GOPAY", Name: "GoPay",
-			Category:     domain.PaymentCatEWallet,
-			FixedFee:     0, PercentFee: 1.5,
+			Category: domain.PaymentCatEWallet,
+			FixedFee: 0, PercentFee: 1.5,
 			MinAmount: 1000, MaxAmount: 10000000,
 			ImageURL:     "/images/payments/gopay.png",
 			Instructions: "Pembayaran melalui aplikasi Gojek / GoPay.",
@@ -100,8 +105,8 @@ func SeedInitialData(db *gorm.DB) {
 		},
 		{
 			Code: "OVO", Name: "OVO",
-			Category:     domain.PaymentCatEWallet,
-			FixedFee:     0, PercentFee: 1.5,
+			Category: domain.PaymentCatEWallet,
+			FixedFee: 0, PercentFee: 1.5,
 			MinAmount: 1000, MaxAmount: 10000000,
 			ImageURL:     "/images/payments/ovo.png",
 			Instructions: "Pembayaran melalui aplikasi OVO.",
@@ -109,8 +114,8 @@ func SeedInitialData(db *gorm.DB) {
 		},
 		{
 			Code: "DANA", Name: "DANA",
-			Category:     domain.PaymentCatEWallet,
-			FixedFee:     0, PercentFee: 1.5,
+			Category: domain.PaymentCatEWallet,
+			FixedFee: 0, PercentFee: 1.5,
 			MinAmount: 1000, MaxAmount: 10000000,
 			ImageURL:     "/images/payments/dana.png",
 			Instructions: "Pembayaran melalui aplikasi DANA.",
@@ -118,8 +123,8 @@ func SeedInitialData(db *gorm.DB) {
 		},
 		{
 			Code: "SHOPEE_PAY", Name: "ShopeePay",
-			Category:     domain.PaymentCatEWallet,
-			FixedFee:     0, PercentFee: 1.5,
+			Category: domain.PaymentCatEWallet,
+			FixedFee: 0, PercentFee: 1.5,
 			MinAmount: 1000, MaxAmount: 10000000,
 			ImageURL:     "/images/payments/shopeepay.png",
 			Instructions: "Pembayaran melalui aplikasi Shopee.",
@@ -127,8 +132,8 @@ func SeedInitialData(db *gorm.DB) {
 		},
 		{
 			Code: "BCAVA", Name: "BCA Virtual Account",
-			Category:     domain.PaymentCatVirtualAccount,
-			FixedFee:     4000, PercentFee: 0,
+			Category: domain.PaymentCatVirtualAccount,
+			FixedFee: 4000, PercentFee: 0,
 			MinAmount: 10000, MaxAmount: 100000000,
 			ImageURL:     "/images/payments/bca.png",
 			Instructions: "Transfer ke nomor Virtual Account BCA yang tertera pada invoice.",
@@ -136,8 +141,8 @@ func SeedInitialData(db *gorm.DB) {
 		},
 		{
 			Code: "BRIVA", Name: "BRI Virtual Account",
-			Category:     domain.PaymentCatVirtualAccount,
-			FixedFee:     4000, PercentFee: 0,
+			Category: domain.PaymentCatVirtualAccount,
+			FixedFee: 4000, PercentFee: 0,
 			MinAmount: 10000, MaxAmount: 100000000,
 			ImageURL:     "/images/payments/bri.png",
 			Instructions: "Transfer ke nomor Virtual Account BRI yang tertera pada invoice.",
@@ -145,8 +150,8 @@ func SeedInitialData(db *gorm.DB) {
 		},
 		{
 			Code: "MANDIRIVA", Name: "Mandiri Virtual Account",
-			Category:     domain.PaymentCatVirtualAccount,
-			FixedFee:     4000, PercentFee: 0,
+			Category: domain.PaymentCatVirtualAccount,
+			FixedFee: 4000, PercentFee: 0,
 			MinAmount: 10000, MaxAmount: 100000000,
 			ImageURL:     "/images/payments/mandiri.png",
 			Instructions: "Bayar ke nomor Virtual Account Mandiri via ATM, m-Banking, atau internet banking.",
@@ -154,8 +159,8 @@ func SeedInitialData(db *gorm.DB) {
 		},
 		{
 			Code: "BNIVA", Name: "BNI Virtual Account",
-			Category:     domain.PaymentCatVirtualAccount,
-			FixedFee:     4000, PercentFee: 0,
+			Category: domain.PaymentCatVirtualAccount,
+			FixedFee: 4000, PercentFee: 0,
 			MinAmount: 10000, MaxAmount: 100000000,
 			ImageURL:     "/images/payments/bni.png",
 			Instructions: "Transfer ke nomor Virtual Account BNI yang tertera pada invoice.",

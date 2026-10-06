@@ -54,6 +54,7 @@ func main() {
 	kiosgamerRepo := repository.NewKiosgamerRepository(db)
 	rolePermRepo := repository.NewRolePermissionRepository(db)
 	providerProductRepo := repository.NewProviderProductRepository(db)
+	settingRepo := repository.NewSystemSettingRepository(db)
 
 	// 4. Initialize Services
 	authService := service.NewAuthService(userRepo, cfg)
@@ -75,7 +76,7 @@ func main() {
 	webhookService := service.NewWebhookService(providerRepo)
 	digiflazzSellerService := service.NewDigiflazzSellerService(userRepo, nominalRepo, txRepo, digiflazzBuyerService, webhookService)
 	gameService := service.NewGameService(gameRepo, nominalRepo, providerRepo, digiflazzBuyerService, providerProductRepo, providerRegistry)
-	txService := service.NewTransactionService(txRepo, nominalRepo, gameRepo, userRepo, paymentRepo, providerRepo, providerRegistry)
+	txService := service.NewTransactionService(txRepo, nominalRepo, gameRepo, userRepo, paymentRepo, providerRepo, providerRegistry, settingRepo)
 	depositService := service.NewDepositService(depositRepo, userRepo, paymentRepo, nil)
 	ipService := service.NewIPWhitelistService(ipRepo)
 	rbacService := service.NewRBACService(rolePermRepo)
@@ -92,7 +93,7 @@ func main() {
 	tripayChannelService := service.NewTripayChannelService(cfg.TripayAPIKey, cfg.TripayPrivateKey, cfg.TripayMerchantCode, cfg.TripayBaseURL, paymentRepo)
 	txService.SetTripayService(tripayChannelService)
 	depositService.SetTripayService(tripayChannelService)
-	adminHandler := handler.NewAdminHandler(gameService, txService, depositService, digiflazzBuyerService, userRepo, providerRepo, paymentRepo, bannerRepo, articleRepo, tripayChannelService)
+	adminHandler := handler.NewAdminHandler(gameService, txService, depositService, digiflazzBuyerService, userRepo, providerRepo, paymentRepo, bannerRepo, articleRepo, tripayChannelService, settingRepo)
 	ipHandler := handler.NewIPWhitelistHandler(ipService)
 	paymentHandler := handler.NewPaymentHandler(txService, depositService, paymentRepo, cfg.TripayPrivateKey, cfg.GenericWebhookSecrets)
 	providerCallbackHandler := handler.NewProviderCallbackHandler(txService, providerRegistry, providerRepo)
@@ -266,8 +267,8 @@ func main() {
 			admin.GET("/providers", adminHandler.GetProviders)
 			admin.GET("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetFFZStoreSettings)
 			admin.PUT("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveFFZStoreSettings)
-			admin.GET("/providers/:id/reference-settings", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetProviderReferenceSettings)
-			admin.PUT("/providers/:id/reference-settings", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveProviderReferenceSettings)
+			admin.GET("/settings/transaction-reference", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetTransactionReferenceSettings)
+			admin.PUT("/settings/transaction-reference", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveTransactionReferenceSettings)
 
 			// Digiflazz Sync & Balances
 			digi := admin.Group("/digiflazz", middleware.RequirePermission(rbacService, domain.ResourceDigiflazz))
