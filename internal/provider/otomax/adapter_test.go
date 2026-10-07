@@ -65,6 +65,32 @@ func TestPurchaseParsesPendingAndSendsDocumentedFields(t *testing.T) {
 	}
 }
 
+func TestPurchaseBuildsProviderCallbackURLFromPublicAPIURL(t *testing.T) {
+	adapter := NewWithCallbackBaseURL(FFZStoreCode, &fakeProviderRepo{record: &domain.Provider{Code: FFZStoreCode, APIKey: "secret-key", Config: testConfig(), IsActive: true}}, "https://merchant.example/api", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if got, want := request.URL.Query().Get("callback_url"), "https://merchant.example/api/callback/provider/FFZSTORE"; got != want {
+			t.Fatalf("callback_url=%q, want %q", got, want)
+		}
+		return response("R#123424324 S1_1187.123456789|1234, status PENDING. RefId : ML_1680405885_1234 . Sisa saldo 12345"), nil
+	})})
+
+	if _, err := adapter.Purchase(context.Background(), provider.PurchaseRequest{RefID: "LOCAL-REF", ProductCode: "S1_1187", CustomerID: "123456789", ServerID: "1234"}); err != nil {
+		t.Fatalf("purchase: %v", err)
+	}
+}
+
+func TestPurchaseRequiresConfiguredCallbackURL(t *testing.T) {
+	adapter := newTestAdapter(roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("request must not be sent when callback URL is not configured")
+		return nil, nil
+	}))
+
+	_, err := adapter.Purchase(context.Background(), provider.PurchaseRequest{RefID: "LOCAL-REF", ProductCode: "S1_1187", CustomerID: "123456789", ServerID: "1234"})
+	providerErr, ok := err.(*provider.ProviderError)
+	if !ok || providerErr.Kind != provider.ErrorConfiguration || !strings.Contains(providerErr.Message, "PUBLIC_API_URL") {
+		t.Fatalf("expected callback configuration error, got %#v", err)
+	}
+}
+
 func TestPurchaseExistingOrderWaitsForInvoiceNumberInsteadOfNewOrder(t *testing.T) {
 	calls := 0
 	adapter := newTestAdapter(roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -187,7 +213,7 @@ func TestTransportErrorMasksAPIKeyInUnderlyingCause(t *testing.T) {
 	adapter := newTestAdapter(roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("Get %q: %w", request.URL.String(), context.DeadlineExceeded)
 	}))
-	_, err := adapter.Purchase(context.Background(), provider.PurchaseRequest{RefID: "LOCAL-REF", ProductCode: "S1_1187", CustomerID: "123", ServerID: "1"})
+	_, err := adapter.Purchase(context.Background(), provider.PurchaseRequest{RefID: "LOCAL-REF", ProductCode: "S1_1187", CustomerID: "123", ServerID: "1", CallbackURL: "https://merchant.example/callback"})
 	if err == nil || strings.Contains(err.Error(), "secret-key") || strings.Contains(err.(*provider.ProviderError).Cause.Error(), "secret-key") {
 		t.Fatalf("transport error leaked API key: %#v", err)
 	}

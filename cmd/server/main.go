@@ -70,7 +70,7 @@ func main() {
 	if err := providerRegistry.Register(providerkiosgamer.New(kiosgamerService)); err != nil {
 		log.Fatalf("register Kiosgamer provider adapter: %v", err)
 	}
-	if err := providerRegistry.Register(providerotomax.New(providerotomax.FFZStoreCode, providerRepo)); err != nil {
+	if err := providerRegistry.Register(providerotomax.NewWithCallbackBaseURL(providerotomax.FFZStoreCode, providerRepo, cfg.PublicAPIURL)); err != nil {
 		log.Fatalf("register FFZStore OtoMax provider adapter: %v", err)
 	}
 	webhookService := service.NewWebhookService(providerRepo)

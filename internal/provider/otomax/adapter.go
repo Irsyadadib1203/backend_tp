@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -23,17 +24,25 @@ import (
 const FFZStoreCode = "FFZSTORE"
 
 type Adapter struct {
-	code       string
-	providers  repository.ProviderRepository
-	httpClient *http.Client
+	code            string
+	providers       repository.ProviderRepository
+	httpClient      *http.Client
+	callbackBaseURL string
 }
 
 func New(code string, providers repository.ProviderRepository, httpClient ...*http.Client) *Adapter {
+	return NewWithCallbackBaseURL(code, providers, "", httpClient...)
+}
+
+// NewWithCallbackBaseURL creates an OtoMax adapter whose provider callback URL
+// is derived from the externally reachable backend URL. The base may include a
+// reverse-proxy path prefix, for example https://merchant.example/api.
+func NewWithCallbackBaseURL(code string, providers repository.ProviderRepository, callbackBaseURL string, httpClient ...*http.Client) *Adapter {
 	var client *http.Client
 	if len(httpClient) > 0 {
 		client = httpClient[0]
 	}
-	return &Adapter{code: strings.ToUpper(strings.TrimSpace(code)), providers: providers, httpClient: client}
+	return &Adapter{code: strings.ToUpper(strings.TrimSpace(code)), providers: providers, httpClient: client, callbackBaseURL: strings.TrimSpace(callbackBaseURL)}
 }
 
 func (a *Adapter) Code() string { return a.code }
@@ -52,7 +61,11 @@ func (a *Adapter) Purchase(ctx context.Context, request provider.PurchaseRequest
 	if cfg.Purchase == nil {
 		return nil, configurationError(errors.New("OtoMax purchase endpoint is not configured"))
 	}
-	response, err := client.Execute(ctx, endpointFromConfig(cfg.Purchase, cfg), values(request.RefID, request.ProductCode, request.CustomerID, request.ServerID, "", request.CallbackURL, record.APIKey))
+	callbackURL, err := a.callbackURL(request.CallbackURL)
+	if err != nil {
+		return nil, configurationError(err)
+	}
+	response, err := client.Execute(ctx, endpointFromConfig(cfg.Purchase, cfg), values(request.RefID, request.ProductCode, request.CustomerID, request.ServerID, "", callbackURL, record.APIKey))
 	if err != nil {
 		return nil, transportError(err)
 	}
@@ -199,6 +212,22 @@ func endpointFromConfig(ep *provider.EndpointConfig, cfg *provider.DeclarativePr
 
 func values(refID, productCode, customerID, serverID, providerOrderID, callbackURL, apiKey string) otomaxhttp.TemplateValues {
 	return otomaxhttp.TemplateValues{RefID: refID, ProductCode: productCode, CustomerID: customerID, ServerID: serverID, ProviderOrderID: providerOrderID, CallbackURL: callbackURL, Secrets: map[string]string{"apikey": apiKey}}
+}
+
+func (a *Adapter) callbackURL(explicitURL string) (string, error) {
+	if explicitURL = strings.TrimSpace(explicitURL); explicitURL != "" {
+		return explicitURL, nil
+	}
+	if a.callbackBaseURL == "" {
+		return "", errors.New("OtoMax callback URL is not configured: set PUBLIC_API_URL to the public backend URL")
+	}
+	u, err := url.Parse(a.callbackBaseURL)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("PUBLIC_API_URL must be an absolute HTTPS URL without query or fragment")
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + "/callback/provider/" + url.PathEscape(a.code)
+	u.RawPath = ""
+	return u.String(), nil
 }
 
 func resultFromParsed(parsed *otomaxhttp.ParsedResponse, _ *provider.DeclarativeProviderConfig, statusCheck bool) *provider.Result {

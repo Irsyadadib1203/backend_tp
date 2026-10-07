@@ -16,6 +16,9 @@ type Config struct {
 	AppSecret   string
 	FrontendURL string
 	AdminURL    string
+	// PublicAPIURL is the externally reachable backend URL. Providers use it
+	// for callbacks, so it must not be a private address or frontend origin.
+	PublicAPIURL string
 
 	// Database
 	DBDriver string
@@ -74,11 +77,12 @@ func LoadConfig() *Config {
 	}
 
 	cfg := &Config{
-		AppPort:     getEnv("APP_PORT", "8080"),
-		AppEnv:      getEnv("APP_ENV", "development"),
-		AppSecret:   getEnv("APP_SECRET", "super-secret-key-change-in-production-12345"),
-		FrontendURL: getEnv("FRONTEND_URL", "http://localhost:3000"),
-		AdminURL:    getEnv("ADMIN_URL", "http://localhost:3001"),
+		AppPort:      getEnv("APP_PORT", "8080"),
+		AppEnv:       getEnv("APP_ENV", "development"),
+		AppSecret:    getEnv("APP_SECRET", "super-secret-key-change-in-production-12345"),
+		FrontendURL:  getEnv("FRONTEND_URL", "http://localhost:3000"),
+		AdminURL:     getEnv("ADMIN_URL", "http://localhost:3001"),
+		PublicAPIURL: getEnv("PUBLIC_API_URL", ""),
 
 		DBDriver: getEnv("DB_DRIVER", "sqlite"),
 		DBHost:   getEnv("DB_HOST", "127.0.0.1"),
