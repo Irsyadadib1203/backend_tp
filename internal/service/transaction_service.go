@@ -761,8 +761,13 @@ func (s *transactionService) applyResult(tx *domain.Transaction, result *provide
 	if callErr != nil {
 		providerErr, ok := callErr.(*provider.ProviderError)
 		if !ok {
+			log.Printf("[Provider] non-ProviderError invoice=%s ref=%s source=%s err=%v",
+				tx.InvoiceNumber, tx.RefID, source, callErr)
 			return callErr
 		}
+		log.Printf("[Provider] error invoice=%s ref=%s source=%s kind=%s status=%v msg=%q cause=%v",
+			tx.InvoiceNumber, tx.RefID, source, providerErr.Kind, providerErr.Status,
+			providerErr.Message, providerErr.Cause)
 		if source == providerResultSourceCheck {
 			return providerErr
 		}
