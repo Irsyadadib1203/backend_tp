@@ -114,11 +114,15 @@ func (c *Client) Execute(ctx context.Context, endpoint Endpoint, values Template
 		if err != nil {
 			return nil, err
 		}
-		value, err = renderTemplate(value, values)
+		rendered, err := renderTemplate(value, values)
 		if err != nil {
 			return nil, err
 		}
-		query.Set(key, value)
+		// Game tanpa server: jangan kirim parameter kosong ke provider.
+		if rendered == "" && strings.TrimSpace(value) == "{{server_id}}" {
+			continue
+		}
+		query.Set(key, rendered)
 	}
 	u.RawQuery = query.Encode()
 
@@ -191,7 +195,7 @@ func renderTemplate(template string, values TemplateValues) (string, error) {
 		} else {
 			value, ok = replacements[key]
 		}
-		if !ok || value == "" {
+		if !ok || (value == "" && key != "server_id") {
 			return "", fmt.Errorf("OtoMax template value %q is not configured", key)
 		}
 		result = result[:start] + value + result[end+2:]
