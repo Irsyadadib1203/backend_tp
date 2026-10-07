@@ -20,7 +20,9 @@ func NewSystemSettingRepository(db *gorm.DB) SystemSettingRepository {
 
 func (r *systemSettingRepository) Get(key string) (*domain.SystemSetting, error) {
 	var setting domain.SystemSetting
-	if err := r.db.Where("key = ?", key).First(&setting).Error; err != nil {
+	// `key` is a MySQL keyword. Use a structured column expression so GORM
+	// quotes it for the active database dialect instead of emitting raw SQL.
+	if err := r.db.Where(clause.Eq{Column: clause.Column{Name: "key"}, Value: key}).First(&setting).Error; err != nil {
 		return nil, err
 	}
 	return &setting, nil

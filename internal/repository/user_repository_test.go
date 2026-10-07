@@ -43,3 +43,28 @@ func TestUpdateBalanceRefundIsIdempotentAtRepositoryBoundary(t *testing.T) {
 		t.Fatalf("refund mutations=%d err=%v, want 1", mutations, err)
 	}
 }
+
+func TestFindByAPIKey(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&domain.User{}, &domain.APIKey{}, &domain.IPWhitelist{}); err != nil {
+		t.Fatal(err)
+	}
+	user := &domain.User{Name: "API Key Test", Email: "api-key@example.test", Password: "not-used"}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&domain.APIKey{UserID: user.ID, Key: "active-key", Secret: "secret", IsActive: true}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	resolvedUser, apiKey, err := NewUserRepository(db).FindByAPIKey("active-key")
+	if err != nil {
+		t.Fatalf("find API key: %v", err)
+	}
+	if resolvedUser.ID != user.ID || apiKey.Key != "active-key" {
+		t.Fatalf("unexpected API key resolution: user=%d key=%q", resolvedUser.ID, apiKey.Key)
+	}
+}

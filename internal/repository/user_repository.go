@@ -54,7 +54,9 @@ func (r *userRepository) FindByEmail(email string) (*domain.User, error) {
 
 func (r *userRepository) FindByAPIKey(key string) (*domain.User, *domain.APIKey, error) {
 	var apiKey domain.APIKey
-	if err := r.db.Where("key = ? AND is_active = ?", key, true).First(&apiKey).Error; err != nil {
+	// `key` is a MySQL keyword. Keep it as a structured condition so GORM
+	// quotes the identifier for the active SQL dialect.
+	if err := r.db.Where(clause.Eq{Column: clause.Column{Name: "key"}, Value: key}).Where("is_active = ?", true).First(&apiKey).Error; err != nil {
 		return nil, nil, err
 	}
 	var user domain.User
