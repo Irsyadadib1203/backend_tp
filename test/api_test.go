@@ -71,7 +71,7 @@ func setupTestRouter() *gin.Engine {
 	nicknameService := service.NewNicknameService()
 	digiflazzBuyerService := service.NewDigiflazzBuyerService(providerRepo, cfg)
 	webhookService := service.NewWebhookService(providerRepo)
-	digiflazzSellerService := service.NewDigiflazzSellerService(userRepo, nominalRepo, txRepo, digiflazzBuyerService, webhookService)
+	H2HService := service.NewH2HService(userRepo, nominalRepo, txRepo, digiflazzBuyerService, webhookService)
 	gameService := service.NewGameService(gameRepo, nominalRepo, providerRepo, digiflazzBuyerService)
 	txService := service.NewTransactionService(txRepo, nominalRepo, gameRepo, userRepo, paymentRepo, providerRepo, nil)
 	depositService := service.NewDepositService(depositRepo, userRepo, paymentRepo, nil)
@@ -81,7 +81,7 @@ func setupTestRouter() *gin.Engine {
 	gameHandler := handler.NewGameHandler(gameService, nicknameService)
 	txHandler := handler.NewTransactionHandler(txService, authService)
 	digiflazzBuyerHandler := handler.NewDigiflazzBuyerHandler(digiflazzBuyerService, txService)
-	digiflazzSellerHandler := handler.NewDigiflazzSellerHandler(digiflazzSellerService)
+	H2HHandler := handler.NewH2HHandler(H2HService)
 	adminHandler := handler.NewAdminHandler(gameService, txService, depositService, digiflazzBuyerService, userRepo, providerRepo, paymentRepo, bannerRepo, articleRepo, nil)
 	ipHandler := handler.NewIPWhitelistHandler(ipService)
 
@@ -105,10 +105,10 @@ func setupTestRouter() *gin.Engine {
 		// H2H (Protected by IP Whitelist)
 		h2h := api.Group("/h2h", middleware.IPWhitelistGuard(ipService))
 		{
-			h2h.POST("/price-list", digiflazzSellerHandler.GetPriceList)
-			h2h.POST("/transaction", digiflazzSellerHandler.CreateTransaction)
-			h2h.POST("/check-status", digiflazzSellerHandler.CheckStatus)
-			h2h.POST("/check-balance", digiflazzSellerHandler.CheckBalance)
+			h2h.POST("/price-list", H2HHandler.GetPriceList)
+			h2h.POST("/transaction", H2HHandler.CreateTransaction)
+			h2h.POST("/check-status", H2HHandler.CheckStatus)
+			h2h.POST("/check-balance", H2HHandler.CheckBalance)
 		}
 
 		// Callback

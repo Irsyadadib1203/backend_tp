@@ -13,7 +13,7 @@ import (
 )
 
 type WebhookService interface {
-	DispatchH2HCallback(targetURL, secret string, data *SellerH2HResponseData)
+	DispatchH2HCallback(targetURL, apiKey string, data *H2HResponseData)
 }
 
 type webhookService struct {
@@ -30,13 +30,14 @@ func NewWebhookService(providerRepo repository.ProviderRepository) WebhookServic
 	}
 }
 
-func (s *webhookService) DispatchH2HCallback(targetURL, secret string, data *SellerH2HResponseData) {
+// DispatchH2HCallback mengirim callback ke partner.
+// sign = md5(ref_id + apikey + status)
+func (s *webhookService) DispatchH2HCallback(targetURL, apiKey string, data *H2HResponseData) {
 	if targetURL == "" || data == nil {
 		return
 	}
 
-	// Calculate signature
-	sign := crypto.MD5Hash(data.RefID + secret + data.Status)
+	sign := crypto.MD5Hash(data.RefID + apiKey + data.Status)
 	data.Sign = sign
 
 	payloadBytes, err := json.Marshal(map[string]interface{}{
@@ -63,7 +64,6 @@ func (s *webhookService) DispatchH2HCallback(targetURL, secret string, data *Sel
 		resp.Body.Close()
 	}
 
-	// Log outgoing callback
 	_ = s.providerRepo.LogWebhook(&domain.WebhookLog{
 		Direction:    domain.WebhookOutgoing,
 		ProviderName: "H2H_CLIENT_WEBHOOK",

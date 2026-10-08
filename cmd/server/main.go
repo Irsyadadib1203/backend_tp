@@ -74,7 +74,7 @@ func main() {
 		log.Fatalf("register FFZStore OtoMax provider adapter: %v", err)
 	}
 	webhookService := service.NewWebhookService(providerRepo)
-	digiflazzSellerService := service.NewDigiflazzSellerService(userRepo, nominalRepo, txRepo, digiflazzBuyerService, webhookService)
+	h2hService := service.NewH2HService(userRepo, nominalRepo, txRepo, digiflazzBuyerService, webhookService)
 	gameService := service.NewGameService(gameRepo, nominalRepo, providerRepo, digiflazzBuyerService, providerProductRepo, providerRegistry)
 	txService := service.NewTransactionService(txRepo, nominalRepo, gameRepo, userRepo, paymentRepo, providerRepo, providerRegistry, settingRepo)
 	depositService := service.NewDepositService(depositRepo, userRepo, paymentRepo, nil)
@@ -87,7 +87,7 @@ func main() {
 	txHandler := handler.NewTransactionHandler(txService, authService)
 	depositHandler := handler.NewDepositHandler(depositService)
 	digiflazzBuyerHandler := handler.NewDigiflazzBuyerHandler(digiflazzBuyerService, txService)
-	digiflazzSellerHandler := handler.NewDigiflazzSellerHandler(digiflazzSellerService)
+	h2hHandler := handler.NewH2HHandler(h2hService)
 	kiosgamerHandler := handler.NewKiosgamerHandler(kiosgamerService)
 	rbacHandler := handler.NewRBACHandler(rbacService)
 	tripayChannelService := service.NewTripayChannelService(cfg.TripayAPIKey, cfg.TripayPrivateKey, cfg.TripayMerchantCode, cfg.TripayBaseURL, paymentRepo)
@@ -207,21 +207,25 @@ func main() {
 		api.POST("/callback/payment/:provider", paymentHandler.HandleGenericWebhook)
 
 		// -------------------------------------------------------------
-		// DIGIFLAZZ SELLER & OPEN API H2H (Protected by IP Whitelist + Rate Limiter)
+		// OPEN API H2H (Protected by IP Whitelist + Rate Limiter)
 		// -------------------------------------------------------------
+		// routes
 		h2h := api.Group("/h2h", middleware.IPWhitelistGuard(ipService), h2hLimiter)
 		{
-			h2h.POST("/price-list", digiflazzSellerHandler.GetPriceList)
-			h2h.POST("/transaction", digiflazzSellerHandler.CreateTransaction)
-			h2h.POST("/check-status", digiflazzSellerHandler.CheckStatus)
-			h2h.POST("/check-balance", digiflazzSellerHandler.CheckBalance)
+			h2h.POST("/category", h2hHandler.GetCategories)
+			h2h.POST("/price-list", h2hHandler.GetPriceList)
+			h2h.POST("/product", h2hHandler.GetProductsByBrand)
+			h2h.POST("/transaction", h2hHandler.CreateTransaction)
+			h2h.POST("/check-status", h2hHandler.CheckStatus)
+			h2h.POST("/check-balance", h2hHandler.CheckBalance)
 		}
-		// Top-level Digiflazz style endpoints
-		v1Seller := r.Group("/v1", middleware.IPWhitelistGuard(ipService), h2hLimiter)
+		v1H2H := r.Group("/v1", middleware.IPWhitelistGuard(ipService), h2hLimiter)
 		{
-			v1Seller.POST("/price-list", digiflazzSellerHandler.GetPriceList)
-			v1Seller.POST("/transaction", digiflazzSellerHandler.CreateTransaction)
-			v1Seller.POST("/cek-saldo", digiflazzSellerHandler.CheckBalance)
+			v1H2H.POST("/category", h2hHandler.GetCategories)
+			v1H2H.POST("/price-list", h2hHandler.GetPriceList)
+			v1H2H.POST("/product", h2hHandler.GetProductsByBrand)
+			v1H2H.POST("/transaction", h2hHandler.CreateTransaction)
+			v1H2H.POST("/cek-saldo", h2hHandler.CheckBalance)
 		}
 
 		// -------------------------------------------------------------

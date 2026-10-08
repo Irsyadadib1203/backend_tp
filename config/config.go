@@ -39,8 +39,7 @@ type Config struct {
 	DigiflazzBuyerAPIKey        string
 	DigiflazzBuyerWebhookSecret string
 
-	// Digiflazz Seller (Our Open API H2H)
-	DigiflazzSellerSecret string
+
 
 	// Kiosgamer Provider
 	KiosgamerBaseURL string
@@ -99,8 +98,6 @@ func LoadConfig() *Config {
 		DigiflazzBuyerUsername:      getEnv("DIGIFLAZZ_USERNAME", ""),
 		DigiflazzBuyerAPIKey:        getEnv("DIGIFLAZZ_KEY", ""),
 		DigiflazzBuyerWebhookSecret: getEnv("DIGIFLAZZ_WEBHOOK_SECRET", ""),
-
-		DigiflazzSellerSecret: getEnv("DIGIFLAZZ_SELLER_SECRET", "h2h-seller-secret-999"),
 
 		KiosgamerBaseURL: getEnv("KIOSGAMER_BASE_URL", "https://kiosgamer.co.id/api"),
 
