@@ -1,9 +1,13 @@
 package handler
 
 import (
+	"context"
+	"net/http"
 	"encoding/json"
 	"strconv"
 	"strings"
+	"time"
+
 
 	"github.com/gin-gonic/gin"
 
@@ -28,6 +32,7 @@ type AdminHandler struct {
 	articleRepo          repository.ArticleRepository
 	tripayChannelService service.TripayChannelService
 	settingRepo          repository.SystemSettingRepository
+	providerRegistry     *provider.Registry
 }
 
 func NewAdminHandler(
@@ -710,9 +715,66 @@ func (h *AdminHandler) GetProviders(c *gin.Context) {
 	// Nominal dropdowns and the browser.
 	safe := make([]gin.H, 0, len(providers))
 	for _, item := range providers {
-		safe = append(safe, gin.H{"id": item.ID, "name": item.Name, "code": item.Code, "base_url": item.BaseURL, "is_active": item.IsActive, "api_key_configured": item.APIKey != "" || strings.Contains(item.Config, "encrypted_secret")})
+		safe = append(safe, gin.H{"id": item.ID, "name": item.Name, "code": item.Code, "base_url": item.BaseURL, "is_active": item.IsActive,"balance": item.Balance, "balance_unit": providerBalanceUnit(item.Code), "balance_checked_at": item.BalanceCheckedAt, "api_key_configured": item.APIKey != "" || strings.Contains(item.Config, "encrypted_secret")})
 	}
 	response.Success(c, "Providers loaded", safe)
+}
+// SetProviderRegistry dipanggil dari main.go (tanpa mengubah signature NewAdminHandler).
+func (h *AdminHandler) SetProviderRegistry(r *provider.Registry) {
+	h.providerRegistry = r
+}
+
+// GetProviderBalance: GET /admin/providers/:id/balance
+func (h *AdminHandler) GetProviderBalance(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid provider ID", nil)
+		return
+	}
+
+	rec, err := h.providerRepo.GetByID(uint(id))
+	if err != nil || rec == nil {
+		response.NotFound(c, "Provider not found")
+		return
+	}
+
+	if h.providerRegistry == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Provider registry is not configured")
+		return
+	}
+	adapter, ok := h.providerRegistry.Get(rec.Code)
+	if !ok {
+		response.BadRequest(c, "Provider belum terdaftar di registry", nil)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+
+	balance, err := adapter.Balance(ctx)
+	if err != nil {
+		response.InternalServerError(c, "Gagal mengambil saldo provider", err)
+		return
+	}
+
+	response.Success(c, "Provider balance retrieved", gin.H{
+		"provider_id": rec.ID,
+		"code":        rec.Code,
+		"name":        rec.Name,
+		"balance":     balance,
+		"unit":        providerBalanceUnit(rec.Code),
+		"checked_at":  time.Now(),
+	})
+}
+
+// providerBalanceUnit: satuan saldo berbeda antar provider.
+func providerBalanceUnit(code string) string {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case provider.KiosgamerCode:
+		return "SHELL"
+	default:
+		return "IDR"
+	}
 }
 
 type TransactionReferenceSettingsRequest struct {

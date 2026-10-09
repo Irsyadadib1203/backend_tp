@@ -45,11 +45,15 @@ func (r *providerRepository) List() ([]domain.Provider, error) {
 }
 
 func (r *providerRepository) Update(provider *domain.Provider) error {
-		return r.db.Omit("last_price_sync_at").Save(provider).Error
+	return r.db.Omit("last_price_sync_at", "balance_checked_at").Save(provider).Error
 }
 
 func (r *providerRepository) UpdateBalance(id uint, balance float64) error {
 	return r.db.Model(&domain.Provider{}).Where("id = ?", id).Update("balance", balance).Error
+}
+func (r *providerRepository) UpdateBalanceSnapshot(id uint, balance float64, checkedAt time.Time) error {
+	return r.db.Model(&domain.Provider{}).Where("id = ?", id).
+		Updates(map[string]interface{}{"balance": balance, "balance_checked_at": checkedAt}).Error
 }
 
 func (r *providerRepository) UpdatePriceSyncAt(id uint, t time.Time) error {

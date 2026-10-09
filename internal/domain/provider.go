@@ -17,6 +17,7 @@ type Provider struct {
 	Config      string         `gorm:"type:text" json:"config,omitempty"` // Declarative JSON config, secrets encrypted
 	IsActive    bool           `gorm:"default:true" json:"is_active"`
 	LastPriceSyncAt *time.Time `json:"last_price_sync_at"`
+	BalanceCheckedAt *time.Time `json:"balance_checked_at"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`

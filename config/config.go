@@ -61,6 +61,7 @@ type Config struct {
 	ReconcilerEnabled bool
 	ReconcilerMinAge  time.Duration
 	PriceSyncIntervals map[string]time.Duration
+	BalanceSyncIntervals map[string]time.Duration
 }
 
 var AppConfig *Config
@@ -111,7 +112,8 @@ func LoadConfig() *Config {
 
 		ReconcilerEnabled: strings.ToLower(strings.TrimSpace(getEnv("RECONCILER_ENABLED", "false"))) == "true",
 		ReconcilerMinAge:  parseReconcilerMinAge(getEnv("RECONCILER_MIN_AGE", "5m")),
-		PriceSyncIntervals: parsePriceSyncIntervals(getEnv("PRICE_SYNC_INTERVALS", "")),
+		PriceSyncIntervals:   parseProviderIntervals("PRICE_SYNC_INTERVALS", getEnv("PRICE_SYNC_INTERVALS", "")),
+		BalanceSyncIntervals: parseProviderIntervals("BALANCE_SYNC_INTERVALS", getEnv("BALANCE_SYNC_INTERVALS", "")),
 	}
 
 	AppConfig = cfg
@@ -165,9 +167,7 @@ func parseReconcilerMinAge(raw string) time.Duration {
 	}
 	return d
 }
-// parsePriceSyncIntervals mem-parse "DIGIFLAZZ:1m,KIOSGAMER:15m".
-// Entri yang salah format atau interval < 1 menit dilewati.
-func parsePriceSyncIntervals(raw string) map[string]time.Duration {
+func parseProviderIntervals(envName, raw string) map[string]time.Duration {
 	result := make(map[string]time.Duration)
 	for _, pair := range strings.Split(raw, ",") {
 		pair = strings.TrimSpace(pair)
@@ -176,13 +176,13 @@ func parsePriceSyncIntervals(raw string) map[string]time.Duration {
 		}
 		parts := strings.SplitN(pair, ":", 2)
 		if len(parts) != 2 {
-			log.Printf("[Config] PRICE_SYNC_INTERVALS: entri %q diabaikan", pair)
+			log.Printf("[Config] %s: entri %q diabaikan", envName, pair)
 			continue
 		}
 		code := strings.ToUpper(strings.TrimSpace(parts[0]))
 		d, err := time.ParseDuration(strings.TrimSpace(parts[1]))
 		if code == "" || err != nil || d < time.Minute {
-			log.Printf("[Config] PRICE_SYNC_INTERVALS: entri %q diabaikan (format salah / interval < 1m)", pair)
+			log.Printf("[Config] %s: entri %q diabaikan (format salah / interval < 1m)", envName, pair)
 			continue
 		}
 		result[code] = d

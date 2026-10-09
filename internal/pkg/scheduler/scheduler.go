@@ -290,3 +290,94 @@ func (s *PriceSyncScheduler) Stop() {
 		s.wg.Wait()
 	})
 }
+// ---------------------------------------------------------------------------
+// ProviderTaskScheduler
+// Menjalankan satu tugas per provider dengan interval masing-masing
+// (mis. env BALANCE_SYNC_INTERVALS="DIGIFLAZZ:1m,KIOSGAMER:10m").
+// Satu goroutine per provider; di dalamnya berurutan, jadi tidak pernah tumpang tindih.
+// ---------------------------------------------------------------------------
+
+type ProviderTaskScheduler struct {
+	name         string
+	intervals    map[string]time.Duration
+	initialDelay time.Duration
+	run          func(ctx context.Context, providerCode string) error
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	stopOnce     sync.Once
+}
+
+func NewProviderTaskScheduler(
+	name string,
+	intervals map[string]time.Duration,
+	initialDelay time.Duration,
+	run func(ctx context.Context, providerCode string) error,
+) *ProviderTaskScheduler {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &ProviderTaskScheduler{
+		name: name, intervals: intervals, initialDelay: initialDelay,
+		run: run, ctx: ctx, cancel: cancel,
+	}
+}
+
+func (s *ProviderTaskScheduler) Start() {
+	if len(s.intervals) == 0 {
+		log.Printf("[%s] interval kosong, scheduler tidak dijalankan", s.name)
+		return
+	}
+	for code, every := range s.intervals {
+		s.wg.Add(1)
+		go s.loop(code, every)
+	}
+}
+
+func (s *ProviderTaskScheduler) loop(code string, every time.Duration) {
+	defer s.wg.Done()
+	log.Printf("[%s] %s dijadwalkan tiap %v", s.name, code, every)
+
+	select {
+	case <-time.After(s.initialDelay):
+		s.runOnce(code, every)
+	case <-s.ctx.Done():
+		return
+	}
+
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.runOnce(code, every)
+		case <-s.ctx.Done():
+			log.Printf("[%s] %s dihentikan", s.name, code)
+			return
+		}
+	}
+}
+
+func (s *ProviderTaskScheduler) runOnce(code string, every time.Duration) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[%s] %s: panic dipulihkan: %v", s.name, code, r)
+		}
+	}()
+
+	timeout := 30 * time.Second
+	if every < timeout {
+		timeout = every
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, timeout)
+	defer cancel()
+
+	if err := s.run(ctx, code); err != nil {
+		log.Printf("[%s] %s gagal: %v", s.name, code, err)
+	}
+}
+
+func (s *ProviderTaskScheduler) Stop() {
+	s.stopOnce.Do(func() {
+		s.cancel()
+		s.wg.Wait()
+	})
+}

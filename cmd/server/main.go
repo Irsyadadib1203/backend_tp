@@ -94,6 +94,7 @@ func main() {
 	txService.SetTripayService(tripayChannelService)
 	depositService.SetTripayService(tripayChannelService)
 	adminHandler := handler.NewAdminHandler(gameService, txService, depositService, digiflazzBuyerService, userRepo, providerRepo, paymentRepo, bannerRepo, articleRepo, tripayChannelService, settingRepo)
+	adminHandler.SetProviderRegistry(providerRegistry)
 	ipHandler := handler.NewIPWhitelistHandler(ipService)
 	paymentHandler := handler.NewPaymentHandler(txService, depositService, paymentRepo, cfg.TripayPrivateKey, cfg.GenericWebhookSecrets)
 	providerCallbackHandler := handler.NewProviderCallbackHandler(txService, providerRegistry, providerRepo)
@@ -109,6 +110,13 @@ func main() {
 	priceSyncService := service.NewPriceSyncService(providerRepo, providerProductRepo, providerRegistry)
 	priceSyncScheduler := scheduler.NewPriceSyncScheduler(priceSyncService, cfg.PriceSyncIntervals)
 	priceSyncScheduler.Start()
+		// 5.2c Saldo provider per interval (BALANCE_SYNC_INTERVALS)
+	if balanceStore, ok := providerRepo.(service.ProviderBalanceStore); ok {
+		balanceSyncService := service.NewBalanceSyncService(balanceStore, providerRegistry)
+		balanceSyncScheduler := scheduler.NewProviderTaskScheduler("BalanceSync", cfg.BalanceSyncIntervals, 10*time.Second, balanceSyncService.SyncProviderBalance)
+		balanceSyncScheduler.Start()
+		defer balanceSyncScheduler.Stop()
+	}
 	if retryService, ok := txService.(scheduler.ProviderBalanceRetryService); ok {
 		providerBalanceRetryScheduler := scheduler.NewProviderBalanceRetryScheduler(retryService, 2*time.Minute)
 		providerBalanceRetryScheduler.Start()
@@ -273,6 +281,7 @@ func main() {
 
 			// Providers (Accessible if nominals or settings are allowed)
 			admin.GET("/providers", adminHandler.GetProviders)
+			admin.GET("/providers/:id/balance", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetProviderBalance)
 			admin.GET("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetFFZStoreSettings)
 			admin.PUT("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveFFZStoreSettings)
 			admin.GET("/settings/transaction-reference", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetTransactionReferenceSettings)
