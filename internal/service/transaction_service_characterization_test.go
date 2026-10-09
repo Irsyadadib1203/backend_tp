@@ -158,6 +158,7 @@ func (r *characterizationUserRepo) UpdateBalance(_ uint, _ float64, mutation dom
 	}
 	return nil
 }
+func (r *characterizationProviderRepo) UpdatePriceSyncAt(uint, time.Time) error { return nil }
 func (r *characterizationUserRepo) HasMutation(string, string) (bool, error) { return r.hasRefund, nil }
 func (r *characterizationUserRepo) List(int, int, string) ([]domain.User, int64, error) {
 	return nil, 0, nil

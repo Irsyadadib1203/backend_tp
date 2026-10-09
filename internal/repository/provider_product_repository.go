@@ -17,6 +17,7 @@ type ProviderProductRepository interface {
 	FindByNominalAndProviderCode(nominalID uint, providerCode string) (*domain.ProviderProduct, error)
 	ListByNominalID(nominalID uint) ([]domain.ProviderProduct, error)
 	ListByProviderID(providerID uint) ([]domain.ProviderProduct, error)
+	UpdateCostPrice(providerID uint, productCode string, price *float64) error
 	Delete(id uint) error
 }
 
@@ -36,17 +37,13 @@ func (r *providerProductRepository) Upsert(pp *domain.ProviderProduct) error {
 	if pp == nil {
 		return errors.New("provider product is nil")
 	}
-	// Use clause.OnConflict to handle unique (nominal_id, provider_id)
+	cols := []string{"product_code", "priority", "is_active", "extra", "updated_at"}
+	if pp.CostPrice != nil {
+		cols = append(cols, "cost_price")
+	}
 	return r.db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "nominal_id"}, {Name: "provider_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"product_code",
-			"cost_price",
-			"priority",
-			"is_active",
-			"extra",
-			"updated_at",
-		}),
+		Columns:   []clause.Column{{Name: "nominal_id"}, {Name: "provider_id"}},
+		DoUpdates: clause.AssignmentColumns(cols),
 	}).Create(pp).Error
 }
 
@@ -89,6 +86,16 @@ func (r *providerProductRepository) ListByProviderID(providerID uint) ([]domain.
 		Order("nominal_id ASC").
 		Find(&list).Error
 	return list, err
+}
+
+func (r *providerProductRepository) UpdateCostPrice(providerID uint, productCode string, price *float64) error {
+	var value interface{} = gorm.Expr("NULL")
+	if price != nil {
+		value = *price
+	}
+	return r.db.Model(&domain.ProviderProduct{}).
+		Where("provider_id = ? AND product_code = ?", providerID, strings.TrimSpace(productCode)).
+		Update("cost_price", value).Error
 }
 
 func (r *providerProductRepository) Delete(id uint) error {

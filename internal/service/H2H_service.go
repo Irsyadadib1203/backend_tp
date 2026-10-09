@@ -206,8 +206,6 @@ func (s *h2hService) buildProducts(user *domain.User) ([]H2HProduct, error) {
 			Brand:               brand,
 			Price:               partnerPrice(user, nom.PriceReseller, nom.PriceVIP),
 			SKUCode:             sku,
-			BuyerProductStatus:  nom.IsActive,
-			SellerProductStatus: nom.IsActive,
 		})
 	}
 	return products, nil

@@ -63,7 +63,7 @@ func (a *Adapter) SyncCatalog(context.Context) ([]provider.CatalogItem, error) {
 	}
 	result := make([]provider.CatalogItem, 0, len(items))
 	for _, item := range items {
-		result = append(result, provider.CatalogItem{ProductCode: item.BuyerSkuCode, Name: item.ProductName, BasePrice: item.Price, IsActive: item.BuyerProductStatus})
+		result = append(result, provider.CatalogItem{ProductCode: item.BuyerSkuCode, Name: item.ProductName, BasePrice: item.Price, IsActive: item.BuyerProductStatus && item.SellerProductStatus})
 	}
 	return result, nil
 }

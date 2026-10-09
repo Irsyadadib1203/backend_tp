@@ -2,6 +2,7 @@ package repository
 
 import (
 	"gorm.io/gorm"
+	"time"
 
 	"topup-backend/internal/domain"
 )
@@ -12,6 +13,7 @@ type ProviderRepository interface {
 	List() ([]domain.Provider, error)
 	Update(provider *domain.Provider) error
 	UpdateBalance(id uint, balance float64) error
+	UpdatePriceSyncAt(id uint, t time.Time) error
 	LogWebhook(log *domain.WebhookLog) error
 	ListWebhookLogs(offset, limit int, provider string) ([]domain.WebhookLog, int64, error)
 }
@@ -43,11 +45,15 @@ func (r *providerRepository) List() ([]domain.Provider, error) {
 }
 
 func (r *providerRepository) Update(provider *domain.Provider) error {
-	return r.db.Save(provider).Error
+		return r.db.Omit("last_price_sync_at").Save(provider).Error
 }
 
 func (r *providerRepository) UpdateBalance(id uint, balance float64) error {
 	return r.db.Model(&domain.Provider{}).Where("id = ?", id).Update("balance", balance).Error
+}
+
+func (r *providerRepository) UpdatePriceSyncAt(id uint, t time.Time) error {
+	return r.db.Model(&domain.Provider{}).Where("id = ?", id).Update("last_price_sync_at", t).Error
 }
 
 func (r *providerRepository) LogWebhook(log *domain.WebhookLog) error {

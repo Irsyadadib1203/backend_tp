@@ -105,6 +105,10 @@ func main() {
 	// 5.2 Start Background Kiosgamer Keep-Alive Scheduler (Heartbeat & auto-persist rotated cookies every 20 minutes)
 	kiosKeepAliveScheduler := scheduler.NewKiosgamerKeepAliveScheduler(kiosgamerService, 20*time.Minute)
 	kiosKeepAliveScheduler.Start()
+	// 5.2b Sinkron harga per provider (interval dari PRICE_SYNC_INTERVALS)
+	priceSyncService := service.NewPriceSyncService(providerRepo, providerProductRepo, providerRegistry)
+	priceSyncScheduler := scheduler.NewPriceSyncScheduler(priceSyncService, cfg.PriceSyncIntervals)
+	priceSyncScheduler.Start()
 	if retryService, ok := txService.(scheduler.ProviderBalanceRetryService); ok {
 		providerBalanceRetryScheduler := scheduler.NewProviderBalanceRetryScheduler(retryService, 2*time.Minute)
 		providerBalanceRetryScheduler.Start()
@@ -402,6 +406,7 @@ func main() {
 	reconcilerCancel() // stop reconciler goroutine (no-op if disabled)
 	autoSyncScheduler.Stop()
 	kiosKeepAliveScheduler.Stop()
+	priceSyncScheduler.Stop()
 	worker.GlobalPool.Stop(10 * time.Second)
 
 	log.Println("[Server] Server exited cleanly.")

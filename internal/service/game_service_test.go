@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"topup-backend/internal/domain"
 	"topup-backend/internal/provider"
@@ -49,6 +50,7 @@ func (m *mockProviderRepo) UpdateBalance(id uint, balance float64) error {
 	}
 	return nil
 }
+func (m *mockProviderRepo) UpdatePriceSyncAt(uint, time.Time) error { return nil }
 
 func (m *mockProviderRepo) LogWebhook(log *domain.WebhookLog) error {
 	return nil
@@ -380,6 +382,7 @@ func (m *mockProviderProductRepo) ListByProviderID(providerID uint) ([]domain.Pr
 	}
 	return list, nil
 }
+func (m *mockProviderProductRepo) UpdateCostPrice(uint, string, *float64) error { return nil }
 
 func (m *mockProviderProductRepo) Delete(id uint) error {
 	return nil

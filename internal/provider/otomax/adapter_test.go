@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"topup-backend/internal/domain"
 	"topup-backend/internal/provider"
@@ -20,6 +21,7 @@ func (r *fakeProviderRepo) GetByID(uint) (*domain.Provider, error)     { return 
 func (*fakeProviderRepo) List() ([]domain.Provider, error)             { return nil, nil }
 func (*fakeProviderRepo) Update(*domain.Provider) error                { return nil }
 func (*fakeProviderRepo) UpdateBalance(uint, float64) error            { return nil }
+func (*fakeProviderRepo) UpdatePriceSyncAt(uint, time.Time) error { return nil }
 func (*fakeProviderRepo) LogWebhook(*domain.WebhookLog) error          { return nil }
 func (*fakeProviderRepo) ListWebhookLogs(int, int, string) ([]domain.WebhookLog, int64, error) {
 	return nil, 0, nil

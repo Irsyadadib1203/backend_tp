@@ -204,3 +204,89 @@ func (k *KiosgamerKeepAliveScheduler) Stop() {
 		k.wg.Wait()
 	})
 }
+
+// ---------------------------------------------------------------------------
+// PriceSyncScheduler
+// Sinkron harga per provider ke provider_products.cost_price, dengan interval
+// masing-masing provider (env PRICE_SYNC_INTERVALS, mis. "DIGIFLAZZ:1m,KIOSGAMER:15m").
+// Satu goroutine per provider; di dalamnya berjalan berurutan, jadi sinkron
+// provider yang sama tidak pernah tumpang tindih.
+// ---------------------------------------------------------------------------
+
+type PriceSyncScheduler struct {
+	svc       service.PriceSyncService
+	intervals map[string]time.Duration
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	stopOnce  sync.Once
+}
+
+func NewPriceSyncScheduler(svc service.PriceSyncService, intervals map[string]time.Duration) *PriceSyncScheduler {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &PriceSyncScheduler{svc: svc, intervals: intervals, ctx: ctx, cancel: cancel}
+}
+
+func (s *PriceSyncScheduler) Start() {
+	if len(s.intervals) == 0 {
+		log.Println("[PriceSync] PRICE_SYNC_INTERVALS kosong, scheduler sinkron harga tidak dijalankan")
+		return
+	}
+	for code, every := range s.intervals {
+		s.wg.Add(1)
+		go s.loop(code, every)
+	}
+}
+
+func (s *PriceSyncScheduler) loop(code string, every time.Duration) {
+	defer s.wg.Done()
+	log.Printf("[PriceSync] %s dijadwalkan tiap %v", code, every)
+
+	// Beri jeda setelah server menyala, lalu sinkron pertama.
+	select {
+	case <-time.After(30 * time.Second):
+		s.runOnce(code, every)
+	case <-s.ctx.Done():
+		return
+	}
+
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.runOnce(code, every)
+		case <-s.ctx.Done():
+			log.Printf("[PriceSync] %s dihentikan", code)
+			return
+		}
+	}
+}
+
+func (s *PriceSyncScheduler) runOnce(code string, every time.Duration) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[PriceSync] %s: panic dipulihkan: %v", code, r)
+		}
+	}()
+
+	timeout := 2 * time.Minute
+	if every < timeout {
+		timeout = every
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, timeout)
+	defer cancel()
+
+	if err := s.svc.SyncProvider(ctx, code); err != nil {
+		log.Printf("[PriceSync] %s gagal: %v", code, err)
+	}
+}
+
+// Stop menghentikan semua goroutine sinkron harga dengan rapi.
+func (s *PriceSyncScheduler) Stop() {
+	s.stopOnce.Do(func() {
+		s.cancel()
+		s.wg.Wait()
+	})
+}

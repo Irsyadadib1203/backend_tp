@@ -83,6 +83,7 @@ func (m *mockWebhookProviderRepo) GetByID(uint) (*domain.Provider, error)     { 
 func (m *mockWebhookProviderRepo) List() ([]domain.Provider, error)           { return nil, nil }
 func (m *mockWebhookProviderRepo) Update(*domain.Provider) error              { return nil }
 func (m *mockWebhookProviderRepo) UpdateBalance(uint, float64) error          { return nil }
+func (m *mockWebhookProviderRepo) UpdatePriceSyncAt(uint, time.Time) error     { return nil }
 func (m *mockWebhookProviderRepo) LogWebhook(log *domain.WebhookLog) error {
 	if m == nil {
 		return nil
