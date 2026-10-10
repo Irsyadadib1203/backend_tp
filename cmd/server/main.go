@@ -288,7 +288,10 @@ func main() {
 
 			// Providers (Accessible if nominals or settings are allowed)
 			admin.GET("/providers", adminHandler.GetProviders)
+			admin.PUT("/providers/:id", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.UpdateProvider)
 			admin.GET("/providers/:id/balance", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetProviderBalance)
+			admin.GET("/providers/digiflazz", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetDigiflazzSettings)
+			admin.PUT("/providers/digiflazz", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveDigiflazzSettings)
 			admin.GET("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetFFZStoreSettings)
 			admin.PUT("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveFFZStoreSettings)
 			admin.GET("/settings/transaction-reference", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetTransactionReferenceSettings)

@@ -794,13 +794,16 @@ func (h *AdminHandler) GetProviderBalance(c *gin.Context) {
 		return
 	}
 
+	now := time.Now()
+	_ = h.providerRepo.UpdateBalance(rec.ID, balance)
+
 	response.Success(c, "Provider balance retrieved", gin.H{
 		"provider_id": rec.ID,
 		"code":        rec.Code,
 		"name":        rec.Name,
 		"balance":     balance,
 		"unit":        providerBalanceUnit(rec.Code),
-		"checked_at":  time.Now(),
+		"checked_at":  now,
 	})
 }
 
@@ -958,6 +961,115 @@ func (h *AdminHandler) SaveFFZStoreSettings(c *gin.Context) {
 		return
 	}
 	response.Success(c, "FFZStore settings saved", gin.H{"id": record.ID, "name": record.Name, "code": record.Code, "base_url": record.BaseURL, "is_active": record.IsActive, "api_key_configured": encryptedSecret != ""})
+}
+
+// DigiflazzSettingsRequest mirrors FFZStoreSettingsRequest for Digiflazz.
+type DigiflazzSettingsRequest struct {
+	Name     string `json:"name"`
+	BaseURL  string `json:"base_url" binding:"required"`
+	Username string `json:"username"`
+	APIKey   string `json:"api_key"`
+	IsActive bool   `json:"is_active"`
+}
+
+func (h *AdminHandler) GetDigiflazzSettings(c *gin.Context) {
+	record, err := h.providerRepo.GetByCode("DIGIFLAZZ")
+	if err != nil || record == nil {
+		response.Success(c, "Digiflazz settings loaded", gin.H{
+			"configured": false, "name": "Digiflazz", "base_url": "https://api.digiflazz.com/v1",
+			"username": "", "is_active": true, "api_key_configured": false,
+		})
+		return
+	}
+	response.Success(c, "Digiflazz settings loaded", gin.H{
+		"configured": true, "id": record.ID, "name": record.Name, "base_url": record.BaseURL,
+		"username": record.Username, "is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
+	})
+}
+
+func (h *AdminHandler) SaveDigiflazzSettings(c *gin.Context) {
+	var req DigiflazzSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid Digiflazz settings", err.Error())
+		return
+	}
+	if err := provider.ValidateEndpointURL(req.BaseURL); err != nil {
+		response.BadRequest(c, "Base URL Digiflazz tidak valid", err.Error())
+		return
+	}
+
+	record, lookupErr := h.providerRepo.GetByCode("DIGIFLAZZ")
+	if lookupErr != nil || record == nil {
+		record = &domain.Provider{Code: "DIGIFLAZZ"}
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = "Digiflazz"
+	}
+	record.Name = name
+	record.BaseURL = strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+	if req.Username != "" {
+		record.Username = strings.TrimSpace(req.Username)
+	}
+	if strings.TrimSpace(req.APIKey) != "" {
+		record.APIKey = strings.TrimSpace(req.APIKey)
+	}
+	record.IsActive = req.IsActive
+
+	if err := h.providerRepo.Update(record); err != nil {
+		response.InternalServerError(c, "Failed to save Digiflazz settings", err)
+		return
+	}
+	response.Success(c, "Digiflazz settings saved", gin.H{
+		"id": record.ID, "name": record.Name, "code": record.Code, "base_url": record.BaseURL,
+		"username": record.Username, "is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
+	})
+}
+
+type UpdateProviderRequest struct {
+	Name     string `json:"name"`
+	BaseURL  string `json:"base_url"`
+	IsActive *bool  `json:"is_active"`
+}
+
+func (h *AdminHandler) UpdateProvider(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid provider ID", nil)
+		return
+	}
+
+	rec, err := h.providerRepo.GetByID(uint(id))
+	if err != nil || rec == nil {
+		response.NotFound(c, "Provider not found")
+		return
+	}
+
+	var req UpdateProviderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid payload", err.Error())
+		return
+	}
+
+	if req.Name != "" {
+		rec.Name = strings.TrimSpace(req.Name)
+	}
+	if req.BaseURL != "" {
+		rec.BaseURL = strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+	}
+	if req.IsActive != nil {
+		rec.IsActive = *req.IsActive
+	}
+
+	if err := h.providerRepo.Update(rec); err != nil {
+		response.InternalServerError(c, "Failed to update provider", err)
+		return
+	}
+
+	response.Success(c, "Provider updated", gin.H{
+		"id": rec.ID, "name": rec.Name, "code": rec.Code, "base_url": rec.BaseURL, "is_active": rec.IsActive,
+	})
 }
 
 type BatchSwitchProviderRequest struct {
