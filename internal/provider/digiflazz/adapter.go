@@ -45,7 +45,7 @@ func rcSet(codes ...string) map[string]bool {
 var (
 	rcSuccess    = rcSet("00")
 	rcFailed     = rcSet("02", "51", "54")
-	rcProcessing = rcSet("01", "03", "50", "52", "53", "55")
+	rcProcessing = rcSet("03")
 )
 
 type statusGroup int
