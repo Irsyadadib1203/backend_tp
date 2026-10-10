@@ -225,8 +225,13 @@ func (n *partnerNotifier) NotifyTransaction(tx *domain.Transaction) {
 }
 
 func (n *partnerNotifier) buildPayload(tx *domain.Transaction, apiKey *domain.APIKey) *H2HResponseData {
-	// ref_id milik mitra disimpan di idempotency key: "h2h_<userID>_<ref_id>".
-	refID := strings.TrimPrefix(tx.IdempotencyKey, fmt.Sprintf("h2h_%d_", *tx.UserID))
+	refID := tx.RefID
+	if refID == "" && tx.UserID != nil {
+		refID = strings.TrimPrefix(tx.IdempotencyKey, fmt.Sprintf("h2h_%d_", *tx.UserID))
+	}
+	if refID == "" {
+		refID = tx.ProviderOrderID
+	}
 
 	sku := ""
 	if nominal, _ := n.nominalRepo.FindByID(tx.NominalID); nominal != nil {
@@ -241,13 +246,24 @@ func (n *partnerNotifier) buildPayload(tx *domain.Transaction, apiKey *domain.AP
 		sn = tx.PaymentReference
 	}
 
+	msg := tx.ProviderMessage
+	if msg == "" {
+		if tx.Status == domain.StatusSuccess {
+			msg = "Transaksi Sukses"
+		} else if tx.Status == domain.StatusFailed {
+			msg = "Transaksi Gagal"
+		} else {
+			msg = "Transaksi sedang diproses"
+		}
+	}
+
 	data := &H2HResponseData{
 		RefID:         refID,
 		InvoiceNumber: tx.InvoiceNumber,
 		UserID:        tx.CustomerID,
 		ServerID:      tx.ServerID,
 		SKUCode:       sku,
-		Message:       tx.ProviderMessage,
+		Message:       msg,
 		Status:        statusToDigiflazz(tx.Status),
 		RC:            statusToRC(tx.Status),
 		SN:            sn,
@@ -278,6 +294,7 @@ func (n *partnerNotifier) deliver(target string, data *H2HResponseData, invoice 
 		code, body, sendErr := n.post(target, payload, data.Sign)
 		n.logAttempt(target, payload, code, body, sendErr)
 		if sendErr == nil && code >= 200 && code < 300 {
+			log.Printf("[PartnerNotify] berhasil terkirim invoice=%s url=%s attempt=%d code=%d", invoice, target, attempt, code)
 			return
 		}
 	}

@@ -67,10 +67,15 @@ type transactionService struct {
 	settingRepo  repository.SystemSettingRepository
 	tripayService          TripayChannelService
 	providerRegistry       *provider.Registry
+	partnerNotifier        PartnerNotifier
 }
 
 func (s *transactionService) SetTripayService(tripayService TripayChannelService) {
 	s.tripayService = tripayService
+}
+
+func (s *transactionService) SetPartnerNotifier(n PartnerNotifier) {
+	s.partnerNotifier = n
 }
 
 func NewTransactionService(
@@ -535,7 +540,14 @@ func (s *transactionService) applyResult(tx *domain.Transaction, result *provide
 	default:
 		return fmt.Errorf("unknown provider result status %d", result.Status)
 	}
-	return s.txRepo.Update(tx)
+	if err := s.txRepo.Update(tx); err != nil {
+		return err
+	}
+	// Kirim callback ke mitra H2H jika status final dan notifier tersedia.
+	if isFinalTransactionStatus(tx.Status) && tx.Source == domain.SourceH2H && s.partnerNotifier != nil {
+		s.partnerNotifier.NotifyTransaction(tx)
+	}
+	return nil
 }
 
 func providerErrorCause(err *provider.ProviderError) error {

@@ -1,8 +1,10 @@
 package repository
 
 import (
-	"time"
 	"errors"
+	"fmt"
+	"time"
+
 	"gorm.io/gorm"
 
 	"topup-backend/internal/domain"
@@ -76,7 +78,7 @@ func (r *transactionRepository) FindByInvoiceNumber(invoice string) (*domain.Tra
 func (r *transactionRepository) FindByRefID(refID string) (*domain.Transaction, error) {
 	var tx domain.Transaction
 	err := r.db.Preload("Game").Preload("Nominal").Preload("Provider").Preload("User").
-		Where("ref_id = ?", refID).First(&tx).Error
+		Where("ref_id = ? OR provider_order_id = ?", refID, refID).First(&tx).Error
 	if err != nil {
 		return nil, err
 	}
@@ -98,8 +100,9 @@ func (r *transactionRepository) FindByRefIDAndUserID(
 ) (*domain.Transaction, error) {
     var tx domain.Transaction
 
+    idemKey := fmt.Sprintf("h2h_%d_%s", userID, refID)
     err := r.db.
-        Where("ref_id = ? AND user_id = ?", refID, userID).
+        Where("user_id = ? AND (ref_id = ? OR provider_order_id = ? OR idempotency_key = ?)", userID, refID, refID, idemKey).
         First(&tx).Error
 
     if err != nil {

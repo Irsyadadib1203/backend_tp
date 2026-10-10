@@ -81,6 +81,13 @@ func main() {
 	ipService := service.NewIPWhitelistService(ipRepo)
 	rbacService := service.NewRBACService(rolePermRepo)
 
+	// 4.1 Wire partner callback notifier (H2H async callback)
+	allowPrivate := cfg.AppEnv == "development"
+	partnerNotifier := service.NewPartnerNotifier(userRepo, nominalRepo, providerRepo, allowPrivate)
+	if pns, ok := txService.(service.PartnerNotifierSetter); ok {
+		pns.SetPartnerNotifier(partnerNotifier)
+	}
+
 	// 5. Initialize Handlers
 	authHandler := handler.NewAuthHandler(authService)
 	gameHandler := handler.NewGameHandler(gameService, nicknameService)

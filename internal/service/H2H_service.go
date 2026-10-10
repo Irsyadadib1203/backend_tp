@@ -12,6 +12,7 @@ import (
 	"topup-backend/internal/pkg/crypto"
 	"topup-backend/internal/pkg/utils"
 	"topup-backend/internal/pkg/worker"
+	"topup-backend/internal/provider"
 	"topup-backend/internal/repository"
 )
 
@@ -301,6 +302,9 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 		return fail("user_id wajib diisi", "40", 0), errors.New("user_id is required")
 	}
 		callbackURL := strings.TrimSpace(req.CallbackURL)
+	if callbackURL == "" && apiKey.WebhookURL != "" {
+		callbackURL = strings.TrimSpace(apiKey.WebhookURL)
+	}
 	if callbackURL != "" {
 		if err := ValidatePartnerWebhookURL(callbackURL); err != nil {
 			return fail("callback_url tidak valid: "+err.Error(), "40", 0), err
@@ -312,16 +316,16 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 	existingTx, _ := s.txRepo.FindByIdempotencyKey(idemKey)
 	if existingTx != nil {
 		return &H2HResponseData{
-			RefID:        req.RefID,
+			RefID:         req.RefID,
 			InvoiceNumber: existingTx.InvoiceNumber,
-			UserID:       existingTx.CustomerID,
-			ServerID:     existingTx.ServerID,
-			SKUCode:      req.SKUCode,
-			Message:      existingTx.ProviderMessage,
-			Status:       statusToDigiflazz(existingTx.Status),
-			RC:           statusToRC(existingTx.Status),
-			SN:           existingTx.PaymentReference,
-			Price:        existingTx.SellingPrice,
+			UserID:        existingTx.CustomerID,
+			ServerID:      existingTx.ServerID,
+			SKUCode:       req.SKUCode,
+			Message:       existingTx.ProviderMessage,
+			Status:        statusToDigiflazz(existingTx.Status),
+			RC:            statusToRC(existingTx.Status),
+			SN:            existingTx.PaymentReference,
+			Price:         existingTx.SellingPrice,
 		}, nil
 	}
 
@@ -354,24 +358,24 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 	}
 
 	tx := &domain.Transaction{
-		InvoiceNumber:   invoiceNumber,
-		IdempotencyKey:  idemKey,
-		Source:          domain.SourceH2H,
-		UserID:          &user.ID,
-		CustomerID:      userID,
-		ServerID:        serverID,
-		GameID:          nominal.GameID,
-		NominalID:       nominal.ID,
-		ProviderID:      nominal.ProviderID,
-		BasePrice:       nominal.BasePrice,
-		SellingPrice:    price,
-		AdminFee:        0,
-		TotalAmount:     price,
-		Profit:          price - nominal.BasePrice,
-		Status:          domain.StatusProcessing,
-		PaymentMethod:   "SALDO_H2H",
-		RefID:           refIDProvider,
-		ProviderOrderID: req.RefID,
+		InvoiceNumber:      invoiceNumber,
+		IdempotencyKey:     idemKey,
+		Source:             domain.SourceH2H,
+		UserID:             &user.ID,
+		CustomerID:         userID,
+		ServerID:           serverID,
+		GameID:             nominal.GameID,
+		NominalID:          nominal.ID,
+		ProviderID:         nominal.ProviderID,
+		BasePrice:          nominal.BasePrice,
+		SellingPrice:       price,
+		AdminFee:           0,
+		TotalAmount:        price,
+		Profit:             price - nominal.BasePrice,
+		Status:             domain.StatusProcessing,
+		PaymentMethod:      "SALDO_H2H",
+		RefID:              req.RefID,
+		ProviderOrderID:    refIDProvider,
 		PartnerCallbackURL: callbackURL,
 	}
 
@@ -386,8 +390,7 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 	providerMsg := "Transaksi sedang diproses"
 	snNumber := ""
 
-	// Digiflazz tetap memakai satu field customer_no = user_id + server_id (server_id opsional).
-	customerNo := userID + serverID
+	customerNo := provider.CustomerNumber(userID, serverID)
 	digiResp, err := s.digiflazzBuyer.CreateTransaction(refIDProvider, nominal.ProviderProductCode, customerNo, req.Testing)
 	if err == nil && digiResp != nil {
 		providerStatus = digiResp.Data.Status
@@ -424,21 +427,18 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 
 	// 7. Webhook ke partner
 	targetWebhook := callbackURL
-	if targetWebhook == "" && apiKey.WebhookURL != "" {
-		targetWebhook = apiKey.WebhookURL
-	}
 	if targetWebhook != "" && isFinalTransactionStatus(tx.Status) {
 		h2hData := &H2HResponseData{
-			RefID:        req.RefID,
+			RefID:         req.RefID,
 			InvoiceNumber: invoiceNumber,
-			UserID:       userID,
-			ServerID:     serverID,
-			SKUCode:      req.SKUCode,
-			Message:      providerMsg,
-			Status:       providerStatus,
-			RC:           providerRC,
-			SN:           snNumber,
-			Price:        price,
+			UserID:        userID,
+			ServerID:      serverID,
+			SKUCode:       req.SKUCode,
+			Message:       providerMsg,
+			Status:        providerStatus,
+			RC:            providerRC,
+			SN:            snNumber,
+			Price:         price,
 		}
 		// Tanpa secret: webhook ditandatangani memakai apikey partner.
 		webhookKey := apiKey.Key
