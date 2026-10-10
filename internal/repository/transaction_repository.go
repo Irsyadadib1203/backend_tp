@@ -15,6 +15,7 @@ type TransactionRepository interface {
 	FindByID(id uint) (*domain.Transaction, error)
 	FindByInvoiceNumber(invoice string) (*domain.Transaction, error)
 	FindByRefID(refID string) (*domain.Transaction, error)
+	FindByProviderOrderID(providerOrderID string) (*domain.Transaction, error)
 	FindByIdempotencyKey(key string) (*domain.Transaction, error)
 	FindByRefIDAndUserID(refID string,userID uint,) (*domain.Transaction, error)
 	Update(tx *domain.Transaction) error
@@ -73,6 +74,21 @@ func (r *transactionRepository) FindByInvoiceNumber(invoice string) (*domain.Tra
 		return nil, err
 	}
 	return &tx, nil
+}
+func (r *transactionRepository) FindByProviderOrderID(
+    providerOrderID string,
+) (*domain.Transaction, error) {
+    var tx domain.Transaction
+
+    err := r.db.
+        Where("provider_order_id = ?", providerOrderID).
+        First(&tx).Error
+
+    if err != nil {
+        return nil, err
+    }
+
+    return &tx, nil
 }
 
 func (r *transactionRepository) FindByRefID(refID string) (*domain.Transaction, error) {

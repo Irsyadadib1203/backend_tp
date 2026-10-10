@@ -600,7 +600,7 @@ func (s *transactionService) HandleProviderCallback(providerCode string, req *ht
 		return nil, nil, errors.New("empty callback data")
 	}
 
-	tx, err := s.txRepo.FindByRefID(refID)
+	tx, err := s.txRepo.FindByProviderOrderID(refID)
 	if err != nil || tx == nil {
 		tx, err = s.txRepo.FindByInvoiceNumber(refID)
 	}
