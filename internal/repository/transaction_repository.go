@@ -2,7 +2,7 @@ package repository
 
 import (
 	"time"
-
+	"errors"
 	"gorm.io/gorm"
 
 	"topup-backend/internal/domain"
@@ -14,6 +14,7 @@ type TransactionRepository interface {
 	FindByInvoiceNumber(invoice string) (*domain.Transaction, error)
 	FindByRefID(refID string) (*domain.Transaction, error)
 	FindByIdempotencyKey(key string) (*domain.Transaction, error)
+	FindByRefIDAndUserID(refID string,userID uint,) (*domain.Transaction, error)
 	Update(tx *domain.Transaction) error
 	UpdateStatus(id uint, newStatus domain.TransactionStatus, reason string) error
 	// MarkAsProcessingIfPending atomically transitions a transaction from
@@ -90,6 +91,27 @@ func (r *transactionRepository) FindByIdempotencyKey(key string) (*domain.Transa
 	}
 	return &tx, nil
 }
+
+func (r *transactionRepository) FindByRefIDAndUserID(
+    refID string,
+    userID uint,
+) (*domain.Transaction, error) {
+    var tx domain.Transaction
+
+    err := r.db.
+        Where("ref_id = ? AND user_id = ?", refID, userID).
+        First(&tx).Error
+
+    if err != nil {
+        if errors.Is(err, gorm.ErrRecordNotFound) {
+            return nil, nil
+        }
+        return nil, err
+    }
+
+    return &tx, nil
+}
+
 
 func (r *transactionRepository) Update(tx *domain.Transaction) error {
 	return r.db.Save(tx).Error

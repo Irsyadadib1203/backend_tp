@@ -468,10 +468,13 @@ func (s *h2hService) CheckStatus(req *H2HCheckStatusRequest) (*H2HResponseData, 
 		return nil, err
 	}
 
-	tx, err := s.txRepo.FindByIdempotencyKey(fmt.Sprintf("h2h_%d_%s", user.ID, req.RefID))
-	if err != nil || tx == nil {
-		return nil, errors.New("transaction not found")
-	}
+	tx, err := s.txRepo.FindByRefIDAndUserID(
+        req.RefID,
+        user.ID,
+    )
+    if err != nil || tx == nil {
+        return nil, errors.New("transaction not found")
+    }
 
 	skuCode := ""
 	if nominal, _ := s.nominalRepo.FindByID(tx.NominalID); nominal != nil {

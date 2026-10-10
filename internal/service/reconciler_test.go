@@ -24,6 +24,13 @@ type fakeReconcilerTxRepo struct {
 	claims     map[uint]bool
 }
 
+func (r *fakeReconcilerTxRepo) FindByRefIDAndUserID(
+    refID string,
+    userID uint,
+) (*domain.Transaction, error) {
+    return nil, nil
+}
+
 func (r *fakeReconcilerTxRepo) Create(*domain.Transaction) error { return nil }
 func (r *fakeReconcilerTxRepo) FindByID(id uint) (*domain.Transaction, error) {
 	for i := range r.processing {

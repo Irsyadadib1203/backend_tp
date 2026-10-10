@@ -137,6 +137,13 @@ func (r *characterizationProviderRepo) ListWebhookLogs(int, int, string) ([]doma
 	return nil, 0, nil
 }
 
+func (r *characterizationTxRepo) FindByRefIDAndUserID(
+    refID string,
+    userID uint,
+) (*domain.Transaction, error) {
+    return nil, nil
+}
+
 type characterizationUserRepo struct {
 	hasRefund bool
 	credits   int
@@ -163,6 +170,7 @@ func (r *characterizationUserRepo) List(int, int, string) ([]domain.User, int64,
 func (r *characterizationUserRepo) Delete(uint) error                              { return nil }
 func (r *characterizationUserRepo) CreateAPIKey(*domain.APIKey) error              { return nil }
 func (r *characterizationUserRepo) GetAPIKeyByUserID(uint) (*domain.APIKey, error) { return nil, nil }
+
 
 type characterizationDigiflazz struct {
 	createResp              *DigiflazzTransactionResponse
