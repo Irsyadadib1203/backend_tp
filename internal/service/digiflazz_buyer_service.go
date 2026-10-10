@@ -68,7 +68,7 @@ type DigiflazzBuyerService interface {
 	GetPriceList() ([]DigiflazzPriceListItem, error)
 	CheckBalance() (float64, error)
 	CreateTransaction(refID, buyerSkuCode, customerNo string, testing bool) (*DigiflazzTransactionResponse, error)
-	CheckTransactionStatus(refID, buyerSkuCode, customerNo string) (*DigiflazzTransactionResponse, error)
+	CheckTransactionStatus(providerOrderID, buyerSkuCode, customerNo string) (*DigiflazzTransactionResponse, error)
 	ProcessCallback(rawPayload []byte, signatureHeader string) (*DigiflazzCallbackPayload, error)
 }
 
@@ -189,20 +189,21 @@ func (s *digiflazzBuyerService) CheckBalance() (float64, error) {
 	return result.Data.Deposit, nil
 }
 
-func (s *digiflazzBuyerService) CreateTransaction(refID, buyerSkuCode, customerNo string, testing bool) (*DigiflazzTransactionResponse, error) {
+func (s *digiflazzBuyerService) CreateTransaction(providerOrderID, buyerSkuCode, customerNo string, testing bool) (*DigiflazzTransactionResponse, error) {
 	baseURL, username, apiKey, _ := s.getCredentials()
 	if username == "" || apiKey == "" {
 		return nil, errors.New("digiflazz credentials not configured")
 	}
 
-	signature := crypto.MD5Hash(username + apiKey + refID)
+	signature := crypto.MD5Hash(username + apiKey + providerOrderID)
 
 	payload := map[string]interface{}{
 		"username":       username,
 		"buyer_sku_code": buyerSkuCode,
 		"customer_no":    customerNo,
-		"ref_id":         refID,
+		"ref_id":         providerOrderID,
 		"sign":           signature,
+		"cb_url":         "https://api1235.irxplay.com/api/v1/callback/digiflazz",
 	}
 	if testing {
 		payload["testing"] = true
@@ -238,8 +239,8 @@ func (s *digiflazzBuyerService) CreateTransaction(refID, buyerSkuCode, customerN
 	return &result, nil
 }
 
-func (s *digiflazzBuyerService) CheckTransactionStatus(refID, buyerSkuCode, customerNo string) (*DigiflazzTransactionResponse, error) {
-	return s.CreateTransaction(refID, buyerSkuCode, customerNo, false)
+func (s *digiflazzBuyerService) CheckTransactionStatus(providerOrderID, buyerSkuCode, customerNo string) (*DigiflazzTransactionResponse, error) {
+	return s.CreateTransaction(providerOrderID, buyerSkuCode, customerNo, false)
 }
 
 func (s *digiflazzBuyerService) ProcessCallback(rawPayload []byte, signatureHeader string) (*DigiflazzCallbackPayload, error) {
