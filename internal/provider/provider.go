@@ -73,7 +73,7 @@ func CustomerNumber(customerID, serverID string) string {
 	if serverID == "" {
 		return customerID
 	}
-	return customerID + "(" + serverID + ")"
+	return customerID + serverID 
 }
 
 // ExchangeData is the backward-compatible envelope stored in
