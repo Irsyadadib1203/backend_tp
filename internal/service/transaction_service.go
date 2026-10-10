@@ -234,9 +234,10 @@ func (s *transactionService) CreateOrder(req *CreateOrderRequest) (*domain.Trans
 		}
 
 		if tripayDetail != nil {
-			tx.ProviderOrderID = tripayDetail.Reference
 			if tripayDetail.PayCode != "" {
 				tx.PaymentReference = tripayDetail.PayCode
+			} else if tripayDetail.Reference != "" {
+				tx.PaymentReference = tripayDetail.Reference
 			} else if tripayDetail.CheckoutURL != "" {
 				tx.PaymentReference = tripayDetail.CheckoutURL
 			}
@@ -679,10 +680,10 @@ func (s *transactionService) GetDashboardStats() (map[string]interface{}, error)
 func (s *transactionService) ManualRetry(transactionID uint) error {
 	tx, err := s.txRepo.FindByID(transactionID)
 	if err != nil || tx == nil {
-		if tx.Status == domain.StatusPending && tx.PaymentVerifiedAt == nil {
-			return errors.New("transaksi belum dibayar, tidak bisa diproses ulang")
-		}
-		return errors.New("transaction not found")
+		return errors.New("transaksi tidak ditemukan")
+	}
+	if tx.Status == domain.StatusPending && tx.PaymentVerifiedAt == nil {
+		return errors.New("transaksi belum dibayar, tidak bisa diproses ulang")
 	}
 
 	// Jika transaksi sebelumnya berstatus GAGAL atau REFUNDED (atau sudah pernah menerima mutasi refund),

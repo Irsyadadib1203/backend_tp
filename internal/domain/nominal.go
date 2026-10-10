@@ -41,16 +41,47 @@ type Nominal struct {
 }
 
 func (n *Nominal) CalculatePrices() {
+	if n.PricePublic > 0 && n.PriceMember > 0 && n.PriceVIP > 0 && n.PriceReseller > 0 {
+		return
+	}
+	n.calculateMissingPrices()
+}
+
+func (n *Nominal) ForceCalculatePrices() {
+	n.PricePublic = 0
+	n.PriceMember = 0
+	n.PriceVIP = 0
+	n.PriceReseller = 0
+	n.calculateMissingPrices()
+}
+
+func (n *Nominal) calculateMissingPrices() {
 	if n.MarginPercent > 0 {
 		margin := n.BasePrice * (n.MarginPercent / 100)
-		n.PricePublic = n.BasePrice + margin
-		n.PriceMember = n.BasePrice + (margin * 0.85)
-		n.PriceVIP = n.BasePrice + (margin * 0.70)
-		n.PriceReseller = n.BasePrice + (margin * 0.50)
+		if n.PricePublic <= 0 {
+			n.PricePublic = n.BasePrice + margin
+		}
+		if n.PriceMember <= 0 {
+			n.PriceMember = n.BasePrice + (margin * 0.85)
+		}
+		if n.PriceVIP <= 0 {
+			n.PriceVIP = n.BasePrice + (margin * 0.70)
+		}
+		if n.PriceReseller <= 0 {
+			n.PriceReseller = n.BasePrice + (margin * 0.50)
+		}
 	} else if n.MarginFlat > 0 {
-		n.PricePublic = n.BasePrice + n.MarginFlat
-		n.PriceMember = n.BasePrice + (n.MarginFlat * 0.85)
-		n.PriceVIP = n.BasePrice + (n.MarginFlat * 0.70)
-		n.PriceReseller = n.BasePrice + (n.MarginFlat * 0.50)
+		if n.PricePublic <= 0 {
+			n.PricePublic = n.BasePrice + n.MarginFlat
+		}
+		if n.PriceMember <= 0 {
+			n.PriceMember = n.BasePrice + (n.MarginFlat * 0.85)
+		}
+		if n.PriceVIP <= 0 {
+			n.PriceVIP = n.BasePrice + (n.MarginFlat * 0.70)
+		}
+		if n.PriceReseller <= 0 {
+			n.PriceReseller = n.BasePrice + (n.MarginFlat * 0.50)
+		}
 	}
 }

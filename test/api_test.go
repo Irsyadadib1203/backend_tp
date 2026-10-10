@@ -56,6 +56,23 @@ func setupTestRouter() *gin.Engine {
 	}
 	db.Create(&testNominal)
 
+	testPartner := domain.User{
+		Name:     "Test Partner",
+		Email:    "partner@test.com",
+		Role:     domain.RoleMember,
+		Tier:     domain.TierVIP,
+		IsActive: true,
+	}
+	db.Create(&testPartner)
+
+	testAPIKey := domain.APIKey{
+		UserID:   testPartner.ID,
+		Key:      "test-api-key",
+		Secret:   "test-secret",
+		IsActive: true,
+	}
+	db.Create(&testAPIKey)
+
 	userRepo := repository.NewUserRepository(db)
 	gameRepo := repository.NewGameRepository(db)
 	nominalRepo := repository.NewNominalRepository(db)
@@ -202,7 +219,14 @@ func TestAdminAuthAndStats(t *testing.T) {
 func TestDigiflazzSellerPriceList(t *testing.T) {
 	r := setupTestRouter()
 
-	req, _ := http.NewRequest("POST", "/api/v1/h2h/price-list", bytes.NewBuffer([]byte("{}")))
+	apiKey := "test-api-key"
+	sign := crypto.MD5Hash(apiKey + "pricelist")
+	body, _ := json.Marshal(map[string]string{
+		"apikey": apiKey,
+		"sign":   sign,
+	})
+
+	req, _ := http.NewRequest("POST", "/api/v1/h2h/price-list", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
@@ -224,7 +248,14 @@ func TestDigiflazzSellerPriceList(t *testing.T) {
 func TestUnauthorizedIPBlocking(t *testing.T) {
 	r := setupTestRouter()
 
-	req, _ := http.NewRequest("POST", "/api/v1/h2h/price-list", bytes.NewBuffer([]byte("{}")))
+	apiKey := "test-api-key"
+	sign := crypto.MD5Hash(apiKey + "pricelist")
+	body, _ := json.Marshal(map[string]string{
+		"apikey": apiKey,
+		"sign":   sign,
+	})
+
+	req, _ := http.NewRequest("POST", "/api/v1/h2h/price-list", bytes.NewBuffer(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "192.168.100.99:54321" // Non-whitelisted IP
 	w := httptest.NewRecorder()

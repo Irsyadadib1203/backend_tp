@@ -51,7 +51,7 @@ func TestPurchaseMapsDigiflazzResponsesByRC(t *testing.T) {
 		wantPS                    string
 	}{
 		{"rc 00 sukses", "Sukses", "00", "ok", provider.StatusSuccess, "Sukses"},
-		{"rc 03 pending", "Pending", "03", "wait", provider.StatusPending, "Pending"},
+		{"rc 03 pending", "Pending", "03", "wait", provider.StatusPending, "Processing (RC 03)"},
 		{"rc 02 gagal", "Gagal", "02", "transaksi gagal", provider.StatusFailedFinal, "Gagal"},
 		{"rc 51 gagal", "Gagal", "51", "nomor diblokir", provider.StatusFailedFinal, "Gagal"},
 		{"rc 54 gagal", "Gagal", "54", "nomor tujuan salah", provider.StatusFailedFinal, "Gagal"},

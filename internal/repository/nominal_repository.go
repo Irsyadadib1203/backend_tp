@@ -183,7 +183,7 @@ func (r *nominalRepository) UpsertFromDigiflazz(nominals []domain.Nominal) error
 				if nom.Name != "" {
 					existing.Name = nom.Name
 				}
-				existing.CalculatePrices()
+				existing.ForceCalculatePrices()
 				if err := tx.Save(&existing).Error; err != nil {
 					return err
 				}

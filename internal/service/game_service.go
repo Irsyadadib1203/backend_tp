@@ -529,7 +529,7 @@ func (s *gameService) AutoSyncAllPrices() (int, error) {
 		if priceChanged || statusChanged {
 			nom.BasePrice = digiItem.Price
 			nom.IsActive = digiItem.BuyerProductStatus && digiItem.SellerProductStatus
-			nom.CalculatePrices()
+			nom.ForceCalculatePrices()
 			if err := s.nominalRepo.Update(&nom); err == nil {
 				updatedCount++
 				s.dualWriteProviderProducts(&nom)
