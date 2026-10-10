@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"log"
 
 	"topup-backend/config"
 	"topup-backend/internal/domain"
@@ -89,23 +90,18 @@ func NewDigiflazzBuyerService(providerRepo repository.ProviderRepository, cfg *c
 }
 
 func (s *digiflazzBuyerService) getCredentials() (baseURL, username, apiKey, webhookSecret string) {
-	baseURL = s.cfg.DigiflazzBuyerBaseURL
-	username = s.cfg.DigiflazzBuyerUsername
-	apiKey = s.cfg.DigiflazzBuyerAPIKey
-	webhookSecret = s.cfg.DigiflazzBuyerWebhookSecret
-
-	provider, err := s.providerRepo.GetByCode("DIGIFLAZZ")
-	if err == nil && provider != nil {
-		if provider.BaseURL != "" {
-			baseURL = provider.BaseURL
-		}
-		if provider.Username != "" {
-			username = provider.Username
-		}
-		if provider.APIKey != "" {
-			apiKey = provider.APIKey
-		}
+	record, err := s.providerRepo.GetByCode("DIGIFLAZZ")
+	if err != nil || record == nil {
+		log.Printf("[Digiflazz] kredensial tidak ditemukan di database: %v", err)
+		return
 	}
+	baseURL = strings.TrimRight(strings.TrimSpace(record.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = "https://api.digiflazz.com/v1"
+	}
+	username = strings.TrimSpace(record.Username)
+	apiKey = strings.TrimSpace(record.APIKey)
+	webhookSecret = strings.TrimSpace(record.Secret)
 	return
 }
 

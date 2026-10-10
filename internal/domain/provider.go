@@ -12,9 +12,10 @@ type Provider struct {
 	Code        string         `gorm:"size:50;uniqueIndex;not null" json:"code"` // "DIGIFLAZZ"
 	BaseURL     string         `gorm:"size:255;not null" json:"base_url"`
 	Username    string         `gorm:"size:100" json:"username"`
-	APIKey      string         `gorm:"size:255" json:"api_key"`
+	APIKey      string         `gorm:"size:255" json:"-"`
+	Secret      string         `gorm:"size:255" json:"-"`
 	Balance     float64        `gorm:"type:decimal(15,2);default:0" json:"balance"`
-	Config      string         `gorm:"type:text" json:"config,omitempty"` // Declarative JSON config, secrets encrypted
+	Config      string         `gorm:"type:text" json:"-"` // Declarative JSON config, secrets encrypted
 	IsActive    bool           `gorm:"default:true" json:"is_active"`
 	LastPriceSyncAt *time.Time `json:"last_price_sync_at"`
 	BalanceCheckedAt *time.Time `json:"balance_checked_at"`

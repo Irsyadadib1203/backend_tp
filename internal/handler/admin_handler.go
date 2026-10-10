@@ -969,6 +969,7 @@ type DigiflazzSettingsRequest struct {
 	BaseURL  string `json:"base_url" binding:"required"`
 	Username string `json:"username"`
 	APIKey   string `json:"api_key"`
+	Secret   string `json:"secret"`
 	IsActive bool   `json:"is_active"`
 }
 
@@ -977,13 +978,13 @@ func (h *AdminHandler) GetDigiflazzSettings(c *gin.Context) {
 	if err != nil || record == nil {
 		response.Success(c, "Digiflazz settings loaded", gin.H{
 			"configured": false, "name": "Digiflazz", "base_url": "https://api.digiflazz.com/v1",
-			"username": "", "is_active": true, "api_key_configured": false,
+			"username": "", "is_active": true, "api_key_configured": false,"secret_configured": false,
 		})
 		return
 	}
 	response.Success(c, "Digiflazz settings loaded", gin.H{
 		"configured": true, "id": record.ID, "name": record.Name, "base_url": record.BaseURL,
-		"username": record.Username, "is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
+		"username": record.Username, "is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "","secret_configured": strings.TrimSpace(record.Secret) != "",
 	})
 }
 
@@ -1015,6 +1016,9 @@ func (h *AdminHandler) SaveDigiflazzSettings(c *gin.Context) {
 	if strings.TrimSpace(req.APIKey) != "" {
 		record.APIKey = strings.TrimSpace(req.APIKey)
 	}
+	if strings.TrimSpace(req.Secret) != "" {
+		record.Secret = strings.TrimSpace(req.Secret)
+	}
 	record.IsActive = req.IsActive
 
 	if err := h.providerRepo.Update(record); err != nil {
@@ -1023,7 +1027,7 @@ func (h *AdminHandler) SaveDigiflazzSettings(c *gin.Context) {
 	}
 	response.Success(c, "Digiflazz settings saved", gin.H{
 		"id": record.ID, "name": record.Name, "code": record.Code, "base_url": record.BaseURL,
-		"username": record.Username, "is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
+		"username": record.Username, "is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "","secret_configured": strings.TrimSpace(record.Secret) != "",
 	})
 }
 
