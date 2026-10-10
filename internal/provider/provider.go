@@ -57,6 +57,7 @@ type Result struct {
 	// It is persisted together with Raw so the admin can inspect both sides.
 	RequestRaw                      []byte
 	StatusReason                    string
+	RefundReason 					string
 	PaymentReferencePolicy          PaymentReferencePolicy
 	UpdateSN                        bool
 	IncludeSNInSuccessEvent         bool

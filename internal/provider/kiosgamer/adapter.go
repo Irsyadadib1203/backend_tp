@@ -104,6 +104,7 @@ func mapResult(result *service.KiosgamerOrderResult, statusCheck bool) *provider
 		} else {
 			mapped.Status, mapped.ProviderStatus = provider.StatusFailedFinal, "Gagal"
 			mapped.StatusReason = "Kiosgamer gagal: " + result.Message
+			mapped.RefundReason = "Pengembalian dana: top up Kiosgamer gagal"
 			mapped.IncludeCompletedAtInFailedEvent = !statusCheck
 		}
 	default:

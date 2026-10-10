@@ -38,26 +38,29 @@ func (f *fakeBuyer) ProcessCallback(_ []byte, signature string) (*service.Digifl
 	return f.callback, f.callbackErr
 }
 
-func response(status, message string) *service.DigiflazzTransactionResponse {
+func response(status, rc, message string) *service.DigiflazzTransactionResponse {
 	r := &service.DigiflazzTransactionResponse{}
-	r.Data.RefID, r.Data.Status, r.Data.Message, r.Data.SN = "DF-1", status, message, "SN-DF"
+	r.Data.RefID, r.Data.Status, r.Data.RC, r.Data.Message, r.Data.SN = "DF-1", status, rc, message, "SN-DF"
 	return r
 }
 
-func TestPurchaseMapsLegacyDigiflazzResponses(t *testing.T) {
+func TestPurchaseMapsDigiflazzResponsesByRC(t *testing.T) {
 	cases := []struct {
-		name, status, message string
-		want                  provider.Status
-		wantPS                string
+		name, status, rc, message string
+		want                      provider.Status
+		wantPS                    string
 	}{
-		{"success", "Sukses", "ok", provider.StatusSuccess, "Sukses"},
-		{"pending", "Pending", "wait", provider.StatusPending, "Pending"},
-		{"balance failure holds", "Gagal", "saldo provider habis", provider.StatusFailedHold, "Pending (Kendala Provider)"},
-		{"final failure", "Gagal", "id salah", provider.StatusFailedFinal, "Gagal"},
+		{"rc 00 sukses", "Sukses", "00", "ok", provider.StatusSuccess, "Sukses"},
+		{"rc 03 pending", "Pending", "03", "wait", provider.StatusPending, "Pending"},
+		{"rc 02 gagal", "Gagal", "02", "transaksi gagal", provider.StatusFailedFinal, "Gagal"},
+		{"rc 51 gagal", "Gagal", "51", "nomor diblokir", provider.StatusFailedFinal, "Gagal"},
+		{"rc 54 gagal", "Gagal", "54", "nomor tujuan salah", provider.StatusFailedFinal, "Gagal"},
+		{"rc lain jadi pending", "Gagal", "44", "saldo tidak cukup", provider.StatusPending, "Pending (RC 44)"},
+		{"rc kosong jadi pending", "Gagal", "", "tidak jelas", provider.StatusPending, "Pending (RC -)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			buyer := &fakeBuyer{create: response(tc.status, tc.message)}
+			buyer := &fakeBuyer{create: response(tc.status, tc.rc, tc.message)}
 			result, err := New(buyer).Purchase(context.Background(), provider.PurchaseRequest{RefID: "REF", ProductCode: "SKU", CustomerID: "USER"})
 			if err != nil || result.Status != tc.want || result.ProviderStatus != tc.wantPS || result.ProviderOrderID != "DF-1" || result.SN != "SN-DF" || len(result.Raw) == 0 {
 				t.Fatalf("result=%+v err=%v", result, err)
@@ -67,7 +70,7 @@ func TestPurchaseMapsLegacyDigiflazzResponses(t *testing.T) {
 }
 
 func TestPurchaseErrorAndExistingOrderUseProviderContract(t *testing.T) {
-	buyer := &fakeBuyer{createErr: errors.New("connection timeout"), check: response("Sukses", "ok")}
+	buyer := &fakeBuyer{createErr: errors.New("connection timeout"), check: response("Sukses", "00", "ok")}
 	adapter := New(buyer)
 	result, err := adapter.Purchase(context.Background(), provider.PurchaseRequest{RefID: "REF", ProductCode: "SKU", CustomerID: "USER"})
 	if result != nil {
@@ -84,7 +87,7 @@ func TestPurchaseErrorAndExistingOrderUseProviderContract(t *testing.T) {
 }
 
 func TestPurchaseCombinesCustomerAndServerIDForDigiflazz(t *testing.T) {
-	buyer := &fakeBuyer{create: response("Pending", "wait")}
+	buyer := &fakeBuyer{create: response("Pending", "03", "wait")}
 	_, err := New(buyer).Purchase(context.Background(), provider.PurchaseRequest{RefID: "REF", ProductCode: "SKU", CustomerID: "12345678", ServerID: "2001"})
 	if err != nil || buyer.lastCustomerNo != "12345678(2001)" {
 		t.Fatalf("err=%v customer_no=%q", err, buyer.lastCustomerNo)
@@ -93,12 +96,12 @@ func TestPurchaseCombinesCustomerAndServerIDForDigiflazz(t *testing.T) {
 
 func TestParseCallbackUsesLegacyHeaderFallback(t *testing.T) {
 	payload := &service.DigiflazzCallbackPayload{}
-	payload.Data.RefID, payload.Data.Status, payload.Data.Message = "REF-CB", "Gagal", "saldo provider habis"
+	payload.Data.RefID, payload.Data.Status, payload.Data.RC, payload.Data.Message = "REF-CB", "Gagal", "44", "saldo provider habis"
 	buyer := &fakeBuyer{callback: payload}
 	req := httptest.NewRequest(http.MethodPost, "/callback", strings.NewReader(`{}`))
 	req.Header.Set("X-Digiflazz-Delivery", "fallback-signature")
 	result, refID, err := New(buyer).ParseCallback(req)
-	if err != nil || refID != "REF-CB" || result.Status != provider.StatusFailedHold || result.ProviderStatus != "Pending (Kendala Provider)" || buyer.callbackSignature != "fallback-signature" {
+	if err != nil || refID != "REF-CB" || result.Status != provider.StatusPending || result.ProviderStatus != "Pending (RC 44)" || buyer.callbackSignature != "fallback-signature" {
 		t.Fatalf("result=%+v ref=%q err=%v sig=%q", result, refID, err, buyer.callbackSignature)
 	}
 }

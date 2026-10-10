@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"encoding/json"
 	"strconv"
@@ -33,6 +34,7 @@ type AdminHandler struct {
 	tripayChannelService service.TripayChannelService
 	settingRepo          repository.SystemSettingRepository
 	providerRegistry     *provider.Registry
+	bulkTxService service.BulkTransactionService
 }
 
 func NewAdminHandler(
@@ -320,6 +322,41 @@ func (h *AdminHandler) ManualRefundTx(c *gin.Context) {
 		return
 	}
 	response.Success(c, "Transaction refunded successfully", nil)
+}
+
+func (h *AdminHandler) SetBulkTransactionService(s service.BulkTransactionService) {
+	h.bulkTxService = s
+}
+
+// POST /admin/transactions/bulk  {"action":"retry|success|fail","ids":[1,2],"notes":""}
+func (h *AdminHandler) BulkTransactions(c *gin.Context) {
+	if h.bulkTxService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Bulk transaction service is not configured")
+		return
+	}
+	var req struct {
+		Action string `json:"action" binding:"required"`
+		IDs    []uint `json:"ids" binding:"required"`
+		Notes  string `json:"notes"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request", nil)
+		return
+	}
+	results, err := h.bulkTxService.BulkManualAction(service.BulkAction(req.Action), req.IDs, strings.TrimSpace(req.Notes))
+	if err != nil {
+		response.BadRequest(c, err.Error(), nil)
+		return
+	}
+	ok := 0
+	for _, r := range results {
+		if r.Success {
+			ok++
+		}
+	}
+	response.Success(c, fmt.Sprintf("%d dari %d transaksi berhasil diproses", ok, len(results)), gin.H{
+		"results": results, "total": len(results), "succeeded": ok, "failed": len(results) - ok,
+	})
 }
 
 // ----------------- USERS & RESELLERS -----------------

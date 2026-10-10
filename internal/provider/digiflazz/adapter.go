@@ -3,6 +3,7 @@ package digiflazz
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -11,6 +12,63 @@ import (
 	"topup-backend/internal/provider"
 	"topup-backend/internal/service"
 )
+
+// ---------------------------------------------------------------------------
+// Pengelompokan status Digiflazz berdasarkan RC. Jika aturannya berubah, ubah di sini saja.
+//
+//	SUKSES      RC 00
+//	GAGAL       RC 02, 51, 54                        -> transaksi failed + refund otomatis
+//	PROCESSING  RC 01, 03, 50, 51, 52, 53, 54, 55    -> Digiflazz masih memproses
+//	PENDING     RC 40, 41, 42, 43, 44, 45, 47, 49,
+//	            semua RC lain, RC kosong, dan balasan tanpa RC (404 dsb.)
+//	                                                 -> ditahan, perlu dicek admin
+//
+// Jika satu RC terdaftar di lebih dari satu kelompok, urutan prioritasnya:
+// SUKSES > GAGAL > PROCESSING > PENDING.
+// Hapus dari rcFailed jika ingin keduanya menjadi PROCESSING.
+//
+// Status transaksi di database hanya success, failed, dan processing. Kelompok
+// PROCESSING dan PENDING sama-sama membuat transaksi tetap processing; bedanya
+// terlihat di kolom provider_status ("Processing (RC xx)" / "Pending (RC xx)").
+// Status teks dari Digiflazz ("Sukses"/"Gagal"/"Pending") tidak dipakai untuk
+// menentukan status, hanya disimpan sebagai informasi.
+// ---------------------------------------------------------------------------
+
+func rcSet(codes ...string) map[string]bool {
+	set := make(map[string]bool, len(codes))
+	for _, code := range codes {
+		set[code] = true
+	}
+	return set
+}
+
+var (
+	rcSuccess    = rcSet("00")
+	rcFailed     = rcSet("02", "51", "54")
+	rcProcessing = rcSet("01", "03", "50", "52", "53", "55")
+)
+
+type statusGroup int
+
+const (
+	groupPending statusGroup = iota // default: RC lain, RC kosong, balasan tanpa RC
+	groupProcessing
+	groupSuccess
+	groupFailed
+)
+
+func groupOfRC(rc string) statusGroup {
+	switch {
+	case rcSuccess[rc]:
+		return groupSuccess
+	case rcFailed[rc]:
+		return groupFailed
+	case rcProcessing[rc]:
+		return groupProcessing
+	default:
+		return groupPending
+	}
+}
 
 type Adapter struct {
 	buyer service.DigiflazzBuyerService
@@ -90,10 +148,10 @@ func (a *Adapter) ParseCallback(r *http.Request) (*provider.Result, string, erro
 
 func resultFromResponse(resp *service.DigiflazzTransactionResponse, statusCheck bool) *provider.Result {
 	if resp == nil {
-		return &provider.Result{Status: provider.StatusFailedHold, ProviderStatus: "Pending", Message: "empty Digiflazz response"}
+		return &provider.Result{Status: provider.StatusPending, ProviderStatus: "Pending (RC -)", Message: "empty Digiflazz response"}
 	}
 	raw, _ := json.Marshal(resp.Data)
-	return mapResult(resp.Data.RefID, resp.Data.Status, resp.Data.Message, resp.Data.SN, raw, statusCheck)
+	return mapResult(resp.Data.RefID, resp.Data.RC, resp.Data.Status, resp.Data.Message, resp.Data.SN, raw, statusCheck)
 }
 
 func resultFromCallback(payload *service.DigiflazzCallbackPayload) (*provider.Result, error) {
@@ -101,39 +159,57 @@ func resultFromCallback(payload *service.DigiflazzCallbackPayload) (*provider.Re
 		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: provider.ErrorTemporary, ProviderStatus: "Callback Error", Message: "empty callback data"}
 	}
 	raw, _ := json.Marshal(payload.Data)
-	return mapResult(payload.Data.RefID, payload.Data.Status, payload.Data.Message, payload.Data.SN, raw, false), nil
+	return mapResult(payload.Data.RefID, payload.Data.RC, payload.Data.Status, payload.Data.Message, payload.Data.SN, raw, false), nil
 }
 
-func mapResult(orderID, status, message, sn string, raw []byte, statusCheck bool) *provider.Result {
+// mapResult menerjemahkan balasan Digiflazz menjadi hasil standar berdasarkan kelompok RC.
+func mapResult(orderID, rc, status, message, sn string, raw []byte, statusCheck bool) *provider.Result {
+	rc = strings.TrimSpace(rc)
+	label := rc
+	if label == "" {
+		label = "-"
+	}
 	result := &provider.Result{ProviderOrderID: orderID, SN: sn, Message: message, ProviderStatus: status, Raw: raw, UpdateSN: true}
-	switch status {
-	case "Sukses":
+
+	switch groupOfRC(rc) {
+	case groupSuccess:
 		result.Status = provider.StatusSuccess
+		result.ProviderStatus = "Sukses"
 		result.IncludeSNInSuccessEvent = true
 		if statusCheck {
 			result.StatusReason = "Digiflazz: terkonfirmasi sukses"
 		} else {
 			result.StatusReason = "Provider completed transaction successfully"
 		}
-	case "Gagal":
-		if isInternalOrProviderBalanceError(message) {
-			result.Status = provider.StatusFailedHold
-			result.ProviderStatus = "Pending (Kendala Provider)"
-			result.StatusReason = "Digiflazz: " + message
+
+	case groupFailed:
+		result.Status = provider.StatusFailedFinal
+		result.ProviderStatus = "Gagal"
+		result.IncludeCompletedAtInFailedEvent = true
+		if statusCheck {
+			result.StatusReason = "Digiflazz gagal: " + message
 		} else {
-			result.Status = provider.StatusFailedFinal
-			result.IncludeCompletedAtInFailedEvent = true
-			if statusCheck {
-				result.StatusReason = "Digiflazz gagal: " + message
+			result.StatusReason = "Provider failed: " + message
+		}
+
+	case groupProcessing:
+		// Digiflazz masih memproses: transaksi tetap processing, tunggu callback / cek status.
+		result.Status = provider.StatusPending
+		result.ProviderStatus = fmt.Sprintf("Processing (RC %s)", label)
+		if !statusCheck {
+			if rc == "03" {
+				result.StatusReason = "Waiting for provider callback"
 			} else {
-				result.StatusReason = "Provider failed: " + message
+				result.StatusReason = fmt.Sprintf("Digiflazz memproses (RC %s): %s", label, message)
 			}
 		}
+
 	default:
+		// PENDING: RC 40-49 tertentu, RC lain, RC kosong, atau balasan tanpa RC.
+		// Transaksi tetap processing dan perlu dicek admin.
 		result.Status = provider.StatusPending
-		if !statusCheck {
-			result.StatusReason = "Waiting for provider callback"
-		}
+		result.ProviderStatus = fmt.Sprintf("Pending (RC %s)", label)
+		result.StatusReason = fmt.Sprintf("Digiflazz pending (RC %s): %s", label, message)
 	}
 	return result
 }
@@ -143,14 +219,4 @@ func errorKind(message string) provider.ErrorKind {
 		return provider.ErrorTimeout
 	}
 	return provider.ErrorTemporary
-}
-
-func isInternalOrProviderBalanceError(message string) bool {
-	m := strings.ToLower(message)
-	for _, fragment := range []string{"saldo", "balance", "shell", "challenge", "captcha", "session", "reauth", "timeout", "timed out", "connection", "preflight", "totp", "uid", "konfigurasi", "modal", "harga naik", "harga modal", "server", "maintenance", "jaringan"} {
-		if strings.Contains(m, fragment) {
-			return true
-		}
-	}
-	return false
 }

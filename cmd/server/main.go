@@ -86,7 +86,6 @@ func main() {
 	gameHandler := handler.NewGameHandler(gameService, nicknameService)
 	txHandler := handler.NewTransactionHandler(txService, authService)
 	depositHandler := handler.NewDepositHandler(depositService)
-	digiflazzBuyerHandler := handler.NewDigiflazzBuyerHandler(digiflazzBuyerService, txService)
 	h2hHandler := handler.NewH2HHandler(h2hService)
 	kiosgamerHandler := handler.NewKiosgamerHandler(kiosgamerService)
 	rbacHandler := handler.NewRBACHandler(rbacService)
@@ -95,6 +94,9 @@ func main() {
 	depositService.SetTripayService(tripayChannelService)
 	adminHandler := handler.NewAdminHandler(gameService, txService, depositService, digiflazzBuyerService, userRepo, providerRepo, paymentRepo, bannerRepo, articleRepo, tripayChannelService, settingRepo)
 	adminHandler.SetProviderRegistry(providerRegistry)
+	if bulkTxService, ok := txService.(service.BulkTransactionService); ok {
+		adminHandler.SetBulkTransactionService(bulkTxService)
+	}
 	ipHandler := handler.NewIPWhitelistHandler(ipService)
 	paymentHandler := handler.NewPaymentHandler(txService, depositService, paymentRepo, cfg.TripayPrivateKey, cfg.GenericWebhookSecrets)
 	providerCallbackHandler := handler.NewProviderCallbackHandler(txService, providerRegistry, providerRepo)
@@ -211,8 +213,13 @@ func main() {
 		// -------------------------------------------------------------
 		// DIGIFLAZZ BUYER CALLBACK & PAYMENT WEBHOOKS
 		// -------------------------------------------------------------
-		api.POST("/callback/digiflazz", digiflazzBuyerHandler.HandleCallback)
-		api.POST("/digiflazz/callback", digiflazzBuyerHandler.HandleCallback)
+				// URL callback lama Digiflazz tetap diterima, tapi diproses lewat jalur generik (adapter + applyResult).
+		digiflazzCallback := func(c *gin.Context) {
+			c.Params = append(c.Params, gin.Param{Key: "code", Value: provider.DigiflazzCode})
+			providerCallbackHandler.HandleCallback(c)
+		}
+		api.POST("/callback/digiflazz", digiflazzCallback)
+		api.POST("/digiflazz/callback", digiflazzCallback)
 		api.POST("/callback/provider/:code", providerCallbackHandler.HandleCallback)
 		api.GET("/callback/provider/:code", providerCallbackHandler.HandleCallback)
 		api.POST("/callback/tripay", paymentHandler.HandleTripayCallback)
@@ -314,6 +321,7 @@ func main() {
 				txs.POST("/:id/check-status", adminHandler.CheckStatusTx)
 				txs.POST("/:id/success", adminHandler.ManualSuccessTx)
 				txs.POST("/:id/refund", adminHandler.ManualRefundTx)
+				txs.POST("/bulk", adminHandler.BulkTransactions)
 			}
 
 			// IP Whitelist & Watchlist Management

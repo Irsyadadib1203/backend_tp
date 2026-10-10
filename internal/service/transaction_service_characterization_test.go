@@ -3,15 +3,12 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
 	"topup-backend/internal/domain"
-	"topup-backend/internal/pkg/sse"
 	"topup-backend/internal/provider"
 )
 
@@ -231,7 +228,7 @@ func (k *characterizationKiosgamer) AutoSyncMapping(context.Context, uint, strin
 func (k *characterizationKiosgamer) UpdateNominalKiosgamerCode(uint, string) error { return nil }
 
 func newCharacterizationService(txRepo *characterizationTxRepo, nominalRepo *characterizationNominalRepo, gameRepo *characterizationGameRepo, providerRepo *characterizationProviderRepo, userRepo *characterizationUserRepo, digi *characterizationDigiflazz, kios *characterizationKiosgamer) *transactionService {
-	return &transactionService{txRepo: txRepo, nominalRepo: nominalRepo, gameRepo: gameRepo, providerRepo: providerRepo, userRepo: userRepo, digiflazzBuyer: digi, kiosgamerService: kios, legacyCharacterization: true}
+	return &transactionService{txRepo: txRepo, nominalRepo: nominalRepo, gameRepo: gameRepo, providerRepo: providerRepo, userRepo: userRepo}
 }
 
 func characterizationTx() *domain.Transaction {
@@ -245,304 +242,6 @@ func characterizationDigiflazzResponse(status, message, sn string) *DigiflazzTra
 	return r
 }
 
-func TestFulfillOrderLegacy_PreconditionsAndDigiflazzCharacterization(t *testing.T) {
-	t.Run("nominal missing returns exact error", func(t *testing.T) {
-		tx := characterizationTx()
-		repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
-		svc := newCharacterizationService(repo, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{}}, nil, nil, &characterizationUserRepo{}, &characterizationDigiflazz{}, nil)
-		if err := svc.FulfillOrder(tx); err == nil || err.Error() != "nominal not found" {
-			t.Fatalf("got %v", err)
-		}
-	})
-
-	t.Run("margin guard holds without calling provider", func(t *testing.T) {
-		tx := characterizationTx()
-		digi := &characterizationDigiflazz{}
-		repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
-		nom := &domain.Nominal{ID: 11, BasePrice: 10001, ProviderProductCode: "SKU"}
-		svc := newCharacterizationService(repo, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: nom}}, nil, nil, &characterizationUserRepo{}, digi, nil)
-		if err := svc.FulfillOrder(tx); err != nil {
-			t.Fatal(err)
-		}
-		if tx.Status != domain.StatusProcessing || tx.ProviderStatus != "Pending (Harga Naik)" || digi.createCalls != 0 || repo.updates != 1 || len(repo.statusUpdates) != 1 {
-			t.Fatalf("unexpected guard result: %+v calls=%d updates=%d status=%d", tx, digi.createCalls, repo.updates, len(repo.statusUpdates))
-		}
-	})
-
-	cases := []struct {
-		name, status, message string
-		err                   error
-		wantStatus            domain.TransactionStatus
-		wantProviderStatus    string
-		wantRefund, wantRetry bool
-	}{
-		{"request error", "", "", errors.New("network down"), domain.StatusProcessing, "Pending", false, true},
-		{"success", "Sukses", "ok", nil, domain.StatusSuccess, "Sukses", false, false},
-		{"provider balance failure holds", "Gagal", "saldo provider habis", nil, domain.StatusProcessing, "Pending (Kendala Provider)", false, false},
-		{"final failure refunds", "Gagal", "id pelanggan tidak ditemukan", nil, domain.StatusFailed, "Gagal", true, false},
-		{"pending holds", "Pending", "menunggu", nil, domain.StatusProcessing, "Pending", false, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			tx := characterizationTx()
-			digi := &characterizationDigiflazz{createResp: characterizationDigiflazzResponse(tc.status, tc.message, "SN-1"), createErr: tc.err}
-			repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
-			user := &characterizationUserRepo{}
-			nom := &domain.Nominal{ID: 11, BasePrice: 100, ProviderProductCode: "SKU", Provider: &domain.Provider{Code: "DIGIFLAZZ"}}
-			svc := newCharacterizationService(repo, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: nom}}, nil, nil, user, digi, nil)
-			err := svc.FulfillOrder(tx)
-			if (err != nil) != (tc.err != nil) || tx.Status != tc.wantStatus || tx.ProviderStatus != tc.wantProviderStatus || (tx.RetryCount == 1) != tc.wantRetry || (user.credits == 1) != tc.wantRefund || repo.updates != 1 {
-				t.Fatalf("err=%v tx=%+v credits=%d updates=%d", err, tx, user.credits, repo.updates)
-			}
-			if tc.err == nil && (tx.ProviderOrderID != "DF-ORDER" || tx.SN != "SN-1" || tx.PaymentReference != "SN-1" || tx.ProviderCallbackData == "") {
-				t.Fatalf("response fields not persisted: %+v", tx)
-			}
-			if tc.wantStatus == domain.StatusSuccess || tc.wantStatus == domain.StatusFailed {
-				if tx.CompletedAt == nil {
-					t.Fatal("expected completion time")
-				}
-			}
-		})
-	}
-}
-
-func TestFulfillOrderLegacy_KiosgamerCharacterization(t *testing.T) {
-	t.Run("provider repository resolves KIOSGAMER", func(t *testing.T) {
-		tx := characterizationTx()
-		tx.ProviderOrderID = "ORDER-1"
-		kios := &characterizationKiosgamer{pollResult: &KiosgamerOrderResult{OrderID: "ORDER-1", Status: "pending"}}
-		repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
-		nom := &domain.Nominal{ID: 11, ProviderID: 2, KiosgamerProductCode: "KG", BasePrice: 1}
-		svc := newCharacterizationService(repo, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: nom}}, &characterizationGameRepo{games: map[uint]*domain.Game{12: {Slug: "free-fire"}}}, &characterizationProviderRepo{byID: map[uint]*domain.Provider{2: {Code: "KIOSGAMER"}}}, &characterizationUserRepo{}, &characterizationDigiflazz{}, kios)
-		if err := svc.FulfillOrder(tx); err != nil || kios.pollCalls != 1 || kios.placeCalls != 0 {
-			t.Fatalf("err=%v poll=%d place=%d", err, kios.pollCalls, kios.placeCalls)
-		}
-	})
-
-	t.Run("missing Kiosgamer SKU holds without refund", func(t *testing.T) {
-		tx := characterizationTx()
-		kios := &characterizationKiosgamer{}
-		repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
-		nom := &domain.Nominal{ID: 11, Name: "FF", BasePrice: 1, Provider: &domain.Provider{Code: "KIOSGAMER"}}
-		user := &characterizationUserRepo{}
-		svc := newCharacterizationService(repo, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: nom}}, nil, nil, user, &characterizationDigiflazz{}, kios)
-		if err := svc.FulfillOrder(tx); err == nil || tx.Status != domain.StatusProcessing || tx.ProviderStatus != "Konfigurasi Error" || user.credits != 0 || kios.placeCalls != 0 {
-			t.Fatalf("err=%v tx=%+v", err, tx)
-		}
-	})
-
-	cases := []struct {
-		name    string
-		callErr error
-		result  *KiosgamerOrderResult
-		want    domain.TransactionStatus
-		ps      string
-		refund  bool
-	}{
-		{"challenge error", ErrKiosgamerChallengeRequired, nil, domain.StatusProcessing, "Challenge Required", false},
-		{"session error", ErrKiosgamerSessionExpired, nil, domain.StatusProcessing, "Session Error", false},
-		{"balance error", errors.New("shell balance low"), nil, domain.StatusProcessing, "Provider Pending", false},
-		{"fatal input error", errors.New("player id tidak ditemukan"), nil, domain.StatusFailed, "Gagal", true},
-		{"unknown error", errors.New("upstream unavailable"), nil, domain.StatusProcessing, "Provider Pending", false},
-		{"successful order", nil, &KiosgamerOrderResult{OrderID: "KG-1", Status: "success", Message: "ok", SerialNumber: "SN-KG"}, domain.StatusSuccess, "Sukses", false},
-		{"provider failure holds", nil, &KiosgamerOrderResult{Status: "failed", Message: "saldo shell habis"}, domain.StatusProcessing, "Pending (Kendala Provider)", false},
-		{"provider final failure refunds", nil, &KiosgamerOrderResult{Status: "failed", Message: "id salah"}, domain.StatusFailed, "Gagal", true},
-		{"provider pending", nil, &KiosgamerOrderResult{Status: "pending", Message: "wait"}, domain.StatusProcessing, "Pending", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			tx := characterizationTx()
-			kios := &characterizationKiosgamer{placeErr: tc.callErr, placeResult: tc.result}
-			repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
-			user := &characterizationUserRepo{}
-			nom := &domain.Nominal{ID: 11, BasePrice: 1, KiosgamerProductCode: "KG", Provider: &domain.Provider{Code: "KIOSGAMER"}}
-			svc := newCharacterizationService(repo, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: nom}}, &characterizationGameRepo{games: map[uint]*domain.Game{12: {Slug: "free-fire"}}}, nil, user, &characterizationDigiflazz{}, kios)
-			err := svc.FulfillOrder(tx)
-			if tx.Status != tc.want || tx.ProviderStatus != tc.ps || (user.credits == 1) != tc.refund || kios.placeCalls != 1 {
-				t.Fatalf("err=%v tx=%+v credits=%d place=%d", err, tx, user.credits, kios.placeCalls)
-			}
-			if tc.callErr != nil && (err == nil || tx.RetryCount != 1) {
-				t.Fatalf("expected returned error and retry, got err=%v retry=%d", err, tx.RetryCount)
-			}
-			if tc.result != nil && tc.result.Status == "success" && (tx.ProviderOrderID != "KG-1" || tx.SN != "SN-KG" || tx.PaymentReference != "SN-KG" || tx.CompletedAt == nil) {
-				t.Fatalf("success fields missing: %+v", tx)
-			}
-		})
-	}
-
-	t.Run("safe retry polls and never places a second order", func(t *testing.T) {
-		tx := characterizationTx()
-		tx.ProviderOrderID = "KG-EXISTING"
-		kios := &characterizationKiosgamer{pollResult: &KiosgamerOrderResult{OrderID: "KG-EXISTING", Status: "pending"}}
-		repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
-		nom := &domain.Nominal{ID: 11, BasePrice: 1, KiosgamerProductCode: "KG", Provider: &domain.Provider{Code: "KIOSGAMER"}}
-		svc := newCharacterizationService(repo, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: nom}}, &characterizationGameRepo{games: map[uint]*domain.Game{12: {Slug: "free-fire"}}}, nil, &characterizationUserRepo{}, &characterizationDigiflazz{}, kios)
-		if err := svc.FulfillOrder(tx); err != nil || kios.pollCalls != 1 || kios.placeCalls != 0 {
-			t.Fatalf("err=%v poll=%d place=%d", err, kios.pollCalls, kios.placeCalls)
-		}
-	})
-}
-
-func TestCheckProviderStatusAndCallbackLegacyCharacterization(t *testing.T) {
-	t.Run("Digiflazz check returns legacy wrapped error", func(t *testing.T) {
-		tx := characterizationTx()
-		digi := &characterizationDigiflazz{checkErr: errors.New("down")}
-		repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
-		svc := newCharacterizationService(repo, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: {ID: 11, ProviderProductCode: "SKU"}}}, nil, nil, &characterizationUserRepo{}, digi, nil)
-		_, err := svc.CheckProviderStatus(tx.ID)
-		if err == nil || !strings.Contains(err.Error(), "gagal cek status Digiflazz: down") || digi.checkCalls != 1 {
-			t.Fatalf("err=%v calls=%d", err, digi.checkCalls)
-		}
-	})
-
-	for _, tc := range []struct {
-		name, status, message string
-		want                  domain.TransactionStatus
-		providerStatus        string
-		refund                bool
-	}{
-		{"Digiflazz check success", "Sukses", "ok", domain.StatusSuccess, "Sukses", false},
-		{"Digiflazz check provider balance failure holds", "Gagal", "saldo provider habis", domain.StatusProcessing, "Pending (Kendala Provider)", false},
-		{"Digiflazz check final failure refunds", "Gagal", "id pelanggan salah", domain.StatusFailed, "Gagal", true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			tx := characterizationTx()
-			digi := &characterizationDigiflazz{checkResp: characterizationDigiflazzResponse(tc.status, tc.message, "CHECK-SN")}
-			repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
-			user := &characterizationUserRepo{}
-			svc := newCharacterizationService(repo, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: {ID: 11, ProviderProductCode: "SKU"}}}, nil, nil, user, digi, nil)
-			if _, err := svc.CheckProviderStatus(tx.ID); err != nil || tx.Status != tc.want || tx.ProviderStatus != tc.providerStatus || (user.credits == 1) != tc.refund || tx.ProviderOrderID != "DF-ORDER" || tx.SN != "CHECK-SN" {
-				t.Fatalf("err=%v tx=%+v credits=%d", err, tx, user.credits)
-			}
-			if tc.want == domain.StatusSuccess || tc.want == domain.StatusFailed {
-				if tx.CompletedAt == nil {
-					t.Fatal("expected completion time")
-				}
-			}
-		})
-	}
-
-	t.Run("Kiosgamer check polls existing order and overwrites payment reference", func(t *testing.T) {
-		tx := characterizationTx()
-		tx.ProviderOrderID = "KG-1"
-		tx.PaymentReference = "OLD"
-		kios := &characterizationKiosgamer{pollResult: &KiosgamerOrderResult{OrderID: "KG-1", Status: "success", SerialNumber: "NEW-SN"}}
-		repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
-		svc := newCharacterizationService(repo, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: {ID: 11, Provider: &domain.Provider{Code: "KIOSGAMER"}}}}, nil, nil, &characterizationUserRepo{}, &characterizationDigiflazz{}, kios)
-		got, err := svc.CheckProviderStatus(tx.ID)
-		if err != nil || got != tx || kios.pollCalls != 1 || kios.placeCalls != 0 || tx.PaymentReference != "NEW-SN" || tx.CompletedAt == nil {
-			t.Fatalf("err=%v tx=%+v poll=%d place=%d", err, tx, kios.pollCalls, kios.placeCalls)
-		}
-	})
-
-	t.Run("Kiosgamer check uses CODM recent-order app id without creating order", func(t *testing.T) {
-		tx := characterizationTx()
-		kios := &characterizationKiosgamer{recentResult: &KiosgamerOrderResult{Status: "pending"}}
-		repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
-		svc := newCharacterizationService(repo, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: {ID: 11, Provider: &domain.Provider{Code: "KIOSGAMER"}}}}, &characterizationGameRepo{games: map[uint]*domain.Game{12: {Slug: "call-of-duty-mobile"}}}, nil, &characterizationUserRepo{}, &characterizationDigiflazz{}, kios)
-		if _, err := svc.CheckProviderStatus(tx.ID); err != nil || kios.recentCalls != 1 || kios.lastAppID != 100054 || kios.placeCalls != 0 {
-			t.Fatalf("err=%v recent=%d app=%d place=%d", err, kios.recentCalls, kios.lastAppID, kios.placeCalls)
-		}
-	})
-
-	t.Run("Kiosgamer check returns wrapped error without creating order", func(t *testing.T) {
-		tx := characterizationTx()
-		kios := &characterizationKiosgamer{recentErr: errors.New("history unavailable")}
-		repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
-		svc := newCharacterizationService(repo, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: {ID: 11, Provider: &domain.Provider{Code: "KIOSGAMER"}}}}, &characterizationGameRepo{games: map[uint]*domain.Game{}}, nil, &characterizationUserRepo{}, &characterizationDigiflazz{}, kios)
-		if _, err := svc.CheckProviderStatus(tx.ID); err == nil || !strings.Contains(err.Error(), "gagal cek status Kiosgamer: history unavailable") || kios.placeCalls != 0 {
-			t.Fatalf("err=%v place=%d", err, kios.placeCalls)
-		}
-	})
-
-	t.Run("callback validates payload and final transactions are idempotent", func(t *testing.T) {
-		repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{}}
-		svc := newCharacterizationService(repo, nil, nil, nil, &characterizationUserRepo{}, nil, nil)
-		if err := svc.HandleDigiflazzCallback(nil); err == nil || err.Error() != "empty callback data" {
-			t.Fatalf("got %v", err)
-		}
-		missing := &DigiflazzCallbackPayload{}
-		missing.Data.RefID = "MISSING"
-		if err := svc.HandleDigiflazzCallback(missing); err == nil || err.Error() != "transaction not found for callback" {
-			t.Fatalf("got %v", err)
-		}
-		for i, status := range []domain.TransactionStatus{domain.StatusSuccess, domain.StatusFailed, domain.StatusRefunded} {
-			payload := &DigiflazzCallbackPayload{}
-			payload.Data.RefID = fmt.Sprintf("REF-FINAL-%d", i)
-			payload.Data.Status = "Sukses"
-			finalTx := characterizationTx()
-			finalTx.ID = uint(100 + i)
-			finalTx.RefID = payload.Data.RefID
-			finalTx.Status = status
-			repo.byID[finalTx.ID] = finalTx
-			if err := svc.HandleDigiflazzCallback(payload); err != nil || repo.updates != 0 || len(repo.statusUpdates) != 0 {
-				t.Fatalf("status=%s err=%v updates=%d statuses=%d", status, err, repo.updates, len(repo.statusUpdates))
-			}
-		}
-	})
-
-	t.Run("callback falls back to invoice, succeeds, and final failure refunds", func(t *testing.T) {
-		tx := characterizationTx()
-		tx.RefID = "other"
-		tx.InvoiceNumber = "REF-INVOICE"
-		repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
-		user := &characterizationUserRepo{}
-		svc := newCharacterizationService(repo, nil, nil, nil, user, nil, nil)
-		payload := &DigiflazzCallbackPayload{}
-		payload.Data.RefID = "REF-INVOICE"
-		payload.Data.Status = "Sukses"
-		payload.Data.SN = "CALLBACK-SN"
-		if err := svc.HandleDigiflazzCallback(payload); err != nil || tx.Status != domain.StatusSuccess || tx.SN != "CALLBACK-SN" || tx.CompletedAt == nil {
-			t.Fatalf("err=%v tx=%+v", err, tx)
-		}
-		// Use a fresh non-final transaction to preserve the legacy final-failure behavior.
-		failed := characterizationTx()
-		failed.ID = 20
-		failed.RefID = "REF-FAIL"
-		repo.byID[failed.ID] = failed
-		failPayload := &DigiflazzCallbackPayload{}
-		failPayload.Data.RefID = "REF-FAIL"
-		failPayload.Data.Status = "Gagal"
-		failPayload.Data.Message = "id salah"
-		if err := svc.HandleDigiflazzCallback(failPayload); err != nil || failed.Status != domain.StatusFailed || failed.CompletedAt == nil || user.credits != 1 {
-			t.Fatalf("err=%v tx=%+v credits=%d", err, failed, user.credits)
-		}
-		hold := characterizationTx()
-		hold.ID = 30
-		hold.RefID = "REF-HOLD"
-		repo.byID[hold.ID] = hold
-		holdPayload := &DigiflazzCallbackPayload{}
-		holdPayload.Data.RefID = "REF-HOLD"
-		holdPayload.Data.Status = "Gagal"
-		holdPayload.Data.Message = "saldo provider habis"
-		if err := svc.HandleDigiflazzCallback(holdPayload); err != nil || hold.Status != domain.StatusProcessing || hold.ProviderStatus != "Pending (Kendala Provider)" || user.credits != 1 {
-			t.Fatalf("err=%v tx=%+v credits=%d", err, hold, user.credits)
-		}
-	})
-}
-
-func TestFulfillOrderLegacy_SSEStatusUpdateOnDigiflazzSuccess(t *testing.T) {
-	tx := characterizationTx()
-	digi := &characterizationDigiflazz{createResp: characterizationDigiflazzResponse("Sukses", "ok", "SN-SSE")}
-	repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
-	nom := &domain.Nominal{ID: 11, BasePrice: 1, ProviderProductCode: "SKU", Provider: &domain.Provider{Code: "DIGIFLAZZ"}}
-	svc := newCharacterizationService(repo, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: nom}}, nil, nil, &characterizationUserRepo{}, digi, nil)
-
-	ch := make(sse.ClientChan, 1)
-	sse.GlobalHub.Register(tx.InvoiceNumber, ch)
-	defer sse.GlobalHub.Unregister(tx.InvoiceNumber, ch)
-	if err := svc.FulfillOrder(tx); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case event := <-ch:
-		if !strings.Contains(event, `"type":"status_update"`) || !strings.Contains(event, `"status":"success"`) || !strings.Contains(event, `"sn":"SN-SSE"`) {
-			t.Fatalf("unexpected SSE event: %s", event)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("expected status_update SSE event")
-	}
-}
 
 type registryTestProvider struct {
 	code                      string
@@ -592,7 +291,6 @@ func TestRegistryIsTheOnlyTransactionProviderPath(t *testing.T) {
 	registryProvider := &registryTestProvider{code: provider.DigiflazzCode, purchaseResult: &provider.Result{Status: provider.StatusSuccess, ProviderOrderID: "REG-1", SN: "REG-SN", Message: "ok", ProviderStatus: "Sukses", StatusReason: "Provider completed transaction successfully", UpdateSN: true, IncludeSNInSuccessEvent: true}}
 	txRepo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{registryTx.ID: registryTx}}
 	registrySvc := newCharacterizationService(txRepo, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: nom}}, nil, nil, &characterizationUserRepo{}, nil, nil)
-	registrySvc.legacyCharacterization = false
 	registrySvc.providerRegistry = newRegistryForTest(t, registryProvider)
 	if err := registrySvc.FulfillOrder(registryTx); err != nil || registryProvider.purchaseCalls != 1 || registryTx.Status != domain.StatusSuccess || registryTx.ProviderOrderID != "REG-1" || registryTx.SN != "REG-SN" {
 		t.Fatalf("err=%v tx=%+v provider=%d", err, registryTx, registryProvider.purchaseCalls)
@@ -679,7 +377,6 @@ func TestRegistryReconcileSkipsAlreadyFinalTransaction(t *testing.T) {
 	p := &registryTestProvider{code: provider.DigiflazzCode}
 	nom := &domain.Nominal{ID: 11, BasePrice: 1, ProviderProductCode: "SKU", Provider: &domain.Provider{Code: "DIGIFLAZZ"}}
 	svc := newCharacterizationService(&characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: nom}}, nil, nil, &characterizationUserRepo{}, nil, nil)
-	svc.legacyCharacterization = false
 	svc.providerRegistry = newRegistryForTest(t, p)
 
 	if got, err := svc.ReconcileProcessingTransaction(tx.ID); err != nil || got != tx || p.checkCalls != 0 {
@@ -693,7 +390,6 @@ func TestRegistryPurchasePassesExistingOrderIDWithoutCreatingBusinessDuplicate(t
 	nom := &domain.Nominal{ID: 11, BasePrice: 1, ProviderProductCode: "SKU", Provider: &domain.Provider{Code: "DIGIFLAZZ"}}
 	p := &registryTestProvider{code: provider.DigiflazzCode, purchaseResult: &provider.Result{Status: provider.StatusPending, ProviderStatus: "Pending", StatusReason: "Waiting for provider callback"}}
 	svc := newCharacterizationService(&characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}, &characterizationNominalRepo{nominals: map[uint]*domain.Nominal{11: nom}}, nil, nil, &characterizationUserRepo{}, nil, nil)
-	svc.legacyCharacterization = false
 	svc.providerRegistry = newRegistryForTest(t, p)
 	if err := svc.FulfillOrder(tx); err != nil || p.purchaseCalls != 1 || p.lastPurchase.ExistingProviderOrderID != "EXISTING-ORDER" {
 		t.Fatalf("err=%v calls=%d request=%+v", err, p.purchaseCalls, p.lastPurchase)
@@ -714,7 +410,6 @@ func TestRegistryCallbackFinalResultIsIdempotent(t *testing.T) {
 	repo := &characterizationTxRepo{byID: map[uint]*domain.Transaction{tx.ID: tx}}
 	user := &characterizationUserRepo{}
 	svc := newCharacterizationService(repo, nil, nil, nil, user, nil, nil)
-	svc.legacyCharacterization = false
 	svc.providerRegistry = newRegistryForTest(t, p)
 
 	for i := 0; i < 2; i++ {

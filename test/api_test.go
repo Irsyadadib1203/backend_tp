@@ -80,7 +80,6 @@ func setupTestRouter() *gin.Engine {
 	authHandler := handler.NewAuthHandler(authService)
 	gameHandler := handler.NewGameHandler(gameService, nicknameService)
 	txHandler := handler.NewTransactionHandler(txService, authService)
-	digiflazzBuyerHandler := handler.NewDigiflazzBuyerHandler(digiflazzBuyerService, txService)
 	H2HHandler := handler.NewH2HHandler(H2HService)
 	adminHandler := handler.NewAdminHandler(gameService, txService, depositService, digiflazzBuyerService, userRepo, providerRepo, paymentRepo, bannerRepo, articleRepo, nil)
 	ipHandler := handler.NewIPWhitelistHandler(ipService)
@@ -110,9 +109,6 @@ func setupTestRouter() *gin.Engine {
 			h2h.POST("/check-status", H2HHandler.CheckStatus)
 			h2h.POST("/check-balance", H2HHandler.CheckBalance)
 		}
-
-		// Callback
-		api.POST("/callback/digiflazz", digiflazzBuyerHandler.HandleCallback)
 
 		// Admin
 		admin := api.Group("/admin", middleware.AuthMiddleware(authService), middleware.RequireRole(domain.RoleAdmin, domain.RoleSuperAdmin))
