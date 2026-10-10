@@ -727,11 +727,73 @@ func (s *transactionService) ManualRetry(transactionID uint) error {
 
 	targetTx := tx
 	worker.GlobalPool.Submit(func() {
-		_ = s.FulfillOrder(targetTx)
+		if err := s.retryProviderOrder(targetTx); err != nil {
+			log.Printf(
+				"[ManualRetry] invoice=%s provider_order_id=%s error=%v",
+				targetTx.InvoiceNumber,
+				targetTx.ProviderOrderID,
+				err,
+			)
+		}
 	})
 
 	return nil
 }
+
+
+func (s *transactionService) retryProviderOrder(tx *domain.Transaction) error {
+    if tx == nil {
+        return errors.New("transaksi tidak ditemukan")
+    }
+
+    providerOrderID := strings.TrimSpace(tx.ProviderOrderID)
+    if providerOrderID == "" || providerOrderID == "-" {
+        return errors.New("provider order ID kosong, retry tidak dapat dilakukan")
+    }
+
+    nominal, err := s.nominalRepo.FindByID(tx.NominalID)
+    if err != nil || nominal == nil {
+        return errors.New("nominal tidak ditemukan")
+    }
+
+    p, productCode, gameSlug, err := s.resolveRegistryProvider(tx, nominal)
+    if err != nil {
+        return err
+    }
+
+    requestSnapshot := provider.RequestSnapshot(
+        "purchase",
+        p.Code(),
+        providerOrderID,
+        productCode,
+        tx.CustomerID,
+        tx.ServerID,
+        providerOrderID,
+    )
+
+    result, callErr := p.Purchase(context.Background(), provider.PurchaseRequest{
+        RefID:                   providerOrderID,
+        ProductCode:             productCode,
+        ProductName:             nominal.Name,
+        CustomerID:              tx.CustomerID,
+        ServerID:                tx.ServerID,
+        GameSlug:                gameSlug,
+        ExistingProviderOrderID: providerOrderID,
+        ProviderData:            tx.ProviderCallbackData,
+    })
+
+    if result != nil && len(result.RequestRaw) == 0 {
+        result.RequestRaw = requestSnapshot
+    }
+
+    if providerErr, ok := callErr.(*provider.ProviderError); ok &&
+        len(providerErr.RequestRaw) == 0 {
+        providerErr.RequestRaw = requestSnapshot
+    }
+
+    return s.applyResult(tx, result, callErr, providerResultSourceFulfill)
+}
+
 
 // RetryDigiflazzBalanceHolds resumes only Digiflazz orders that are still
 // processing because a balance/shell shortage was reported and for which no
