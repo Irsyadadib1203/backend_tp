@@ -28,6 +28,7 @@ type Transaction struct {
 	ID                   uint              `gorm:"primaryKey" json:"id"`
 	InvoiceNumber        string            `gorm:"size:50;uniqueIndex;not null" json:"invoice_number"`
 	IdempotencyKey       string            `gorm:"size:100;index" json:"idempotency_key"`
+	PartnerCallbackURL   string            `gorm:"size:255" json:"-"`
 	Source               TransactionSource `gorm:"size:20;default:'web'" json:"source"`
 	
 	// Customer Details

@@ -300,6 +300,12 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 	if userID == "" {
 		return fail("user_id wajib diisi", "40", 0), errors.New("user_id is required")
 	}
+		callbackURL := strings.TrimSpace(req.CallbackURL)
+	if callbackURL != "" {
+		if err := ValidatePartnerWebhookURL(callbackURL); err != nil {
+			return fail("callback_url tidak valid: "+err.Error(), "40", 0), err
+		}
+	}
 
 	// 2. Idempotency per partner + ref_id
 	idemKey := fmt.Sprintf("h2h_%d_%s", user.ID, req.RefID)
@@ -366,6 +372,7 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 		PaymentMethod:   "SALDO_H2H",
 		RefID:           refIDProvider,
 		ProviderOrderID: req.RefID,
+		PartnerCallbackURL: callbackURL,
 	}
 
 	if err := s.txRepo.Create(tx); err != nil {
@@ -416,11 +423,11 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 	}
 
 	// 7. Webhook ke partner
-	targetWebhook := req.CallbackURL
+	targetWebhook := callbackURL
 	if targetWebhook == "" && apiKey.WebhookURL != "" {
 		targetWebhook = apiKey.WebhookURL
 	}
-	if targetWebhook != "" {
+	if targetWebhook != "" && isFinalTransactionStatus(tx.Status) {
 		h2hData := &H2HResponseData{
 			RefID:        req.RefID,
 			InvoiceNumber: invoiceNumber,
