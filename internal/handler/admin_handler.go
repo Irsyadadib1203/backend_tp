@@ -846,6 +846,14 @@ func (h *AdminHandler) SaveTransactionReferenceSettings(c *gin.Context) {
 		response.BadRequest(c, "Template reference maksimal 120 karakter", nil)
 		return
 	}
+	if err := provider.ValidateReferenceTemplate(req.InvoiceTemplate); err != nil {
+		response.BadRequest(c, "Template invoice tidak valid: "+err.Error(), nil)
+		return
+	}
+	if err := provider.ValidateReferenceTemplate(req.RefIDTemplate); err != nil {
+		response.BadRequest(c, "Template ref ID tidak valid: "+err.Error(), nil)
+		return
+	}
 	configJSON, err := provider.WithReferenceConfig("", provider.ReferenceConfig{InvoiceTemplate: req.InvoiceTemplate, RefIDTemplate: req.RefIDTemplate})
 	if err != nil {
 		response.BadRequest(c, "Konfigurasi provider tidak dapat diperbarui", err.Error())

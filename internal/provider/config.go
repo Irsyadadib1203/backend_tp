@@ -76,6 +76,39 @@ func ParseReferenceConfig(raw string) ReferenceConfig {
 	return ReferenceConfig{}
 }
 
+var referenceTokenRegex = regexp.MustCompile(`\{([^{}]*)\}`)
+
+var allowedReferenceTokens = map[string]bool{
+	"date": true, "time": true, "timestamp": true, "unix": true, "random": true,
+	"customer_id": true, "server_id": true, "nominal_id": true, "provider_code": true,
+}
+
+// ValidateReferenceTemplate menolak template invoice/ref_id yang akan diubah
+// diam-diam saat dirender (token tidak dikenal atau karakter yang dibuang oleh
+// sanitizeReferencePart), supaya admin langsung tahu format yang dimasukkan salah.
+func ValidateReferenceTemplate(template string) error {
+	template = strings.TrimSpace(template)
+	if template == "" {
+		return nil
+	}
+	for _, match := range referenceTokenRegex.FindAllStringSubmatch(template, -1) {
+		if !allowedReferenceTokens[match[1]] {
+			return fmt.Errorf("token {%s} tidak dikenal", match[1])
+		}
+	}
+	literal := referenceTokenRegex.ReplaceAllString(template, "")
+	if strings.ContainsAny(literal, "{}") {
+		return errors.New("kurung kurawal tidak berpasangan")
+	}
+	for _, r := range literal {
+		allowed := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '(' || r == ')'
+		if !allowed {
+			return fmt.Errorf("karakter %q tidak diperbolehkan (hanya huruf, angka, - _ ( ) dan token)", r)
+		}
+	}
+	return nil
+}
+
 func WithReferenceConfig(raw string, reference ReferenceConfig) (string, error) {
 	var cfg DeclarativeProviderConfig
 	if strings.TrimSpace(raw) != "" && json.Unmarshal([]byte(raw), &cfg) != nil {

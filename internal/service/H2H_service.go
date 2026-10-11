@@ -4,15 +4,13 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
 
 	"topup-backend/internal/domain"
 	"topup-backend/internal/pkg/crypto"
-	"topup-backend/internal/pkg/utils"
-	"topup-backend/internal/pkg/worker"
-	"topup-backend/internal/provider"
 	"topup-backend/internal/repository"
 )
 
@@ -131,7 +129,25 @@ type h2hService struct {
 	txRepo         repository.TransactionRepository
 	digiflazzBuyer DigiflazzBuyerService
 	webhookService WebhookService
+	orderProcessor H2HOrderProcessor
 }
+
+// H2HOrderProcessor adalah bagian dari TransactionService yang dipakai jalur
+// H2H. Order H2H dikirim lewat registry provider yang sama dengan order web,
+// sehingga provider, SKU, dan pemetaan status (RC Digiflazz dsb.) mengikuti
+// satu aturan yang sama.
+
+type H2HOrderProcessor interface {
+    FulfillOrder(tx *domain.Transaction) error
+    NewReferences(nominal *domain.Nominal, customerID, serverID string) (invoiceNumber, providerOrderID string)
+}
+
+
+type H2HOrderProcessorSetter interface {
+	SetOrderProcessor(H2HOrderProcessor)
+}
+
+func (s *h2hService) SetOrderProcessor(p H2HOrderProcessor) { s.orderProcessor = p }
 
 func NewH2HService(
 	userRepo repository.UserRepository,
@@ -321,12 +337,18 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 			UserID:        existingTx.CustomerID,
 			ServerID:      existingTx.ServerID,
 			SKUCode:       req.SKUCode,
-			Message:       existingTx.ProviderMessage,
+			Message:       partnerMessage(existingTx),
 			Status:        statusToDigiflazz(existingTx.Status),
 			RC:            statusToRC(existingTx.Status),
 			SN:            existingTx.PaymentReference,
 			Price:         existingTx.SellingPrice,
 		}, nil
+	}
+
+	// Mode testing Digiflazz tidak lagi diteruskan: order kini lewat registry
+	// dan akan menjadi pembelian sungguhan di provider mana pun yang aktif.
+	if req.Testing {
+		return fail("Mode testing tidak didukung", "40", 0), errors.New("testing mode is not supported")
 	}
 
 	// 3. Find Nominal / Product
@@ -348,8 +370,16 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 	}
 
 	// 5. Invoice & potong saldo
-	invoiceNumber := utils.GenerateInvoiceNumber()
-	refIDProvider := utils.GenerateRefID()
+	if s.orderProcessor == nil {
+		return fail("Layanan transaksi belum siap", "40", price), errors.New("h2h order processor is not configured")
+	}
+	
+	invoiceNumber, providerOrderID := s.orderProcessor.NewReferences(
+		nominal,
+		userID,
+		serverID,
+	)
+
 
 	err = s.userRepo.UpdateBalance(user.ID, price, domain.MutationDebit, "TRANSACTION_H2H", invoiceNumber,
 		fmt.Sprintf("Top up %s (%s)", nominal.Name, formatTarget(userID, serverID)))
@@ -375,7 +405,7 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 		Status:             domain.StatusProcessing,
 		PaymentMethod:      "SALDO_H2H",
 		RefID:              req.RefID,
-		ProviderOrderID:    refIDProvider,
+		ProviderOrderID:    providerOrderID,
 		PartnerCallbackURL: callbackURL,
 	}
 
@@ -384,79 +414,27 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 		return fail("Gagal membuat transaksi", "40", price), err
 	}
 
-	// 6. Forward ke provider
-	providerStatus := "Pending"
-	providerRC := "03"
-	providerMsg := "Transaksi sedang diproses"
-	snNumber := ""
-
-	customerNo := provider.CustomerNumber(userID, serverID)
-	digiResp, err := s.digiflazzBuyer.CreateTransaction(refIDProvider, nominal.ProviderProductCode, customerNo, req.Testing)
-	if err == nil && digiResp != nil {
-		providerStatus = digiResp.Data.Status
-		providerRC = digiResp.Data.RC
-		providerMsg = digiResp.Data.Message
-		snNumber = digiResp.Data.SN
-
-		tx.ProviderStatus = providerStatus
-		tx.ProviderMessage = providerMsg
-		tx.PaymentReference = snNumber
-
-		switch providerStatus {
-		case "Sukses":
-			tx.Status = domain.StatusSuccess
-			now := time.Now()
-			tx.CompletedAt = &now
-		case "Gagal":
-			tx.Status = domain.StatusFailed
-			now := time.Now()
-			tx.CompletedAt = &now
-			hasRefunded, _ := s.userRepo.HasMutation("REFUND", invoiceNumber)
-			if !hasRefunded {
-				_ = s.userRepo.UpdateBalance(user.ID, price, domain.MutationCredit, "REFUND", invoiceNumber, "Pengembalian dana transaksi gagal")
-			}
-		default:
-			tx.Status = domain.StatusProcessing
-		}
-		_ = s.txRepo.Update(tx)
-	} else {
-		tx.Status = domain.StatusProcessing
-		tx.ProviderMessage = "Sedang dalam antrean provider"
-		_ = s.txRepo.Update(tx)
+	// 6. Kirim ke provider lewat registry (provider & SKU mengikuti nominal).
+	// Refund otomatis dan webhook ke partner ditangani applyResult, jadi tidak
+	// ada lagi pengiriman webhook manual di sini (mencegah webhook ganda).
+	if fulfillErr := s.orderProcessor.FulfillOrder(tx); fulfillErr != nil {
+		log.Printf("[H2H] fulfill invoice=%s ref=%s: %v", tx.InvoiceNumber, req.RefID, fulfillErr)
 	}
 
-	// 7. Webhook ke partner
-	targetWebhook := callbackURL
-	if targetWebhook != "" && isFinalTransactionStatus(tx.Status) {
-		h2hData := &H2HResponseData{
-			RefID:         req.RefID,
-			InvoiceNumber: invoiceNumber,
-			UserID:        userID,
-			ServerID:      serverID,
-			SKUCode:       req.SKUCode,
-			Message:       providerMsg,
-			Status:        providerStatus,
-			RC:            providerRC,
-			SN:            snNumber,
-			Price:         price,
-		}
-		// Tanpa secret: webhook ditandatangani memakai apikey partner.
-		webhookKey := apiKey.Key
-		worker.GlobalPool.Submit(func() {
-			s.webhookService.DispatchH2HCallback(targetWebhook, webhookKey, h2hData)
-		})
+	sn := tx.SN
+	if sn == "" {
+		sn = tx.PaymentReference
 	}
-
-		return &H2HResponseData{
+	return &H2HResponseData{
 		RefID:         req.RefID,
 		InvoiceNumber: invoiceNumber,
 		UserID:        userID,
 		ServerID:      serverID,
 		SKUCode:       req.SKUCode,
-		Message:       providerMsg,
-		Status:        providerStatus,
-		RC:            providerRC,
-		SN:            snNumber,
+		Message:       partnerMessage(tx),
+		Status:        statusToDigiflazz(tx.Status),
+		RC:            statusToRC(tx.Status),
+		SN:            sn,
 		Price:         price,
 		Sign:          crypto.MD5Hash(apiKey.Key + req.RefID),
 	}, nil
@@ -487,7 +465,7 @@ func (s *h2hService) CheckStatus(req *H2HCheckStatusRequest) (*H2HResponseData, 
 		UserID:       tx.CustomerID,
 		ServerID:     tx.ServerID,
 		SKUCode:      skuCode,
-		Message:      tx.ProviderMessage,
+		Message:      partnerMessage(tx),
 		Status:       statusToDigiflazz(tx.Status),
 		RC:           statusToRC(tx.Status),
 		SN:           tx.PaymentReference,
@@ -526,9 +504,29 @@ func statusToRC(st domain.TransactionStatus) string {
 	switch st {
 	case domain.StatusSuccess:
 		return "00"
-	case domain.StatusFailed:
-		return "40"
+	case domain.StatusFailed, domain.StatusRefunded:
+		return "02" // RC gagal (termasuk dalam rcFailed Digiflazz)
 	default:
-		return "03"
+		return "03" // RC pending/processing
+	}
+}
+
+// partnerMessage menjaga pesan ke partner tetap generik selama transaksi belum
+// final, supaya error internal (sesi provider, saldo, konfigurasi) tidak bocor.
+func partnerMessage(tx *domain.Transaction) string {
+	message := strings.TrimSpace(tx.ProviderMessage)
+	switch tx.Status {
+	case domain.StatusSuccess:
+		if message != "" {
+			return message
+		}
+		return "Transaksi Sukses"
+	case domain.StatusFailed, domain.StatusRefunded:
+		if message != "" {
+			return message
+		}
+		return "Transaksi Gagal"
+	default:
+		return "Transaksi sedang diproses"
 	}
 }

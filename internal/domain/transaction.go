@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -93,4 +94,16 @@ type TransactionStatusHistory struct {
 	ToStatus      TransactionStatus `gorm:"size:30;not null" json:"to_status"`
 	Reason        string            `gorm:"size:255" json:"reason"`
 	CreatedAt     time.Time         `json:"created_at"`
+}
+
+// ProviderReference returns the reference that identifies this transaction at
+// the upstream provider.
+func (t *Transaction) ProviderReference() string {
+	if t == nil {
+		return ""
+	}
+	if ref := strings.TrimSpace(t.ProviderOrderID); ref != "" {
+		return ref
+	}
+	return t.RefID
 }

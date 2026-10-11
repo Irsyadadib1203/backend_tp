@@ -142,15 +142,11 @@ func (s *transactionService) CreateOrder(req *CreateOrderRequest) (*domain.Trans
 	}
 
 	totalAmount := sellingPrice + adminFee
-	invoiceNumber := utils.GenerateInvoiceNumber()
-	refID := utils.GenerateRefID()
-	if configuredProvider, providerErr := s.providerRepo.GetByID(nominal.ProviderID); providerErr == nil && configuredProvider != nil && s.settingRepo != nil {
-		if setting, settingErr := s.settingRepo.Get("transaction_reference_format"); settingErr == nil && setting != nil {
-			reference := provider.ParseReferenceConfig(setting.Value)
-			invoiceNumber = provider.RenderReference(reference.InvoiceTemplate, invoiceNumber, configuredProvider.Code, req.CustomerID, req.ServerID, nominal.ID)
-			refID = provider.RenderReference(reference.RefIDTemplate, refID, configuredProvider.Code, req.CustomerID, req.ServerID, nominal.ID)
-		}
-	}
+	invoiceNumber, providerOrderID := s.NewReferences(
+		nominal,
+		req.CustomerID,
+		req.ServerID,
+	)
 
 	// If paying with SALDO
 	if req.PaymentMethod == "SALDO" {
@@ -187,7 +183,7 @@ func (s *transactionService) CreateOrder(req *CreateOrderRequest) (*domain.Trans
 		Profit:        sellingPrice - nominal.BasePrice,
 		Status:        domain.StatusPending,
 		PaymentMethod: req.PaymentMethod,
-		RefID:         refID,
+		ProviderOrderID: providerOrderID,
 	}
 
 	if req.PaymentMethod == "SALDO" {
@@ -223,7 +219,7 @@ func (s *transactionService) CreateOrder(req *CreateOrderRequest) (*domain.Trans
 			CustomerPhone: customerPhone,
 			OrderItems: []TripayOrderItem{
 				{
-					SKU:      nominal.ProviderProductCode,
+					SKU:      s.displaySKU(nominal),
 					Name:     fmt.Sprintf("%s - %s", game.Name, nominal.Name),
 					Price:    int64(math.Round(sellingPrice)),
 					Quantity: 1,
@@ -309,6 +305,106 @@ func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 	return s.fulfillOrderRegistry(tx)
 }
 
+const (
+	transactionReferenceSettingKey = "transaction_reference_format"
+	maxInvoiceNumberLength         = 50  // transactions.invoice_number size
+	maxProviderRefLength           = 100 // transactions.ref_id size
+)
+
+// NewReferences membuat invoice number dan ref_id provider untuk transaksi baru.
+// Format custom (Settings > Transaction Reference) berlaku global untuk semua
+// provider dan semua jalur (web maupun H2H); tanpa setting dipakai format bawaan.
+func (s *transactionService) NewReferences(nominal *domain.Nominal, customerID, serverID string) (string, string) {
+	invoiceNumber := utils.GenerateInvoiceNumber()
+	refID := utils.GenerateRefID()
+	if s.settingRepo == nil || nominal == nil {
+		return invoiceNumber, refID
+	}
+	setting, err := s.settingRepo.Get(transactionReferenceSettingKey)
+	if err != nil || setting == nil {
+		return invoiceNumber, refID
+	}
+	reference := provider.ParseReferenceConfig(setting.Value)
+	providerCode := s.providerCodeForNominal(nominal)
+	invoiceNumber = limitReference(provider.RenderReference(reference.InvoiceTemplate, invoiceNumber, providerCode, customerID, serverID, nominal.ID), maxInvoiceNumberLength)
+	refID = limitReference(provider.RenderReference(reference.RefIDTemplate, refID, providerCode, customerID, serverID, nominal.ID), maxProviderRefLength)
+	return invoiceNumber, refID
+}
+
+// limitReference memastikan hasil template muat di kolom database. Saat harus
+// dipotong, 8 karakter terakhir (suffix acak "-XXXXXX") dipertahankan supaya
+// tetap unik.
+func limitReference(value string, max int) string {
+	if len(value) <= max || max <= 8 {
+		if len(value) > max {
+			return value[:max]
+		}
+		return value
+	}
+	return value[:max-8] + value[len(value)-8:]
+}
+
+func (s *transactionService) providerCodeForNominal(nominal *domain.Nominal) string {
+	code, err := provider.ResolveProviderCode(nominal, s.providerRepo)
+	if err != nil {
+		return ""
+	}
+	return code
+}
+
+// displaySKU mengembalikan SKU milik provider yang dipakai nominal ini.
+func (s *transactionService) displaySKU(nominal *domain.Nominal) string {
+	if code := s.providerCodeForNominal(nominal); code != "" {
+		if sku, err := provider.ResolveProductCode(nominal, code); err == nil && strings.TrimSpace(sku) != "" {
+			return sku
+		}
+	}
+	return nominal.ProviderProductCode
+}
+
+// hasProviderOrder: true bila order sudah pernah diterima provider.
+func hasProviderOrder(tx *domain.Transaction) bool {
+	if tx == nil {
+		return false
+	}
+	id := strings.TrimSpace(tx.ProviderOrderID)
+	return id != "" && id != "-"
+}
+
+// resolveProviderCode memilih provider untuk transaksi.
+//   - pin=true: transaksi tetap ke provider yang tercatat di tx.ProviderID.
+//     Dipakai untuk cek status / retry order yang SUDAH dikirim, karena order
+//     itu hanya ada di provider lama walau nominal sudah dipindah provider.
+//   - pin=false: order baru, ikut provider nominal saat ini (tx.ProviderID
+//     disinkronkan supaya pencatatan sesuai provider yang benar-benar dipakai).
+func (s *transactionService) resolveProviderCode(tx *domain.Transaction, nominal *domain.Nominal, pin bool) (string, error) {
+	if pin && tx != nil && tx.ProviderID > 0 && s.providerRepo != nil {
+		if record, err := s.providerRepo.GetByID(tx.ProviderID); err == nil && record != nil && strings.TrimSpace(record.Code) != "" {
+			return strings.ToUpper(strings.TrimSpace(record.Code)), nil
+		}
+	}
+	code, err := provider.ResolveProviderCode(nominal, s.providerRepo)
+	if err != nil {
+		return "", err
+	}
+	if tx != nil && nominal != nil && nominal.ProviderID > 0 {
+		tx.ProviderID = nominal.ProviderID
+	}
+	return code, nil
+}
+
+// recordConfigurationError menyimpan alasan kegagalan routing/SKU ke transaksi
+// supaya admin melihat penyebabnya, bukan transaksi diam tanpa keterangan.
+func (s *transactionService) recordConfigurationError(tx *domain.Transaction, err error) {
+	if tx == nil || err == nil {
+		return
+	}
+	tx.Status = domain.StatusProcessing
+	tx.ProviderStatus = "Konfigurasi Error"
+	tx.ProviderMessage = truncateManualText(err.Error(), 255)
+	_ = s.txRepo.Update(tx)
+}
+
 
 const (
 	providerResultSourceFulfill   = "fulfill"
@@ -331,13 +427,15 @@ func (s *transactionService) fulfillOrderRegistry(tx *domain.Transaction) error 
 		return nil
 	}
 
-	p, productCode, gameSlug, err := s.resolveRegistryProvider(tx, nominal)
+	p, productCode, gameSlug, err := s.resolveRegistryProvider(tx, nominal, hasProviderOrder(tx))
 	if err != nil {
+		s.recordConfigurationError(tx, err)
 		return err
 	}
-	requestSnapshot := provider.RequestSnapshot("purchase", p.Code(), tx.RefID, productCode, tx.CustomerID, tx.ServerID, tx.ProviderOrderID)
+	providerRef := tx.ProviderReference()
+	requestSnapshot := provider.RequestSnapshot("purchase", p.Code(), providerRef, productCode, tx.CustomerID, tx.ServerID, tx.ProviderOrderID)
 	result, callErr := p.Purchase(context.Background(), provider.PurchaseRequest{
-		RefID: tx.RefID, ProductCode: productCode, ProductName: nominal.Name,
+		RefID: providerRef, ProductCode: productCode, ProductName: nominal.Name,
 		CustomerID: tx.CustomerID, ServerID: tx.ServerID, GameSlug: gameSlug,
 		ExistingProviderOrderID: tx.ProviderOrderID,
 		ProviderData:            tx.ProviderCallbackData,
@@ -363,7 +461,7 @@ func (s *transactionService) checkProviderStatusRegistry(transactionID uint, sou
 	if err != nil || nominal == nil {
 		return nil, errors.New("nominal tidak ditemukan")
 	}
-	p, productCode, gameSlug, err := s.resolveRegistryProvider(tx, nominal)
+	p, productCode, gameSlug, err := s.resolveRegistryProvider(tx, nominal, tx.ProviderID > 0)
 	if err != nil {
 		return nil, err
 	}
@@ -380,9 +478,9 @@ func (s *transactionService) checkProviderStatusRegistry(transactionID uint, sou
 			}
 		}
 	}
-	requestSnapshot := provider.RequestSnapshot("check_status", p.Code(), tx.RefID, productCode, tx.CustomerID, tx.ServerID, providerOrderID)
+	requestSnapshot := provider.RequestSnapshot("check_status", p.Code(), tx.ProviderReference(), productCode, tx.CustomerID, tx.ServerID, providerOrderID)
 	result, callErr := p.CheckStatus(context.Background(), provider.StatusRequest{
-		RefID: tx.RefID, ProductCode: productCode, CustomerID: tx.CustomerID, ServerID: tx.ServerID,
+		RefID: tx.ProviderReference(), ProductCode: productCode, CustomerID: tx.CustomerID, ServerID: tx.ServerID,
 		GameSlug: gameSlug, ProviderOrderID: providerOrderID, ProviderData: tx.ProviderCallbackData,
 	})
 	if result != nil && len(result.RequestRaw) == 0 {
@@ -410,11 +508,11 @@ func (s *transactionService) checkProviderStatusRegistry(transactionID uint, sou
 	return tx, nil
 }
 
-func (s *transactionService) resolveRegistryProvider(tx *domain.Transaction, nominal *domain.Nominal) (provider.Provider, string, string, error) {
+func (s *transactionService) resolveRegistryProvider(tx *domain.Transaction, nominal *domain.Nominal, pinToTransaction bool) (provider.Provider, string, string, error) {
 	if s.providerRegistry == nil {
 		return nil, "", "", errors.New("provider registry is not initialized")
 	}
-	code, err := provider.ResolveProviderCode(nominal, s.providerRepo)
+	code, err := s.resolveProviderCode(tx, nominal, pinToTransaction)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -605,6 +703,13 @@ func (s *transactionService) HandleProviderCallback(providerCode string, req *ht
 		tx, err = s.txRepo.FindByInvoiceNumber(refID)
 	}
 	if err != nil || tx == nil {
+		// Callback bisa tiba sebelum provider_order_id tersimpan; cocokkan lewat
+		// ref_id yang kita kirim ke provider.
+		if byRef, refErr := s.txRepo.FindByRefID(refID); refErr == nil && byRef != nil && byRef.ProviderReference() == refID {
+			tx, err = byRef, nil
+		}
+	}
+	if err != nil || tx == nil {
 		return nil, nil, errors.New("transaction not found for callback")
 	}
 
@@ -697,6 +802,9 @@ func (s *transactionService) ManualRetry(transactionID uint) error {
 	if tx.Status == domain.StatusPending && tx.PaymentVerifiedAt == nil {
 		return errors.New("transaksi belum dibayar, tidak bisa diproses ulang")
 	}
+	if err := s.prepareProviderSwitchForRetry(tx); err != nil {
+		return err
+	}
 
 	// Jika transaksi sebelumnya berstatus GAGAL atau REFUNDED (atau sudah pernah menerima mutasi refund),
 	// saldo pengguna telah dikembalikan ke akunnya. Kita WAJIB memotong kembali saldo agar pesanan tidak gratis!
@@ -741,59 +849,63 @@ func (s *transactionService) ManualRetry(transactionID uint) error {
 }
 
 
-func (s *transactionService) retryProviderOrder(tx *domain.Transaction) error {
-    if tx == nil {
-        return errors.New("transaksi tidak ditemukan")
-    }
-
-    providerOrderID := strings.TrimSpace(tx.ProviderOrderID)
-    if providerOrderID == "" || providerOrderID == "-" {
-        return errors.New("provider order ID kosong, retry tidak dapat dilakukan")
-    }
-
-    nominal, err := s.nominalRepo.FindByID(tx.NominalID)
-    if err != nil || nominal == nil {
-        return errors.New("nominal tidak ditemukan")
-    }
-
-    p, productCode, gameSlug, err := s.resolveRegistryProvider(tx, nominal)
-    if err != nil {
-        return err
-    }
-
-    requestSnapshot := provider.RequestSnapshot(
-        "purchase",
-        p.Code(),
-        providerOrderID,
-        productCode,
-        tx.CustomerID,
-        tx.ServerID,
-        providerOrderID,
-    )
-
-    result, callErr := p.Purchase(context.Background(), provider.PurchaseRequest{
-        RefID:                   providerOrderID,
-        ProductCode:             productCode,
-        ProductName:             nominal.Name,
-        CustomerID:              tx.CustomerID,
-        ServerID:                tx.ServerID,
-        GameSlug:                gameSlug,
-        ExistingProviderOrderID: providerOrderID,
-        ProviderData:            tx.ProviderCallbackData,
-    })
-
-    if result != nil && len(result.RequestRaw) == 0 {
-        result.RequestRaw = requestSnapshot
-    }
-
-    if providerErr, ok := callErr.(*provider.ProviderError); ok &&
-        len(providerErr.RequestRaw) == 0 {
-        providerErr.RequestRaw = requestSnapshot
-    }
-
-    return s.applyResult(tx, result, callErr, providerResultSourceFulfill)
+// prepareProviderSwitchForRetry menangani retry setelah nominal dipindah provider.
+// Order yang sudah dikirim ke provider lama tidak boleh dikirim lagi ke provider
+// baru selama statusnya belum final gagal (risiko order ganda). Jika sudah
+// gagal, order dilepas dari provider lama dan dikirim ulang dengan ref_id baru.
+func (s *transactionService) prepareProviderSwitchForRetry(tx *domain.Transaction) error {
+	if !hasProviderOrder(tx) {
+		return nil // belum pernah dikirim: order baru otomatis ikut provider nominal saat ini
+	}
+	nominal, err := s.nominalRepo.FindByID(tx.NominalID)
+	if err != nil || nominal == nil {
+		return errors.New("nominal tidak ditemukan")
+	}
+	if nominal.ProviderID == 0 || tx.ProviderID == 0 || nominal.ProviderID == tx.ProviderID {
+		return nil
+	}
+	if tx.Status != domain.StatusFailed {
+		return errors.New("provider produk sudah diganti, tetapi order lama masih tercatat di provider sebelumnya. Cek status dulu, atau tandai gagal lalu retry")
+	}
+	tx.ProviderOrderID = ""
+	tx.ProviderCallbackData = ""
+	tx.SN = ""
+	_, tx.ProviderOrderID = s.NewReferences(nominal, tx.CustomerID, tx.ServerID)
+	return nil
 }
 
+// retryProviderOrder dipakai ManualRetry. Jika order sudah ada di provider,
+// hanya status yang dicek (tanpa order baru); jika belum ada (mis. gagal karena
+// sesi/SKU/saldo), order dikirim sebagai order baru.
+func (s *transactionService) retryProviderOrder(tx *domain.Transaction) error {
+	if tx == nil {
+		return errors.New("transaksi tidak ditemukan")
+	}
+	nominal, err := s.nominalRepo.FindByID(tx.NominalID)
+	if err != nil || nominal == nil {
+		return errors.New("nominal tidak ditemukan")
+	}
+	p, productCode, gameSlug, err := s.resolveRegistryProvider(tx, nominal, hasProviderOrder(tx))
+	if err != nil {
+		s.recordConfigurationError(tx, err)
+		return err
+	}
+	providerRef := tx.ProviderReference()
+	requestSnapshot := provider.RequestSnapshot("purchase", p.Code(), providerRef, productCode, tx.CustomerID, tx.ServerID, tx.ProviderOrderID)
+	result, callErr := p.Purchase(context.Background(), provider.PurchaseRequest{
+		RefID: providerRef, ProductCode: productCode, ProductName: nominal.Name,
+		CustomerID: tx.CustomerID, ServerID: tx.ServerID, GameSlug: gameSlug,
+		ExistingProviderOrderID: tx.ProviderOrderID,
+		ProviderData:            tx.ProviderCallbackData,
+	})
+	if result != nil && len(result.RequestRaw) == 0 {
+		result.RequestRaw = requestSnapshot
+	}
+	if providerErr, ok := callErr.(*provider.ProviderError); ok && len(providerErr.RequestRaw) == 0 {
+		providerErr.RequestRaw = requestSnapshot
+	}
+	return s.applyResult(tx, result, callErr, providerResultSourceFulfill)
+}
 
 // RetryDigiflazzBalanceHolds resumes only Digiflazz orders that are still
 // processing because a balance/shell shortage was reported and for which no

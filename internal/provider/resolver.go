@@ -71,9 +71,15 @@ func ResolveProductCode(nominal *domain.Nominal, providerCode string, repos ...r
 		}
 	}
 
-	// 3. Fallback to legacy nominal columns
-	if normCode == KiosgamerCode {
+	// 3. Fallback to legacy nominal columns. Each legacy column belongs to
+	// exactly one provider; never hand another provider's SKU to a different
+	// upstream (e.g. a Digiflazz buyer_sku_code sent to Kiosgamer/OtoMax).
+	switch normCode {
+	case KiosgamerCode:
 		return nominal.KiosgamerProductCode, nil
+	case DigiflazzCode:
+		return nominal.ProviderProductCode, nil
+	default:
+		return "", fmt.Errorf("produk %q belum dipetakan ke provider %s (isi provider_products untuk provider ini)", nominal.Name, normCode)
 	}
-	return nominal.ProviderProductCode, nil
 }

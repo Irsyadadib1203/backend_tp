@@ -87,6 +87,12 @@ func main() {
 	if pns, ok := txService.(service.PartnerNotifierSetter); ok {
 		pns.SetPartnerNotifier(partnerNotifier)
 	}
+	// 4.2 Order H2H dikirim lewat registry provider yang sama dengan order web.
+	if h2hSetter, ok := h2hService.(service.H2HOrderProcessorSetter); ok {
+		if processor, ok := txService.(service.H2HOrderProcessor); ok {
+			h2hSetter.SetOrderProcessor(processor)
+		}
+	}
 
 	// 5. Initialize Handlers
 	authHandler := handler.NewAuthHandler(authService)
