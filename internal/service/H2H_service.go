@@ -486,7 +486,7 @@ func formatTarget(userID, serverID string) string {
 	if serverID == "" {
 		return userID
 	}
-	return userID + "(" + serverID + ")"
+	return userID + serverID
 }
 
 func statusToDigiflazz(st domain.TransactionStatus) string {
