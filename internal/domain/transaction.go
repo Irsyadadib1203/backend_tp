@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -96,14 +97,79 @@ type TransactionStatusHistory struct {
 	CreatedAt     time.Time         `json:"created_at"`
 }
 
-// ProviderReference returns the reference that identifies this transaction at
-// the upstream provider.
+// ProviderReference returns the ref_id that identifies this transaction at the
+// upstream provider (Digiflazz, Kiosgamer, FFZStore, ...).
+//
+// Model data: kolom ref_id hanya berisi ref_id milik mitra H2H. Ref yang dikirim
+// ke provider disimpan di provider_order_id saat order dibuat (web maupun H2H),
+// lalu tercatat juga sebagai "ref_id" pada request di provider_callback_data.
+// Order web lama (sebelum model ini) menyimpan ref provider di ref_id.
 func (t *Transaction) ProviderReference() string {
 	if t == nil {
 		return ""
 	}
-	if ref := strings.TrimSpace(t.ProviderOrderID); ref != "" {
+	if ref := referenceFromExchange(t.ProviderCallbackData); ref != "" {
 		return ref
 	}
+	if t.Source != SourceH2H && strings.TrimSpace(t.RefID) != "" {
+		return t.RefID // order web lama
+	}
+	if id := strings.TrimSpace(t.ProviderOrderID); id != "" && id != "-" {
+		return id
+	}
 	return t.RefID
+}
+
+// RealProviderOrderID returns ProviderOrderID only when it identifies an order
+// that exists at the provider. For an order that was never submitted,
+// ProviderOrderID just holds the reference we generated, so it is not a real
+// order id and an empty string is returned (adapters then place a new order
+// instead of polling a non-existent one).
+func (t *Transaction) RealProviderOrderID() string {
+	if t == nil {
+		return ""
+	}
+	id := strings.TrimSpace(t.ProviderOrderID)
+	if id == "" || id == "-" {
+		return ""
+	}
+	if id == t.ProviderReference() && !exchangeHasResponse(t.ProviderCallbackData) {
+		return ""
+	}
+	return id
+}
+
+type exchangeEnvelope struct {
+	Request  json.RawMessage `json:"request"`
+	Response json.RawMessage `json:"response"`
+}
+
+func referenceFromExchange(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var envelope exchangeEnvelope
+	if json.Unmarshal([]byte(raw), &envelope) != nil || len(envelope.Request) == 0 {
+		return ""
+	}
+	var request struct {
+		RefID string `json:"ref_id"`
+	}
+	if json.Unmarshal(envelope.Request, &request) != nil {
+		return ""
+	}
+	return strings.TrimSpace(request.RefID)
+}
+
+func exchangeHasResponse(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	var envelope exchangeEnvelope
+	if json.Unmarshal([]byte(raw), &envelope) != nil {
+		return false
+	}
+	return len(envelope.Response) > 0 && string(envelope.Response) != "null"
 }

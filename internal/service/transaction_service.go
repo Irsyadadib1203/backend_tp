@@ -142,11 +142,7 @@ func (s *transactionService) CreateOrder(req *CreateOrderRequest) (*domain.Trans
 	}
 
 	totalAmount := sellingPrice + adminFee
-	invoiceNumber, providerOrderID := s.NewReferences(
-		nominal,
-		req.CustomerID,
-		req.ServerID,
-	)
+	invoiceNumber, providerOrderID := s.NewReferences(nominal, req.CustomerID, req.ServerID)
 
 	// If paying with SALDO
 	if req.PaymentMethod == "SALDO" {
@@ -183,7 +179,7 @@ func (s *transactionService) CreateOrder(req *CreateOrderRequest) (*domain.Trans
 		Profit:        sellingPrice - nominal.BasePrice,
 		Status:        domain.StatusPending,
 		PaymentMethod: req.PaymentMethod,
-		ProviderOrderID: providerOrderID,
+		ProviderOrderID: providerOrderID, // ref_id yang dikirim ke provider (kolom ref_id khusus mitra H2H)
 	}
 
 	if req.PaymentMethod == "SALDO" {
@@ -362,13 +358,20 @@ func (s *transactionService) displaySKU(nominal *domain.Nominal) string {
 	return nominal.ProviderProductCode
 }
 
-// hasProviderOrder: true bila order sudah pernah diterima provider.
+// hasProviderOrder: true bila ada ID order asli di provider (bukan sekadar ref
+// yang kita siapkan di provider_order_id untuk order H2H yang belum terkirim).
 func hasProviderOrder(tx *domain.Transaction) bool {
+	return tx != nil && tx.RealProviderOrderID() != ""
+}
+
+// providerOrderMayExist: order mungkin sudah sampai ke provider. Percobaan kirim
+// yang tercatat di provider_callback_data dianggap mungkin sudah diterima
+// (mis. timeout), jadi provider tidak boleh diganti begitu saja.
+func providerOrderMayExist(tx *domain.Transaction) bool {
 	if tx == nil {
 		return false
 	}
-	id := strings.TrimSpace(tx.ProviderOrderID)
-	return id != "" && id != "-"
+	return hasProviderOrder(tx) || strings.TrimSpace(tx.ProviderCallbackData) != ""
 }
 
 // resolveProviderCode memilih provider untuk transaksi.
@@ -427,17 +430,17 @@ func (s *transactionService) fulfillOrderRegistry(tx *domain.Transaction) error 
 		return nil
 	}
 
-	p, productCode, gameSlug, err := s.resolveRegistryProvider(tx, nominal, hasProviderOrder(tx))
+	p, productCode, gameSlug, err := s.resolveRegistryProvider(tx, nominal, providerOrderMayExist(tx))
 	if err != nil {
 		s.recordConfigurationError(tx, err)
 		return err
 	}
 	providerRef := tx.ProviderReference()
-	requestSnapshot := provider.RequestSnapshot("purchase", p.Code(), providerRef, productCode, tx.CustomerID, tx.ServerID, tx.ProviderOrderID)
+	requestSnapshot := provider.RequestSnapshot("purchase", p.Code(), providerRef, productCode, tx.CustomerID, tx.ServerID, tx.RealProviderOrderID())
 	result, callErr := p.Purchase(context.Background(), provider.PurchaseRequest{
 		RefID: providerRef, ProductCode: productCode, ProductName: nominal.Name,
 		CustomerID: tx.CustomerID, ServerID: tx.ServerID, GameSlug: gameSlug,
-		ExistingProviderOrderID: tx.ProviderOrderID,
+		ExistingProviderOrderID: tx.RealProviderOrderID(),
 		ProviderData:            tx.ProviderCallbackData,
 	})
 	if result != nil && len(result.RequestRaw) == 0 {
@@ -465,8 +468,8 @@ func (s *transactionService) checkProviderStatusRegistry(transactionID uint, sou
 	if err != nil {
 		return nil, err
 	}
-	providerOrderID := tx.ProviderOrderID
-	if providerOrderID == "" || providerOrderID == "-" {
+	providerOrderID := tx.RealProviderOrderID()
+	if providerOrderID == "" {
 		// Legacy CheckProviderStatus also recovers order_id from saved provider
 		// payload before falling back to CheckRecentOrder.
 		if tx.ProviderCallbackData != "" {
@@ -854,7 +857,7 @@ func (s *transactionService) ManualRetry(transactionID uint) error {
 // baru selama statusnya belum final gagal (risiko order ganda). Jika sudah
 // gagal, order dilepas dari provider lama dan dikirim ulang dengan ref_id baru.
 func (s *transactionService) prepareProviderSwitchForRetry(tx *domain.Transaction) error {
-	if !hasProviderOrder(tx) {
+	if !providerOrderMayExist(tx) {
 		return nil // belum pernah dikirim: order baru otomatis ikut provider nominal saat ini
 	}
 	nominal, err := s.nominalRepo.FindByID(tx.NominalID)
@@ -870,7 +873,7 @@ func (s *transactionService) prepareProviderSwitchForRetry(tx *domain.Transactio
 	tx.ProviderOrderID = ""
 	tx.ProviderCallbackData = ""
 	tx.SN = ""
-	_, tx.ProviderOrderID = s.NewReferences(nominal, tx.CustomerID, tx.ServerID)
+	_, tx.ProviderOrderID = s.NewReferences(nominal, tx.CustomerID, tx.ServerID) // ref baru untuk provider baru
 	return nil
 }
 
@@ -885,17 +888,17 @@ func (s *transactionService) retryProviderOrder(tx *domain.Transaction) error {
 	if err != nil || nominal == nil {
 		return errors.New("nominal tidak ditemukan")
 	}
-	p, productCode, gameSlug, err := s.resolveRegistryProvider(tx, nominal, hasProviderOrder(tx))
+	p, productCode, gameSlug, err := s.resolveRegistryProvider(tx, nominal, providerOrderMayExist(tx))
 	if err != nil {
 		s.recordConfigurationError(tx, err)
 		return err
 	}
 	providerRef := tx.ProviderReference()
-	requestSnapshot := provider.RequestSnapshot("purchase", p.Code(), providerRef, productCode, tx.CustomerID, tx.ServerID, tx.ProviderOrderID)
+	requestSnapshot := provider.RequestSnapshot("purchase", p.Code(), providerRef, productCode, tx.CustomerID, tx.ServerID, tx.RealProviderOrderID())
 	result, callErr := p.Purchase(context.Background(), provider.PurchaseRequest{
 		RefID: providerRef, ProductCode: productCode, ProductName: nominal.Name,
 		CustomerID: tx.CustomerID, ServerID: tx.ServerID, GameSlug: gameSlug,
-		ExistingProviderOrderID: tx.ProviderOrderID,
+		ExistingProviderOrderID: tx.RealProviderOrderID(),
 		ProviderData:            tx.ProviderCallbackData,
 	})
 	if result != nil && len(result.RequestRaw) == 0 {

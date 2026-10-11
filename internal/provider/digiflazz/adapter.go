@@ -81,9 +81,12 @@ func (a *Adapter) Code() string { return provider.DigiflazzCode }
 func (a *Adapter) Purchase(_ context.Context, r provider.PurchaseRequest) (*provider.Result, error) {
 	requestRaw, _ := json.Marshal(map[string]interface{}{"action": "purchase", "ref_id": r.RefID, "buyer_sku_code": r.ProductCode, "customer_no": provider.CustomerNumber(r.CustomerID, r.ServerID), "testing": false})
 	if r.ExistingProviderOrderID != "" {
+		// ServerID WAJIB ikut: Digiflazz mengecek status dengan POST /transaction
+		// (customer_no ikut dikirim), jadi tanpa ServerID customer_no hanya berisi
+		// customer_id.
 		result, err := a.CheckStatus(context.Background(), provider.StatusRequest{
-			RefID: r.RefID, ProductCode: r.ProductCode, CustomerID: r.CustomerID,
-			GameSlug: r.GameSlug, ProviderOrderID: r.ExistingProviderOrderID,
+			RefID: r.RefID, ProductCode: r.ProductCode, CustomerID: r.CustomerID, ServerID: r.ServerID,
+			GameSlug: r.GameSlug, ProviderOrderID: r.ExistingProviderOrderID, ProviderData: r.ProviderData,
 		})
 		if result != nil {
 			result.RequestRaw = requestRaw
@@ -102,18 +105,19 @@ func (a *Adapter) Purchase(_ context.Context, r provider.PurchaseRequest) (*prov
 
 func (a *Adapter) CheckStatus(_ context.Context, r provider.StatusRequest) (*provider.Result, error) {
 	customerNo := provider.CustomerNumber(r.CustomerID, r.ServerID)
-	providerOrderID := r.ProviderOrderID
+	providerOrderID := strings.TrimSpace(r.ProviderOrderID)
 	if providerOrderID == "" || providerOrderID == "-" {
-        // Belum memiliki ProviderOrderID.
-        // Gunakan mekanisme fallback yang didukung provider.
-    }
+		// Digiflazz mengecek status dengan ref_id yang sama saat order dibuat.
+		// Tanpa ProviderOrderID, pakai ref_id transaksi (jangan kirim ref_id kosong).
+		providerOrderID = strings.TrimSpace(r.RefID)
+	}
 	requestRaw, _ := json.Marshal(map[string]interface{}{
-        "action":          "check_status",
-        "ref_id":          r.RefID,
-        "provider_order_id": providerOrderID,
-        "buyer_sku_code":  r.ProductCode,
-        "customer_no":     customerNo,
-    })
+		"action":            "check_status",
+		"ref_id":            r.RefID,
+		"provider_order_id": providerOrderID,
+		"buyer_sku_code":    r.ProductCode,
+		"customer_no":       customerNo,
+	})
 	resp, err := a.buyer.CheckTransactionStatus(providerOrderID, r.ProductCode, customerNo)
 	if err != nil {
 		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: errorKind(err.Error()), ProviderStatus: "Pending", Message: err.Error(), Cause: err, RequestRaw: requestRaw}
