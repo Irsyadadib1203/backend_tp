@@ -186,7 +186,7 @@ func (w *ReconcilerWorker) shouldSkip(tx *domain.Transaction) bool {
 
 	// Determine if this is a Kiosgamer transaction
 	pvdCode := resolveProviderCodeFromTx(tx)
-	if strings.EqualFold(pvdCode, "KIOSGAMER") && tx.ProviderOrderID == "" {
+	if strings.EqualFold(pvdCode, "KIOSGAMER") && !hasProviderOrder(tx) {
 		log.Printf("[Reconciler] Skipping Kiosgamer tx %d (no ProviderOrderID)", tx.ID)
 		return true
 	}

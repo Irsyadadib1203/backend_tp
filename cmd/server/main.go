@@ -73,8 +73,7 @@ func main() {
 	if err := providerRegistry.Register(providerotomax.NewWithCallbackBaseURL(providerotomax.FFZStoreCode, providerRepo, cfg.PublicAPIURL)); err != nil {
 		log.Fatalf("register FFZStore OtoMax provider adapter: %v", err)
 	}
-	webhookService := service.NewWebhookService(providerRepo)
-	h2hService := service.NewH2HService(userRepo, nominalRepo, txRepo, digiflazzBuyerService, webhookService)
+	h2hService := service.NewH2HService(userRepo, nominalRepo, txRepo)
 	gameService := service.NewGameService(gameRepo, nominalRepo, providerRepo, digiflazzBuyerService, providerProductRepo, providerRegistry)
 	txService := service.NewTransactionService(txRepo, nominalRepo, gameRepo, userRepo, paymentRepo, providerRepo, providerRegistry, settingRepo)
 	depositService := service.NewDepositService(depositRepo, userRepo, paymentRepo, nil)

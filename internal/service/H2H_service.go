@@ -127,8 +127,6 @@ type h2hService struct {
 	userRepo       repository.UserRepository
 	nominalRepo    repository.NominalRepository
 	txRepo         repository.TransactionRepository
-	digiflazzBuyer DigiflazzBuyerService
-	webhookService WebhookService
 	orderProcessor H2HOrderProcessor
 }
 
@@ -153,15 +151,11 @@ func NewH2HService(
 	userRepo repository.UserRepository,
 	nominalRepo repository.NominalRepository,
 	txRepo repository.TransactionRepository,
-	digiflazzBuyer DigiflazzBuyerService,
-	webhookService WebhookService,
 ) H2HService {
 	return &h2hService{
 		userRepo:       userRepo,
 		nominalRepo:    nominalRepo,
 		txRepo:         txRepo,
-		digiflazzBuyer: digiflazzBuyer,
-		webhookService: webhookService,
 	}
 }
 

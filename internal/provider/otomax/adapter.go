@@ -50,7 +50,7 @@ func (a *Adapter) Code() string { return a.code }
 func (a *Adapter) Purchase(ctx context.Context, request provider.PurchaseRequest) (*provider.Result, error) {
 	if request.ExistingProviderOrderID != "" && request.ExistingProviderOrderID != "-" {
 		return a.CheckStatus(ctx, provider.StatusRequest{
-			RefID: request.RefID, ProductCode: request.ProductCode, CustomerID: request.CustomerID,
+			RefID: request.RefID, ProductCode: request.ProductCode, CustomerID: request.CustomerID, ServerID: request.ServerID,
 			GameSlug: request.GameSlug, ProviderOrderID: request.ExistingProviderOrderID, ProviderData: request.ProviderData,
 		})
 	}

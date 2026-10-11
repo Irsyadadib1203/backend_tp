@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -182,13 +183,28 @@ func (r *transactionRepository) ClaimProcessingForReconciliation(id uint, staleB
 }
 
 func (r *transactionRepository) FindProcessingBalanceHolds(providerID uint, batchSize int) ([]domain.Transaction, error) {
-	var txs []domain.Transaction
+	var candidates []domain.Transaction
 	err := r.db.Preload("Nominal").Preload("Provider").
 		Where("status = ? AND provider_id = ?", domain.StatusProcessing, providerID).
-		Where("provider_order_id IS NULL OR provider_order_id = '' OR provider_order_id = '-' ").
 		Where("LOWER(provider_status) LIKE ? OR LOWER(provider_message) LIKE ? OR LOWER(provider_message) LIKE ?", "%saldo%", "%saldo%", "%balance%").
-		Order("updated_at ASC").Limit(batchSize).Find(&txs).Error
-	return txs, err
+		Order("updated_at ASC").Limit(batchSize * 5).Find(&candidates).Error
+	if err != nil {
+		return nil, err
+	}
+	// provider_order_id kini berisi ref_id yang kita kirim sejak order dibuat,
+	// jadi "belum ada order di provider" berarti: kosong, atau masih sama dengan
+	// ref yang kita kirim (bukan ID order asli dari provider).
+	txs := make([]domain.Transaction, 0, batchSize)
+	for _, tx := range candidates {
+		id := strings.TrimSpace(tx.ProviderOrderID)
+		if id == "" || id == "-" || id == tx.ProviderReference() {
+			txs = append(txs, tx)
+			if len(txs) >= batchSize {
+				break
+			}
+		}
+	}
+	return txs, nil
 }
 
 func (r *transactionRepository) UpdateStatus(id uint, newStatus domain.TransactionStatus, reason string) error {

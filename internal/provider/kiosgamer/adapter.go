@@ -26,7 +26,7 @@ func (a *Adapter) Purchase(ctx context.Context, r provider.PurchaseRequest) (*pr
 	// This check must precede the SKU guard so that existing orders can be polled
 	// even when ProductCode is not passed through (idempotency requirement §3.3, §8).
 	if r.ExistingProviderOrderID != "" && r.ExistingProviderOrderID != "-" {
-		return a.checkStatus(ctx, provider.StatusRequest{RefID: r.RefID, ProductCode: r.ProductCode, CustomerID: r.CustomerID, GameSlug: r.GameSlug, ProviderOrderID: r.ExistingProviderOrderID}, false)
+		return a.checkStatus(ctx, provider.StatusRequest{RefID: r.RefID, ProductCode: r.ProductCode, CustomerID: r.CustomerID, ServerID: r.ServerID, GameSlug: r.GameSlug, ProviderOrderID: r.ExistingProviderOrderID, ProviderData: r.ProviderData}, false)
 	}
 	// Only new orders require a configured product code.
 	if strings.TrimSpace(r.ProductCode) == "" {

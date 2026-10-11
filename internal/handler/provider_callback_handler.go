@@ -96,7 +96,7 @@ func (h *ProviderCallbackHandler) HandleCallback(c *gin.Context) {
 
 	refID := ""
 	if tx != nil {
-		refID = tx.RefID
+		refID = tx.ProviderReference()
 	}
 	status := ""
 	if result != nil {
