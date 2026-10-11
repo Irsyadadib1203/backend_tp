@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"topup-backend/internal/provider"
-	"topup-backend/internal/service"
 )
 
 type customerNoRecorder struct {
@@ -13,7 +12,7 @@ type customerNoRecorder struct {
 	checkedCustomerNo string
 }
 
-func (r *customerNoRecorder) CheckTransactionStatus(_ string, _ string, customerNo string) (*service.DigiflazzTransactionResponse, error) {
+func (r *customerNoRecorder) CheckTransactionStatus(_ string, _ string, customerNo string) (*TransactionResponse, error) {
 	r.checkedCustomerNo = customerNo
 	return response("Sukses", "00", "ok"), nil
 }

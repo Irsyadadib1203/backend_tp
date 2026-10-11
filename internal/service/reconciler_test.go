@@ -115,9 +115,6 @@ func (s *reconcilerTestSvc) ListAdminTransactions(int, int, string, string, stri
 }
 func (s *reconcilerTestSvc) GetDashboardStats() (map[string]interface{}, error) { return nil, nil }
 func (s *reconcilerTestSvc) FulfillOrder(*domain.Transaction) error             { return nil }
-func (s *reconcilerTestSvc) HandleDigiflazzCallback(*DigiflazzCallbackPayload) error {
-	return nil
-}
 func (s *reconcilerTestSvc) HandleProviderCallback(string, *http.Request) (*domain.Transaction, *provider.Result, error) {
 	return nil, nil, nil
 }

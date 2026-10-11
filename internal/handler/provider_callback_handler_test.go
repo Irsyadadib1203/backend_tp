@@ -46,9 +46,6 @@ func (s *mockCallbackTransactionService) GetDashboardStats() (map[string]interfa
 func (s *mockCallbackTransactionService) FulfillOrder(*domain.Transaction) error {
 	return nil
 }
-func (s *mockCallbackTransactionService) HandleDigiflazzCallback(*service.DigiflazzCallbackPayload) error {
-	return nil
-}
 func (s *mockCallbackTransactionService) HandlePaymentSuccess(string, string, float64) error {
 	return nil
 }

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"topup-backend/internal/provider"
-	"topup-backend/internal/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -71,10 +70,10 @@ func groupOfRC(rc string) statusGroup {
 }
 
 type Adapter struct {
-	buyer service.DigiflazzBuyerService
+	client Client
 }
 
-func New(buyer service.DigiflazzBuyerService) *Adapter { return &Adapter{buyer: buyer} }
+func New(client Client) *Adapter { return &Adapter{client: client} }
 
 func (a *Adapter) Code() string { return provider.DigiflazzCode }
 
@@ -93,7 +92,7 @@ func (a *Adapter) Purchase(_ context.Context, r provider.PurchaseRequest) (*prov
 		}
 		return result, err
 	}
-	resp, err := a.buyer.CreateTransaction(r.RefID, r.ProductCode, provider.CustomerNumber(r.CustomerID, r.ServerID), false)
+	resp, err := a.client.CreateTransaction(r.RefID, r.ProductCode, provider.CustomerNumber(r.CustomerID, r.ServerID), false)
 	if err != nil {
 		raw, _ := json.Marshal(map[string]interface{}{"error": err.Error(), "ref_id": r.RefID, "timestamp": time.Now().Format(time.RFC3339)})
 		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: errorKind(err.Error()), ProviderStatus: "Pending", Message: err.Error(), Cause: err, Raw: raw, RequestRaw: requestRaw}
@@ -118,7 +117,7 @@ func (a *Adapter) CheckStatus(_ context.Context, r provider.StatusRequest) (*pro
 		"buyer_sku_code":    r.ProductCode,
 		"customer_no":       customerNo,
 	})
-	resp, err := a.buyer.CheckTransactionStatus(providerOrderID, r.ProductCode, customerNo)
+	resp, err := a.client.CheckTransactionStatus(providerOrderID, r.ProductCode, customerNo)
 	if err != nil {
 		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: errorKind(err.Error()), ProviderStatus: "Pending", Message: err.Error(), Cause: err, RequestRaw: requestRaw}
 	}
@@ -127,10 +126,10 @@ func (a *Adapter) CheckStatus(_ context.Context, r provider.StatusRequest) (*pro
 	return result, nil
 }
 
-func (a *Adapter) Balance(context.Context) (float64, error) { return a.buyer.CheckBalance() }
+func (a *Adapter) Balance(context.Context) (float64, error) { return a.client.CheckBalance() }
 
 func (a *Adapter) SyncCatalog(context.Context) ([]provider.CatalogItem, error) {
-	items, err := a.buyer.GetPriceList()
+	items, err := a.client.GetPriceList()
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +149,7 @@ func (a *Adapter) ParseCallback(r *http.Request) (*provider.Result, string, erro
 	if signature == "" {
 		signature = r.Header.Get("X-Digiflazz-Delivery")
 	}
-	payload, err := a.buyer.ProcessCallback(body, signature)
+	payload, err := a.client.ProcessCallback(body, signature)
 	if err != nil {
 		return nil, "", &provider.ProviderError{Status: provider.StatusFailedHold, Kind: provider.ErrorAuthentication, ProviderStatus: "Callback Error", Message: err.Error(), Cause: err}
 	}
@@ -161,7 +160,7 @@ func (a *Adapter) ParseCallback(r *http.Request) (*provider.Result, string, erro
 	return result, payload.Data.RefID, nil
 }
 
-func resultFromResponse(resp *service.DigiflazzTransactionResponse, statusCheck bool) *provider.Result {
+func resultFromResponse(resp *TransactionResponse, statusCheck bool) *provider.Result {
 	if resp == nil {
 		return &provider.Result{Status: provider.StatusPending, ProviderStatus: "Pending (RC -)", Message: "empty Digiflazz response"}
 	}
@@ -169,7 +168,7 @@ func resultFromResponse(resp *service.DigiflazzTransactionResponse, statusCheck 
 	return mapResult(resp.Data.RefID, resp.Data.RC, resp.Data.Status, resp.Data.Message, resp.Data.SN, raw, statusCheck)
 }
 
-func resultFromCallback(payload *service.DigiflazzCallbackPayload) (*provider.Result, error) {
+func resultFromCallback(payload *CallbackPayload) (*provider.Result, error) {
 	if payload == nil || payload.Data.RefID == "" {
 		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: provider.ErrorTemporary, ProviderStatus: "Callback Error", Message: "empty callback data"}
 	}

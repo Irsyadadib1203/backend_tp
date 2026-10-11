@@ -1,4 +1,4 @@
-package service
+package digiflazz
 
 import (
 	"bytes"
@@ -18,7 +18,7 @@ import (
 	"topup-backend/internal/repository"
 )
 
-type DigiflazzPriceListItem struct {
+type PriceListItem struct {
 	ProductName         string  `json:"product_name"`
 	Category            string  `json:"category"`
 	Brand               string  `json:"brand"`
@@ -36,7 +36,7 @@ type DigiflazzPriceListItem struct {
 	Desc                string  `json:"desc"`
 }
 
-type DigiflazzTransactionResponse struct {
+type TransactionResponse struct {
 	Data struct {
 		RefID        string  `json:"ref_id"`
 		CustomerNo   string  `json:"customer_no"`
@@ -51,7 +51,7 @@ type DigiflazzTransactionResponse struct {
 	} `json:"data"`
 }
 
-type DigiflazzCallbackPayload struct {
+type CallbackPayload struct {
 	Data struct {
 		RefID        string  `json:"ref_id"`
 		CustomerNo   string  `json:"customer_no"`
@@ -65,22 +65,24 @@ type DigiflazzCallbackPayload struct {
 	} `json:"data"`
 }
 
-type DigiflazzBuyerService interface {
-	GetPriceList() ([]DigiflazzPriceListItem, error)
+// Client adalah klien HTTP ke API Digiflazz (price list, saldo, transaksi, callback).
+// Dipakai oleh Adapter (jalur transaksi generik) dan oleh katalog/saldo di admin.
+type Client interface {
+	GetPriceList() ([]PriceListItem, error)
 	CheckBalance() (float64, error)
-	CreateTransaction(refID, buyerSkuCode, customerNo string, testing bool) (*DigiflazzTransactionResponse, error)
-	CheckTransactionStatus(providerOrderID, buyerSkuCode, customerNo string) (*DigiflazzTransactionResponse, error)
-	ProcessCallback(rawPayload []byte, signatureHeader string) (*DigiflazzCallbackPayload, error)
+	CreateTransaction(refID, buyerSkuCode, customerNo string, testing bool) (*TransactionResponse, error)
+	CheckTransactionStatus(providerOrderID, buyerSkuCode, customerNo string) (*TransactionResponse, error)
+	ProcessCallback(rawPayload []byte, signatureHeader string) (*CallbackPayload, error)
 }
 
-type digiflazzBuyerService struct {
+type client struct {
 	providerRepo repository.ProviderRepository
 	cfg          *config.Config
 	httpClient   *http.Client
 }
 
-func NewDigiflazzBuyerService(providerRepo repository.ProviderRepository, cfg *config.Config) DigiflazzBuyerService {
-	return &digiflazzBuyerService{
+func NewClient(providerRepo repository.ProviderRepository, cfg *config.Config) Client {
+	return &client{
 		providerRepo: providerRepo,
 		cfg:          cfg,
 		httpClient: &http.Client{
@@ -89,7 +91,7 @@ func NewDigiflazzBuyerService(providerRepo repository.ProviderRepository, cfg *c
 	}
 }
 
-func (s *digiflazzBuyerService) getCredentials() (baseURL, username, apiKey, webhookSecret string) {
+func (s *client) getCredentials() (baseURL, username, apiKey, webhookSecret string) {
 	record, err := s.providerRepo.GetByCode("DIGIFLAZZ")
 	if err != nil || record == nil {
 		log.Printf("[Digiflazz] kredensial tidak ditemukan di database: %v", err)
@@ -105,7 +107,7 @@ func (s *digiflazzBuyerService) getCredentials() (baseURL, username, apiKey, web
 	return
 }
 
-func (s *digiflazzBuyerService) GetPriceList() ([]DigiflazzPriceListItem, error) {
+func (s *client) GetPriceList() ([]PriceListItem, error) {
 	baseURL, username, apiKey, _ := s.getCredentials()
 	if username == "" || apiKey == "" {
 		return nil, errors.New("digiflazz buyer username and API key must be configured")
@@ -132,7 +134,7 @@ func (s *digiflazzBuyerService) GetPriceList() ([]DigiflazzPriceListItem, error)
 	}
 
 	var result struct {
-		Data []DigiflazzPriceListItem `json:"data"`
+		Data []PriceListItem `json:"data"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("invalid response from Digiflazz: %s", string(body))
@@ -141,7 +143,7 @@ func (s *digiflazzBuyerService) GetPriceList() ([]DigiflazzPriceListItem, error)
 	return result.Data, nil
 }
 
-func (s *digiflazzBuyerService) CheckBalance() (float64, error) {
+func (s *client) CheckBalance() (float64, error) {
 	baseURL, username, apiKey, _ := s.getCredentials()
 	if username == "" || apiKey == "" {
 		return 0, errors.New("digiflazz credentials not configured")
@@ -185,7 +187,7 @@ func (s *digiflazzBuyerService) CheckBalance() (float64, error) {
 	return result.Data.Deposit, nil
 }
 
-func (s *digiflazzBuyerService) CreateTransaction(providerOrderID, buyerSkuCode, customerNo string, testing bool) (*DigiflazzTransactionResponse, error) {
+func (s *client) CreateTransaction(providerOrderID, buyerSkuCode, customerNo string, testing bool) (*TransactionResponse, error) {
 	baseURL, username, apiKey, _ := s.getCredentials()
 	if username == "" || apiKey == "" {
 		return nil, errors.New("digiflazz credentials not configured")
@@ -227,7 +229,7 @@ func (s *digiflazzBuyerService) CreateTransaction(providerOrderID, buyerSkuCode,
 		return nil, err
 	}
 
-	var result DigiflazzTransactionResponse
+	var result TransactionResponse
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("invalid json response from Digiflazz: %s", string(body))
 	}
@@ -235,11 +237,11 @@ func (s *digiflazzBuyerService) CreateTransaction(providerOrderID, buyerSkuCode,
 	return &result, nil
 }
 
-func (s *digiflazzBuyerService) CheckTransactionStatus(providerOrderID, buyerSkuCode, customerNo string) (*DigiflazzTransactionResponse, error) {
+func (s *client) CheckTransactionStatus(providerOrderID, buyerSkuCode, customerNo string) (*TransactionResponse, error) {
 	return s.CreateTransaction(providerOrderID, buyerSkuCode, customerNo, false)
 }
 
-func (s *digiflazzBuyerService) ProcessCallback(rawPayload []byte, signatureHeader string) (*DigiflazzCallbackPayload, error) {
+func (s *client) ProcessCallback(rawPayload []byte, signatureHeader string) (*CallbackPayload, error) {
 	_, username, apiKey, webhookSecret := s.getCredentials()
 
 	// Log incoming webhook
@@ -250,7 +252,7 @@ func (s *digiflazzBuyerService) ProcessCallback(rawPayload []byte, signatureHead
 		CreatedAt:    time.Now(),
 	})
 
-	var payload DigiflazzCallbackPayload
+	var payload CallbackPayload
 	if err := json.Unmarshal(rawPayload, &payload); err != nil {
 		return nil, errors.New("invalid JSON payload")
 	}

@@ -15,6 +15,7 @@ import (
 	"topup-backend/internal/handler"
 	"topup-backend/internal/middleware"
 	"topup-backend/internal/pkg/crypto"
+	"topup-backend/internal/provider/digiflazz"
 	"topup-backend/internal/repository"
 	"topup-backend/internal/service"
 )
@@ -86,9 +87,9 @@ func setupTestRouter() *gin.Engine {
 
 	authService := service.NewAuthService(userRepo, cfg)
 	nicknameService := service.NewNicknameService()
-	digiflazzBuyerService := service.NewDigiflazzBuyerService(providerRepo, cfg)
+	digiflazzClient := digiflazz.NewClient(providerRepo, cfg)
 	H2HService := service.NewH2HService(userRepo, nominalRepo, txRepo)
-	gameService := service.NewGameService(gameRepo, nominalRepo, providerRepo, digiflazzBuyerService)
+	gameService := service.NewGameService(gameRepo, nominalRepo, providerRepo, digiflazzClient)
 	txService := service.NewTransactionService(txRepo, nominalRepo, gameRepo, userRepo, paymentRepo, providerRepo, nil)
 	depositService := service.NewDepositService(depositRepo, userRepo, paymentRepo, nil)
 	ipService := service.NewIPWhitelistService(ipRepo)
@@ -97,7 +98,7 @@ func setupTestRouter() *gin.Engine {
 	gameHandler := handler.NewGameHandler(gameService, nicknameService)
 	txHandler := handler.NewTransactionHandler(txService, authService)
 	H2HHandler := handler.NewH2HHandler(H2HService)
-	adminHandler := handler.NewAdminHandler(gameService, txService, depositService, digiflazzBuyerService, userRepo, providerRepo, paymentRepo, bannerRepo, articleRepo, nil)
+	adminHandler := handler.NewAdminHandler(gameService, txService, depositService, digiflazzClient, userRepo, providerRepo, paymentRepo, bannerRepo, articleRepo, nil)
 	ipHandler := handler.NewIPWhitelistHandler(ipService)
 
 	r := gin.New()

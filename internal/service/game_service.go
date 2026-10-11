@@ -10,6 +10,7 @@ import (
 	"topup-backend/internal/pkg/cache"
 	"topup-backend/internal/pkg/utils"
 	"topup-backend/internal/provider"
+	"topup-backend/internal/provider/digiflazz"
 	"topup-backend/internal/repository"
 )
 
@@ -44,11 +45,17 @@ type GameService interface {
 	AutoSyncAllPrices() (int, error)
 }
 
+// DigiflazzCatalog adalah bagian klien Digiflazz yang dipakai untuk sinkronisasi katalog/harga.
+// Diimplementasikan oleh digiflazz.Client.
+type DigiflazzCatalog interface {
+	GetPriceList() ([]digiflazz.PriceListItem, error)
+}
+
 type gameService struct {
 	gameRepo            repository.GameRepository
 	nominalRepo         repository.NominalRepository
 	providerRepo        repository.ProviderRepository
-	digiflazzBuyer      DigiflazzBuyerService
+	digiflazzBuyer      DigiflazzCatalog
 	providerProductRepo repository.ProviderProductRepository
 	providerRegistry    *provider.Registry
 }
@@ -57,7 +64,7 @@ func NewGameService(
 	gameRepo repository.GameRepository,
 	nominalRepo repository.NominalRepository,
 	providerRepo repository.ProviderRepository,
-	digiflazzBuyer DigiflazzBuyerService,
+	digiflazzBuyer DigiflazzCatalog,
 	extra ...interface{},
 ) GameService {
 	s := &gameService{
@@ -504,7 +511,7 @@ func (s *gameService) AutoSyncAllPrices() (int, error) {
 	}
 
 	// 2. Map Digiflazz products by SKU for O(1) lookup
-	skuMap := make(map[string]DigiflazzPriceListItem, len(products))
+	skuMap := make(map[string]digiflazz.PriceListItem, len(products))
 	for _, p := range products {
 		skuMap[strings.TrimSpace(p.BuyerSkuCode)] = p
 	}

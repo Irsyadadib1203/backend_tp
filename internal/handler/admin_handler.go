@@ -21,11 +21,17 @@ import (
 	"topup-backend/internal/service"
 )
 
+// DigiflazzBalanceChecker adalah bagian klien Digiflazz yang dipakai dashboard dan
+// endpoint saldo admin. Diimplementasikan oleh digiflazz.Client.
+type DigiflazzBalanceChecker interface {
+	CheckBalance() (float64, error)
+}
+
 type AdminHandler struct {
 	gameService          service.GameService
 	txService            service.TransactionService
 	depositService       service.DepositService
-	digiflazzBuyer       service.DigiflazzBuyerService
+	digiflazzBuyer       DigiflazzBalanceChecker
 	userRepo             repository.UserRepository
 	providerRepo         repository.ProviderRepository
 	paymentRepo          repository.PaymentRepository
@@ -41,7 +47,7 @@ func NewAdminHandler(
 	gameService service.GameService,
 	txService service.TransactionService,
 	depositService service.DepositService,
-	digiflazzBuyer service.DigiflazzBuyerService,
+	digiflazzBuyer DigiflazzBalanceChecker,
 	userRepo repository.UserRepository,
 	providerRepo repository.ProviderRepository,
 	paymentRepo repository.PaymentRepository,

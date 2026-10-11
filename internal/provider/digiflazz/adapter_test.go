@@ -9,37 +9,36 @@ import (
 	"testing"
 
 	"topup-backend/internal/provider"
-	"topup-backend/internal/service"
 )
 
 type fakeBuyer struct {
-	create, check           *service.DigiflazzTransactionResponse
+	create, check           *TransactionResponse
 	createErr, checkErr     error
-	callback                *service.DigiflazzCallbackPayload
+	callback                *CallbackPayload
 	callbackErr             error
 	createCalls, checkCalls int
 	callbackSignature       string
 	lastCustomerNo          string
 }
 
-func (f *fakeBuyer) GetPriceList() ([]service.DigiflazzPriceListItem, error) { return nil, nil }
+func (f *fakeBuyer) GetPriceList() ([]PriceListItem, error) { return nil, nil }
 func (f *fakeBuyer) CheckBalance() (float64, error)                          { return 42, nil }
-func (f *fakeBuyer) CreateTransaction(_ string, _ string, customerNo string, _ bool) (*service.DigiflazzTransactionResponse, error) {
+func (f *fakeBuyer) CreateTransaction(_ string, _ string, customerNo string, _ bool) (*TransactionResponse, error) {
 	f.createCalls++
 	f.lastCustomerNo = customerNo
 	return f.create, f.createErr
 }
-func (f *fakeBuyer) CheckTransactionStatus(string, string, string) (*service.DigiflazzTransactionResponse, error) {
+func (f *fakeBuyer) CheckTransactionStatus(string, string, string) (*TransactionResponse, error) {
 	f.checkCalls++
 	return f.check, f.checkErr
 }
-func (f *fakeBuyer) ProcessCallback(_ []byte, signature string) (*service.DigiflazzCallbackPayload, error) {
+func (f *fakeBuyer) ProcessCallback(_ []byte, signature string) (*CallbackPayload, error) {
 	f.callbackSignature = signature
 	return f.callback, f.callbackErr
 }
 
-func response(status, rc, message string) *service.DigiflazzTransactionResponse {
-	r := &service.DigiflazzTransactionResponse{}
+func response(status, rc, message string) *TransactionResponse {
+	r := &TransactionResponse{}
 	r.Data.RefID, r.Data.Status, r.Data.RC, r.Data.Message, r.Data.SN = "DF-1", status, rc, message, "SN-DF"
 	return r
 }
@@ -95,7 +94,7 @@ func TestPurchaseCombinesCustomerAndServerIDForDigiflazz(t *testing.T) {
 }
 
 func TestParseCallbackUsesLegacyHeaderFallback(t *testing.T) {
-	payload := &service.DigiflazzCallbackPayload{}
+	payload := &CallbackPayload{}
 	payload.Data.RefID, payload.Data.Status, payload.Data.RC, payload.Data.Message = "REF-CB", "Gagal", "44", "saldo provider habis"
 	buyer := &fakeBuyer{callback: payload}
 	req := httptest.NewRequest(http.MethodPost, "/callback", strings.NewReader(`{}`))

@@ -10,6 +10,7 @@ import (
 
 	"topup-backend/internal/domain"
 	"topup-backend/internal/provider"
+	"topup-backend/internal/provider/digiflazz"
 )
 
 // These fakes deliberately model only observability required by the legacy
@@ -173,24 +174,24 @@ func (r *characterizationUserRepo) GetAPIKeyByUserID(uint) (*domain.APIKey, erro
 
 
 type characterizationDigiflazz struct {
-	createResp              *DigiflazzTransactionResponse
+	createResp              *digiflazz.TransactionResponse
 	createErr               error
-	checkResp               *DigiflazzTransactionResponse
+	checkResp               *digiflazz.TransactionResponse
 	checkErr                error
 	createCalls, checkCalls int
 }
 
-func (d *characterizationDigiflazz) GetPriceList() ([]DigiflazzPriceListItem, error) { return nil, nil }
+func (d *characterizationDigiflazz) GetPriceList() ([]digiflazz.PriceListItem, error) { return nil, nil }
 func (d *characterizationDigiflazz) CheckBalance() (float64, error)                  { return 0, nil }
-func (d *characterizationDigiflazz) CreateTransaction(string, string, string, bool) (*DigiflazzTransactionResponse, error) {
+func (d *characterizationDigiflazz) CreateTransaction(string, string, string, bool) (*digiflazz.TransactionResponse, error) {
 	d.createCalls++
 	return d.createResp, d.createErr
 }
-func (d *characterizationDigiflazz) CheckTransactionStatus(string, string, string) (*DigiflazzTransactionResponse, error) {
+func (d *characterizationDigiflazz) CheckTransactionStatus(string, string, string) (*digiflazz.TransactionResponse, error) {
 	d.checkCalls++
 	return d.checkResp, d.checkErr
 }
-func (d *characterizationDigiflazz) ProcessCallback([]byte, string) (*DigiflazzCallbackPayload, error) {
+func (d *characterizationDigiflazz) ProcessCallback([]byte, string) (*digiflazz.CallbackPayload, error) {
 	return nil, nil
 }
 
@@ -244,8 +245,8 @@ func characterizationTx() *domain.Transaction {
 	return &domain.Transaction{ID: 10, InvoiceNumber: "INV-10", RefID: "REF-10", NominalID: 11, GameID: 12, CustomerID: "12345", ServerID: "99", SellingPrice: 10000, TotalAmount: 10000, UserID: &userID, PaymentMethod: "SALDO", Status: domain.StatusProcessing}
 }
 
-func characterizationDigiflazzResponse(status, message, sn string) *DigiflazzTransactionResponse {
-	r := &DigiflazzTransactionResponse{}
+func characterizationDigiflazzResponse(status, message, sn string) *digiflazz.TransactionResponse {
+	r := &digiflazz.TransactionResponse{}
 	r.Data.RefID, r.Data.Status, r.Data.Message, r.Data.SN = "DF-ORDER", status, message, sn
 	return r
 }

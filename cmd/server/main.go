@@ -59,12 +59,12 @@ func main() {
 	// 4. Initialize Services
 	authService := service.NewAuthService(userRepo, cfg)
 	nicknameService := service.NewNicknameService()
-	digiflazzBuyerService := service.NewDigiflazzBuyerService(providerRepo, cfg)
+	digiflazzClient := providerdigiflazz.NewClient(providerRepo, cfg)
 	kiosgamerService := service.NewKiosgamerService(kiosgamerRepo, providerRepo, nominalRepo, gameRepo, cfg, providerProductRepo)
 	// Provider registry is the sole transaction execution path after the
 	// multi-provider rollout; adapters retain provider-specific protocol work.
 	providerRegistry := provider.NewRegistry()
-	if err := providerRegistry.Register(providerdigiflazz.New(digiflazzBuyerService)); err != nil {
+	if err := providerRegistry.Register(providerdigiflazz.New(digiflazzClient)); err != nil {
 		log.Fatalf("register Digiflazz provider adapter: %v", err)
 	}
 	if err := providerRegistry.Register(providerkiosgamer.New(kiosgamerService)); err != nil {
@@ -74,7 +74,7 @@ func main() {
 		log.Fatalf("register FFZStore OtoMax provider adapter: %v", err)
 	}
 	h2hService := service.NewH2HService(userRepo, nominalRepo, txRepo)
-	gameService := service.NewGameService(gameRepo, nominalRepo, providerRepo, digiflazzBuyerService, providerProductRepo, providerRegistry)
+	gameService := service.NewGameService(gameRepo, nominalRepo, providerRepo, digiflazzClient, providerProductRepo, providerRegistry)
 	txService := service.NewTransactionService(txRepo, nominalRepo, gameRepo, userRepo, paymentRepo, providerRepo, providerRegistry, settingRepo)
 	depositService := service.NewDepositService(depositRepo, userRepo, paymentRepo, nil)
 	ipService := service.NewIPWhitelistService(ipRepo)
@@ -104,7 +104,7 @@ func main() {
 	tripayChannelService := service.NewTripayChannelService(cfg.TripayAPIKey, cfg.TripayPrivateKey, cfg.TripayMerchantCode, cfg.TripayBaseURL, paymentRepo)
 	txService.SetTripayService(tripayChannelService)
 	depositService.SetTripayService(tripayChannelService)
-	adminHandler := handler.NewAdminHandler(gameService, txService, depositService, digiflazzBuyerService, userRepo, providerRepo, paymentRepo, bannerRepo, articleRepo, tripayChannelService, settingRepo)
+	adminHandler := handler.NewAdminHandler(gameService, txService, depositService, digiflazzClient, userRepo, providerRepo, paymentRepo, bannerRepo, articleRepo, tripayChannelService, settingRepo)
 	adminHandler.SetProviderRegistry(providerRegistry)
 	if bulkTxService, ok := txService.(service.BulkTransactionService); ok {
 		adminHandler.SetBulkTransactionService(bulkTxService)
