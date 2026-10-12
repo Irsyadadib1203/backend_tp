@@ -88,7 +88,7 @@ func TestPurchaseErrorAndExistingOrderUseProviderContract(t *testing.T) {
 func TestPurchaseCombinesCustomerAndServerIDForDigiflazz(t *testing.T) {
 	buyer := &fakeBuyer{create: response("Pending", "03", "wait")}
 	_, err := New(buyer).Purchase(context.Background(), provider.PurchaseRequest{RefID: "REF", ProductCode: "SKU", CustomerID: "12345678", ServerID: "2001"})
-	if err != nil || buyer.lastCustomerNo != "12345678(2001)" {
+	if err != nil || buyer.lastCustomerNo != "123456782001" {
 		t.Fatalf("err=%v customer_no=%q", err, buyer.lastCustomerNo)
 	}
 }

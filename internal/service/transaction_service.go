@@ -564,9 +564,19 @@ func (s *transactionService) applyResult(tx *domain.Transaction, result *provide
 		tx.Status = domain.StatusProcessing
 		tx.ProviderStatus = providerErr.ProviderStatus
 		tx.ProviderMessage = providerErr.Message
-		if len(providerErr.Raw) > 0 || len(providerErr.RequestRaw) > 0 {
-			tx.ProviderCallbackData = string(provider.Exchange(source, providerErr.RequestRaw, providerErr.Raw))
+		reqRaw := providerErr.RequestRaw
+		if len(reqRaw) == 0 && tx.ProviderCallbackData != "" {
+			reqRaw = provider.RequestFromExchange(tx.ProviderCallbackData)
 		}
+		rawResp := providerErr.Raw
+		if len(rawResp) == 0 {
+			rawResp, _ = json.Marshal(map[string]interface{}{
+				"status":  providerErr.ProviderStatus,
+				"message": providerErr.Message,
+				"error":   providerErr.Message,
+			})
+		}
+		tx.ProviderCallbackData = string(provider.Exchange(source, reqRaw, rawResp))
 		if providerErr.Status == provider.StatusFailedFinal {
 			tx.Status = domain.StatusFailed
 			now := time.Now()
@@ -604,7 +614,15 @@ func (s *transactionService) applyResult(tx *domain.Transaction, result *provide
 		tx.SN = result.SN
 	}
 	if len(result.Raw) > 0 || len(result.RequestRaw) > 0 {
-		tx.ProviderCallbackData = string(provider.Exchange(source, result.RequestRaw, result.Raw))
+		reqRaw := result.RequestRaw
+		if len(reqRaw) == 0 && tx.ProviderCallbackData != "" {
+			reqRaw = provider.RequestFromExchange(tx.ProviderCallbackData)
+		}
+		respRaw := result.Raw
+		if len(respRaw) == 0 && tx.ProviderCallbackData != "" {
+			respRaw = provider.ResponseFromExchange(tx.ProviderCallbackData)
+		}
+		tx.ProviderCallbackData = string(provider.Exchange(source, reqRaw, respRaw))
 	}
 
 	switch result.Status {

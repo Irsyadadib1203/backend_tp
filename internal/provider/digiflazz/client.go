@@ -49,6 +49,25 @@ type TransactionResponse struct {
 		Tele         string  `json:"tele"`
 		Wa           string  `json:"wa"`
 	} `json:"data"`
+	RawRequest  []byte `json:"-"`
+	RawResponse []byte `json:"-"`
+}
+
+type APIError struct {
+	Err         error
+	RawRequest  []byte
+	RawResponse []byte
+}
+
+func (e *APIError) Error() string {
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return "digiflazz api error"
+}
+
+func (e *APIError) Unwrap() error {
+	return e.Err
 }
 
 type CallbackPayload struct {
@@ -220,20 +239,22 @@ func (s *client) CreateTransaction(providerOrderID, buyerSkuCode, customerNo str
 
 	resp, err := s.httpClient.Post(baseURL+"/transaction", "application/json", bytes.NewBuffer(jsonPayload))
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Digiflazz: %w", err)
+		return nil, &APIError{Err: fmt.Errorf("failed to connect to Digiflazz: %w", err), RawRequest: jsonPayload}
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, &APIError{Err: err, RawRequest: jsonPayload}
 	}
 
 	var result TransactionResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("invalid json response from Digiflazz: %s", string(body))
+		return nil, &APIError{Err: fmt.Errorf("invalid json response from Digiflazz: %s", string(body)), RawRequest: jsonPayload, RawResponse: body}
 	}
 
+	result.RawRequest = jsonPayload
+	result.RawResponse = body
 	return &result, nil
 }
 

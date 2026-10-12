@@ -88,7 +88,23 @@ type ExchangeData struct {
 }
 
 func Exchange(action string, request, response []byte) []byte {
-	value := ExchangeData{Action: action, Request: request, Response: response, RecordedAt: time.Now().UTC()}
+	var reqRaw json.RawMessage
+	if len(request) > 0 {
+		if json.Valid(request) {
+			reqRaw = request
+		} else {
+			reqRaw, _ = json.Marshal(string(request))
+		}
+	}
+	var respRaw json.RawMessage
+	if len(response) > 0 {
+		if json.Valid(response) {
+			respRaw = response
+		} else {
+			respRaw, _ = json.Marshal(string(response))
+		}
+	}
+	value := ExchangeData{Action: action, Request: reqRaw, Response: respRaw, RecordedAt: time.Now().UTC()}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return response
@@ -106,6 +122,15 @@ func RequestSnapshot(action, providerCode string, refID, productCode, customerID
 	}
 	encoded, _ := json.Marshal(value)
 	return encoded
+}
+
+// RequestFromExchange returns the stored request payload from the exchange envelope.
+func RequestFromExchange(raw string) []byte {
+	var value ExchangeData
+	if json.Unmarshal([]byte(raw), &value) == nil && len(value.Request) > 0 {
+		return value.Request
+	}
+	return nil
 }
 
 // ResponseFromExchange supports both new envelopes and historical raw data.

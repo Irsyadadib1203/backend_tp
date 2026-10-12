@@ -299,7 +299,7 @@ func (a *Adapter) Purchase(
 		"reference_id": refID,
 		"callback_url": payload.CallbackURL,
 	})
-	result.Raw = provider.Exchange("purchase", result.RequestRaw, raw)
+	result.Raw = raw
 	return result, nil
 }
 
@@ -348,7 +348,7 @@ func (a *Adapter) CheckStatus(
 		"action":            "check_status",
 		"provider_order_id": orderID,
 	})
-	result.Raw = provider.Exchange("check_status", result.RequestRaw, raw)
+	result.Raw = raw
 	return result, nil
 }
 
@@ -523,7 +523,7 @@ func (a *Adapter) ParseCallback(
 		"event":       callback.Event,
 		"delivery_id": callback.DeliveryID,
 	})
-	result.Raw = provider.Exchange("callback", result.RequestRaw, body)
+	result.Raw = body
 
 	// TransactionService mencocokkan nilai ini dengan RefID transaksi internal.
 	return result, strings.TrimSpace(callback.Data.ReferenceID), nil

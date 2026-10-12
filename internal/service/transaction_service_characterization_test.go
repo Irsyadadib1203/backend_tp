@@ -11,6 +11,7 @@ import (
 	"topup-backend/internal/domain"
 	"topup-backend/internal/provider"
 	"topup-backend/internal/provider/digiflazz"
+	"topup-backend/internal/provider/kiosgamer"
 	"topup-backend/internal/repository"
 )
 
@@ -209,42 +210,42 @@ func (d *characterizationDigiflazz) ProcessCallback([]byte, string) (*digiflazz.
 }
 
 type characterizationKiosgamer struct {
-	placeResult, pollResult, recentResult *KiosgamerOrderResult
+	placeResult, pollResult, recentResult *kiosgamer.KiosgamerOrderResult
 	placeErr, pollErr, recentErr          error
 	placeCalls, pollCalls, recentCalls    int
 	lastAppID                             int
 }
 
 func (k *characterizationKiosgamer) SaveCredentials(string, string) error { return nil }
-func (k *characterizationKiosgamer) Status(context.Context) (*KiosgamerStatus, error) {
+func (k *characterizationKiosgamer) Status(context.Context) (*kiosgamer.KiosgamerStatus, error) {
 	return nil, nil
 }
-func (k *characterizationKiosgamer) HealthCheck(context.Context) (*KiosgamerUserInfo, error) {
+func (k *characterizationKiosgamer) HealthCheck(context.Context) (*kiosgamer.KiosgamerUserInfo, error) {
 	return nil, nil
 }
-func (k *characterizationKiosgamer) EnsureSession(context.Context) (*KiosgamerUserInfo, error) {
+func (k *characterizationKiosgamer) EnsureSession(context.Context) (*kiosgamer.KiosgamerUserInfo, error) {
 	return nil, nil
 }
 func (k *characterizationKiosgamer) RecoverSession(context.Context) error   { return nil }
 func (k *characterizationKiosgamer) GenerateTOTP(time.Time) (string, error) { return "", nil }
-func (k *characterizationKiosgamer) PlaceOrder(context.Context, string, string, string, string, string) (*KiosgamerOrderResult, error) {
+func (k *characterizationKiosgamer) PlaceOrder(context.Context, string, string, string, string, string) (*kiosgamer.KiosgamerOrderResult, error) {
 	k.placeCalls++
 	return k.placeResult, k.placeErr
 }
-func (k *characterizationKiosgamer) PollOrder(context.Context, string) (*KiosgamerOrderResult, error) {
+func (k *characterizationKiosgamer) PollOrder(context.Context, string) (*kiosgamer.KiosgamerOrderResult, error) {
 	k.pollCalls++
 	return k.pollResult, k.pollErr
 }
-func (k *characterizationKiosgamer) CheckRecentOrder(_ context.Context, appID int) (*KiosgamerOrderResult, error) {
+func (k *characterizationKiosgamer) CheckRecentOrder(_ context.Context, appID int) (*kiosgamer.KiosgamerOrderResult, error) {
 	k.recentCalls++
 	k.lastAppID = appID
 	return k.recentResult, k.recentErr
 }
 func (k *characterizationKiosgamer) KeepAlive(context.Context) error { return nil }
-func (k *characterizationKiosgamer) FetchCatalog(context.Context, string) ([]KiosgamerCatalogItem, error) {
+func (k *characterizationKiosgamer) FetchCatalog(context.Context, string) ([]kiosgamer.KiosgamerCatalogItem, error) {
 	return nil, nil
 }
-func (k *characterizationKiosgamer) AutoSyncMapping(context.Context, uint, string) (*KiosgamerSyncResult, error) {
+func (k *characterizationKiosgamer) AutoSyncMapping(context.Context, uint, string) (*kiosgamer.KiosgamerSyncResult, error) {
 	return nil, nil
 }
 func (k *characterizationKiosgamer) UpdateNominalKiosgamerCode(uint, string) error { return nil }

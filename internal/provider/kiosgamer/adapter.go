@@ -27,15 +27,28 @@ func (a *Adapter) Purchase(ctx context.Context, r provider.PurchaseRequest) (*pr
 	if r.ExistingProviderOrderID != "" && r.ExistingProviderOrderID != "-" {
 		return a.checkStatus(ctx, provider.StatusRequest{RefID: r.RefID, ProductCode: r.ProductCode, CustomerID: r.CustomerID, ServerID: r.ServerID, GameSlug: r.GameSlug, ProviderOrderID: r.ExistingProviderOrderID, ProviderData: r.ProviderData}, false)
 	}
+	reqRaw, _ := json.Marshal(map[string]interface{}{
+		"provider":    "Kiosgamer",
+		"action":      "purchase",
+		"ref_id":      r.RefID,
+		"item_id":     r.ProductCode,
+		"customer_id": r.CustomerID,
+		"server_id":   r.ServerID,
+		"game_slug":   r.GameSlug,
+	})
 	// Only new orders require a configured product code.
 	if strings.TrimSpace(r.ProductCode) == "" {
-		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: provider.ErrorConfiguration, ProviderStatus: "Konfigurasi Error", Message: fmt.Sprintf("SKU Kiosgamer belum dikonfigurasi untuk '%s'. Silakan isi item_id di Nominals lalu retry.", r.ProductName)}
+		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: provider.ErrorConfiguration, ProviderStatus: "Konfigurasi Error", Message: fmt.Sprintf("SKU Kiosgamer belum dikonfigurasi untuk '%s'. Silakan isi item_id di Nominals lalu retry.", r.ProductName), RequestRaw: reqRaw}
 	}
 	result, err := a.service.PlaceOrder(ctx, r.RefID, r.ProductCode, r.CustomerID, r.ServerID, r.GameSlug)
 	if err != nil {
-		return nil, classifyError(err)
+		pErr := classifyError(err)
+		pErr.RequestRaw = reqRaw
+		return nil, pErr
 	}
-	return mapResult(result, false), nil
+	res := mapResult(result, false)
+	res.RequestRaw = reqRaw
+	return res, nil
 }
 
 func (a *Adapter) CheckStatus(ctx context.Context, r provider.StatusRequest) (*provider.Result, error) {
@@ -43,6 +56,15 @@ func (a *Adapter) CheckStatus(ctx context.Context, r provider.StatusRequest) (*p
 }
 
 func (a *Adapter) checkStatus(ctx context.Context, r provider.StatusRequest, statusCheck bool) (*provider.Result, error) {
+	reqRaw, _ := json.Marshal(map[string]interface{}{
+		"provider":          "Kiosgamer",
+		"action":            "check_status",
+		"ref_id":            r.RefID,
+		"provider_order_id": r.ProviderOrderID,
+		"customer_id":       r.CustomerID,
+		"server_id":         r.ServerID,
+		"game_slug":         r.GameSlug,
+	})
 	var (
 		result *KiosgamerOrderResult
 		err    error
@@ -53,9 +75,13 @@ func (a *Adapter) checkStatus(ctx context.Context, r provider.StatusRequest, sta
 		result, err = a.service.CheckRecentOrder(ctx, appID(r.GameSlug))
 	}
 	if err != nil {
-		return nil, classifyError(err)
+		pErr := classifyError(err)
+		pErr.RequestRaw = reqRaw
+		return nil, pErr
 	}
-	return mapResult(result, statusCheck), nil
+	res := mapResult(result, statusCheck)
+	res.RequestRaw = reqRaw
+	return res, nil
 }
 
 func (a *Adapter) Balance(ctx context.Context) (float64, error) {

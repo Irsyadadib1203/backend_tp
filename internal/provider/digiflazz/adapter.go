@@ -3,6 +3,7 @@ package digiflazz
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -78,27 +79,30 @@ func New(client Client) *Adapter { return &Adapter{client: client} }
 func (a *Adapter) Code() string { return provider.DigiflazzCode }
 
 func (a *Adapter) Purchase(_ context.Context, r provider.PurchaseRequest) (*provider.Result, error) {
-	requestRaw, _ := json.Marshal(map[string]interface{}{"action": "purchase", "ref_id": r.RefID, "buyer_sku_code": r.ProductCode, "customer_no": provider.CustomerNumber(r.CustomerID, r.ServerID), "testing": false})
 	if r.ExistingProviderOrderID != "" {
 		// ServerID WAJIB ikut: Digiflazz mengecek status dengan POST /transaction
 		// (customer_no ikut dikirim), jadi tanpa ServerID customer_no hanya berisi
 		// customer_id.
-		result, err := a.CheckStatus(context.Background(), provider.StatusRequest{
+		return a.CheckStatus(context.Background(), provider.StatusRequest{
 			RefID: r.RefID, ProductCode: r.ProductCode, CustomerID: r.CustomerID, ServerID: r.ServerID,
 			GameSlug: r.GameSlug, ProviderOrderID: r.ExistingProviderOrderID, ProviderData: r.ProviderData,
 		})
-		if result != nil {
-			result.RequestRaw = requestRaw
-		}
-		return result, err
 	}
 	resp, err := a.client.CreateTransaction(r.RefID, r.ProductCode, provider.CustomerNumber(r.CustomerID, r.ServerID), false)
 	if err != nil {
-		raw, _ := json.Marshal(map[string]interface{}{"error": err.Error(), "ref_id": r.RefID, "timestamp": time.Now().Format(time.RFC3339)})
-		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: errorKind(err.Error()), ProviderStatus: "Pending", Message: err.Error(), Cause: err, Raw: raw, RequestRaw: requestRaw}
+		var rawReq []byte
+		var rawResp []byte
+		var apiErr *APIError
+		if errors.As(err, &apiErr) {
+			rawReq = apiErr.RawRequest
+			rawResp = apiErr.RawResponse
+		}
+		if len(rawResp) == 0 {
+			rawResp, _ = json.Marshal(map[string]interface{}{"error": err.Error(), "ref_id": r.RefID, "timestamp": time.Now().Format(time.RFC3339)})
+		}
+		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: errorKind(err.Error()), ProviderStatus: "Pending", Message: err.Error(), Cause: err, Raw: rawResp, RequestRaw: rawReq}
 	}
 	result := resultFromResponse(resp, false)
-	result.RequestRaw = requestRaw
 	return result, nil
 }
 
@@ -110,19 +114,18 @@ func (a *Adapter) CheckStatus(_ context.Context, r provider.StatusRequest) (*pro
 		// Tanpa ProviderOrderID, pakai ref_id transaksi (jangan kirim ref_id kosong).
 		providerOrderID = strings.TrimSpace(r.RefID)
 	}
-	requestRaw, _ := json.Marshal(map[string]interface{}{
-		"action":            "check_status",
-		"ref_id":            r.RefID,
-		"provider_order_id": providerOrderID,
-		"buyer_sku_code":    r.ProductCode,
-		"customer_no":       customerNo,
-	})
 	resp, err := a.client.CheckTransactionStatus(providerOrderID, r.ProductCode, customerNo)
 	if err != nil {
-		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: errorKind(err.Error()), ProviderStatus: "Pending", Message: err.Error(), Cause: err, RequestRaw: requestRaw}
+		var rawReq []byte
+		var rawResp []byte
+		var apiErr *APIError
+		if errors.As(err, &apiErr) {
+			rawReq = apiErr.RawRequest
+			rawResp = apiErr.RawResponse
+		}
+		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: errorKind(err.Error()), ProviderStatus: "Pending", Message: err.Error(), Cause: err, Raw: rawResp, RequestRaw: rawReq}
 	}
 	result := resultFromResponse(resp, true)
-	result.RequestRaw = requestRaw
 	return result, nil
 }
 
@@ -151,9 +154,9 @@ func (a *Adapter) ParseCallback(r *http.Request) (*provider.Result, string, erro
 	}
 	payload, err := a.client.ProcessCallback(body, signature)
 	if err != nil {
-		return nil, "", &provider.ProviderError{Status: provider.StatusFailedHold, Kind: provider.ErrorAuthentication, ProviderStatus: "Callback Error", Message: err.Error(), Cause: err}
+		return nil, "", &provider.ProviderError{Status: provider.StatusFailedHold, Kind: provider.ErrorAuthentication, ProviderStatus: "Callback Error", Message: err.Error(), Cause: err, Raw: body}
 	}
-	result, mapErr := resultFromCallback(payload)
+	result, mapErr := resultFromCallback(payload, body)
 	if mapErr != nil {
 		return nil, "", mapErr
 	}
@@ -164,15 +167,24 @@ func resultFromResponse(resp *TransactionResponse, statusCheck bool) *provider.R
 	if resp == nil {
 		return &provider.Result{Status: provider.StatusPending, ProviderStatus: "Pending (RC -)", Message: "empty Digiflazz response"}
 	}
-	raw, _ := json.Marshal(resp.Data)
-	return mapResult(resp.Data.RefID, resp.Data.RC, resp.Data.Status, resp.Data.Message, resp.Data.SN, raw, statusCheck)
+	raw := resp.RawResponse
+	if len(raw) == 0 {
+		raw, _ = json.Marshal(resp.Data)
+	}
+	res := mapResult(resp.Data.RefID, resp.Data.RC, resp.Data.Status, resp.Data.Message, resp.Data.SN, raw, statusCheck)
+	if len(resp.RawRequest) > 0 {
+		res.RequestRaw = resp.RawRequest
+	}
+	return res
 }
 
-func resultFromCallback(payload *CallbackPayload) (*provider.Result, error) {
+func resultFromCallback(payload *CallbackPayload, raw []byte) (*provider.Result, error) {
 	if payload == nil || payload.Data.RefID == "" {
-		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: provider.ErrorTemporary, ProviderStatus: "Callback Error", Message: "empty callback data"}
+		return nil, &provider.ProviderError{Status: provider.StatusFailedHold, Kind: provider.ErrorTemporary, ProviderStatus: "Callback Error", Message: "empty callback data", Raw: raw}
 	}
-	raw, _ := json.Marshal(payload.Data)
+	if len(raw) == 0 {
+		raw, _ = json.Marshal(payload.Data)
+	}
 	return mapResult(payload.Data.RefID, payload.Data.RC, payload.Data.Status, payload.Data.Message, payload.Data.SN, raw, false), nil
 }
 
