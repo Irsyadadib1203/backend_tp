@@ -124,6 +124,54 @@ func RequestSnapshot(action, providerCode string, refID, productCode, customerID
 	return encoded
 }
 
+// sensitiveRequestKeys holds field names whose values must be redacted before
+// a provider request snapshot is persisted.  Keys are compared
+// case-insensitively after removing underscores and hyphens.
+var sensitiveRequestKeys = []string{
+	"sign", "signature", "secret", "token", "apikey", "api_key",
+	"password", "passwd", "credential", "cookie", "session",
+	"username", "user_name", "accesskey", "access_key",
+	"privatekey", "private_key", "appkey", "app_key",
+}
+
+func isSensitiveRequestKey(key string) bool {
+	norm := strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(key))
+	for _, s := range sensitiveRequestKeys {
+		if norm == strings.NewReplacer("_", "", "-", "").Replace(strings.ToLower(s)) {
+			return true
+		}
+	}
+	return false
+}
+
+// MaskRequestRaw returns a copy of a JSON object with sensitive field values
+// replaced by "***MASKED***".  Non-JSON or non-object input is returned unchanged.
+// Only top-level keys are inspected; nested objects are left as-is.
+func MaskRequestRaw(raw []byte) []byte {
+	if len(raw) == 0 || !json.Valid(raw) {
+		return raw
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw // not an object, leave intact
+	}
+	changed := false
+	for k := range m {
+		if isSensitiveRequestKey(k) {
+			m[k] = json.RawMessage(`"***MASKED***"`)
+			changed = true
+		}
+	}
+	if !changed {
+		return raw
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
 // RequestFromExchange returns the stored request payload from the exchange envelope.
 func RequestFromExchange(raw string) []byte {
 	var value ExchangeData

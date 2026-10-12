@@ -576,7 +576,7 @@ func (s *transactionService) applyResult(tx *domain.Transaction, result *provide
 				"error":   providerErr.Message,
 			})
 		}
-		tx.ProviderCallbackData = string(provider.Exchange(source, reqRaw, rawResp))
+		tx.ProviderCallbackData = string(provider.Exchange(source, provider.MaskRequestRaw(reqRaw), rawResp))
 		if providerErr.Status == provider.StatusFailedFinal {
 			tx.Status = domain.StatusFailed
 			now := time.Now()
@@ -622,7 +622,7 @@ func (s *transactionService) applyResult(tx *domain.Transaction, result *provide
 		if len(respRaw) == 0 && tx.ProviderCallbackData != "" {
 			respRaw = provider.ResponseFromExchange(tx.ProviderCallbackData)
 		}
-		tx.ProviderCallbackData = string(provider.Exchange(source, reqRaw, respRaw))
+		tx.ProviderCallbackData = string(provider.Exchange(source, provider.MaskRequestRaw(reqRaw), respRaw))
 	}
 
 	switch result.Status {
