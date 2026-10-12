@@ -58,6 +58,9 @@ func (r *fakeReconcilerTxRepo) Update(tx *domain.Transaction) error {
 func (r *fakeReconcilerTxRepo) UpdateStatus(uint, domain.TransactionStatus, string) error {
 	return nil
 }
+func (r *fakeReconcilerTxRepo) FindByProviderOrderID(string) (*domain.Transaction, error) {
+	return nil, nil
+}
 func (r *fakeReconcilerTxRepo) MarkAsProcessingIfPending(uint, string, time.Time) (bool, error) {
 	return false, nil
 }
@@ -93,6 +96,15 @@ func (r *fakeReconcilerTxRepo) ListAdmin(int, int, string, string, string, strin
 	return nil, 0, nil
 }
 func (r *fakeReconcilerTxRepo) GetDashboardStats() (map[string]interface{}, error) { return nil, nil }
+func (r *fakeReconcilerTxRepo) GetDailyProviderStats(string, string) ([]repository.ProviderStatRow, error) {
+	return nil, nil
+}
+func (r *fakeReconcilerTxRepo) GetDailyTotals(string, string) (float64, float64, float64, int64, int64, int64, int64, error) {
+	return 0, 0, 0, 0, 0, 0, 0, nil
+}
+func (r *fakeReconcilerTxRepo) ListTransactionsByDate(string, string, int) ([]domain.Transaction, error) {
+	return nil, nil
+}
 
 // reconcilerTestSvc is a minimal TransactionService fake for reconciler tests.
 // Only CheckProviderStatus tracking is meaningful; all other methods are stubs.
@@ -134,6 +146,12 @@ func (s *reconcilerTestSvc) ReconcileProcessingTransaction(id uint) (*domain.Tra
 }
 func (s *reconcilerTestSvc) ManualSetSuccess(uint, string, string) error { return nil }
 func (s *reconcilerTestSvc) ManualRefund(uint, string) error             { return nil }
+func (s *reconcilerTestSvc) GetFinanceSummary(string, bool) (*domain.DailyFinanceSummary, error) {
+	return nil, nil
+}
+func (s *reconcilerTestSvc) RefreshAllProviderBalances(context.Context) ([]domain.Provider, error) {
+	return nil, nil
+}
 func (s *reconcilerTestSvc) SetTripayService(TripayChannelService)       {}
 
 // Verify that reconcilerTestSvc satisfies the service interface at compile time.

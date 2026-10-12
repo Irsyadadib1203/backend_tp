@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"topup-backend/internal/domain"
@@ -52,6 +53,10 @@ type TransactionService interface {
 	ReconcileProcessingTransaction(transactionID uint) (*domain.Transaction, error)
 	ManualSetSuccess(transactionID uint, notes string, sn string) error
 	ManualRefund(transactionID uint, notes string) error
+
+	// Finance & Provider Balances
+	GetFinanceSummary(date string, refreshRealtime bool) (*domain.DailyFinanceSummary, error)
+	RefreshAllProviderBalances(ctx context.Context) ([]domain.Provider, error)
 
 	// Tripay Integration
 	SetTripayService(tripayService TripayChannelService)
@@ -1048,4 +1053,137 @@ func (s *transactionService) ManualRefund(transactionID uint, notes string) erro
 		"status": "refunded", "invoice": tx.InvoiceNumber, "completed_at": now,
 	})
 	return err
+}
+
+func (s *transactionService) RefreshAllProviderBalances(ctx context.Context) ([]domain.Provider, error) {
+	providers, err := s.providerRepo.List()
+	if err != nil {
+		return nil, err
+	}
+
+	if s.providerRegistry == nil {
+		return providers, nil
+	}
+
+	var wg sync.WaitGroup
+	for _, p := range providers {
+		if !p.IsActive {
+			continue
+		}
+		adapter, ok := s.providerRegistry.Get(p.Code)
+		if !ok {
+			continue
+		}
+
+		wg.Add(1)
+		go func(prov domain.Provider, ad provider.Provider) {
+			defer wg.Done()
+			reqCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+			defer cancel()
+
+			bal, err := ad.Balance(reqCtx)
+			if err == nil {
+				_ = s.providerRepo.UpdateBalance(prov.ID, bal)
+			} else {
+				log.Printf("[Finance/Balance] Failed to refresh live balance for provider %s: %v", prov.Code, err)
+			}
+		}(p, adapter)
+	}
+	wg.Wait()
+
+	return s.providerRepo.List()
+}
+
+func (s *transactionService) GetFinanceSummary(date string, refreshRealtime bool) (*domain.DailyFinanceSummary, error) {
+	date = strings.TrimSpace(date)
+	if date == "" {
+		date = time.Now().Format("2006-01-02")
+	}
+
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		return nil, errors.New("format tanggal tidak valid (gunakan YYYY-MM-DD)")
+	}
+
+	if refreshRealtime {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = s.RefreshAllProviderBalances(ctx)
+	}
+
+	startDate := date + " 00:00:00"
+	endDate := date + " 23:59:59"
+
+	totalSpent, totalRevenue, totalProfit, totalOrders, successOrders, pendingOrders, failedOrders, err := s.txRepo.GetDailyTotals(startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("gagal menghitung total transaksi: %w", err)
+	}
+
+	providerRows, err := s.txRepo.GetDailyProviderStats(startDate, endDate)
+	if err != nil {
+		return nil, fmt.Errorf("gagal menghitung statistik provider: %w", err)
+	}
+
+	rowMap := make(map[uint]repository.ProviderStatRow)
+	for _, row := range providerRows {
+		rowMap[row.ProviderID] = row
+	}
+
+	providers, err := s.providerRepo.List()
+	if err != nil {
+		return nil, fmt.Errorf("gagal memuat daftar provider: %w", err)
+	}
+
+	breakdowns := make([]domain.ProviderFinanceBreakdown, 0, len(providers))
+	for _, p := range providers {
+		row := rowMap[p.ID]
+		pct := 0.0
+		if totalSpent > 0 {
+			pct = (row.TotalSpent / totalSpent) * 100.0
+		}
+		breakdowns = append(breakdowns, domain.ProviderFinanceBreakdown{
+			ProviderID:          p.ID,
+			ProviderName:        p.Name,
+			ProviderCode:        p.Code,
+			IsActive:            p.IsActive,
+			Balance:             p.Balance,
+			BalanceUnit:         providerBalanceUnit(p.Code),
+			BalanceCheckedAt:    p.BalanceCheckedAt,
+			TotalSpent:          row.TotalSpent,
+			TotalTransactions:   row.TotalOrders,
+			SuccessTransactions: row.SuccessOrders,
+			FailedTransactions:  row.FailedOrders,
+			TotalRevenue:        row.TotalRevenue,
+			TotalProfit:         row.TotalProfit,
+			Percentage:          math.Round(pct*100) / 100,
+		})
+	}
+
+	txs, err := s.txRepo.ListTransactionsByDate(startDate, endDate, 100)
+	if err != nil {
+		txs = []domain.Transaction{}
+	}
+
+	summary := &domain.DailyFinanceSummary{
+		Date:                date,
+		TotalSpent:          totalSpent,
+		TotalTransactions:   totalOrders,
+		SuccessTransactions: successOrders,
+		PendingTransactions: pendingOrders,
+		FailedTransactions:  failedOrders,
+		TotalRevenue:        totalRevenue,
+		TotalProfit:         totalProfit,
+		Providers:           breakdowns,
+		Transactions:        txs,
+	}
+
+	return summary, nil
+}
+
+func providerBalanceUnit(code string) string {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case provider.KiosgamerCode:
+		return "SHELL"
+	default:
+		return "IDR"
+	}
 }

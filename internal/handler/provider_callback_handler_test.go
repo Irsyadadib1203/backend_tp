@@ -60,6 +60,12 @@ func (s *mockCallbackTransactionService) ManualSetSuccess(uint, string, string) 
 	return nil
 }
 func (s *mockCallbackTransactionService) ManualRefund(uint, string) error               { return nil }
+func (s *mockCallbackTransactionService) GetFinanceSummary(string, bool) (*domain.DailyFinanceSummary, error) {
+	return nil, nil
+}
+func (s *mockCallbackTransactionService) RefreshAllProviderBalances(context.Context) ([]domain.Provider, error) {
+	return nil, nil
+}
 func (s *mockCallbackTransactionService) SetTripayService(service.TripayChannelService) {}
 
 func (s *mockCallbackTransactionService) HandleProviderCallback(code string, req *http.Request) (*domain.Transaction, *provider.Result, error) {

@@ -1236,3 +1236,45 @@ func (h *AdminHandler) ChangeMyPassword(c *gin.Context) {
 
 	response.Success(c, "Password berhasil diubah", nil)
 }
+
+// ====================== KEUANGAN & REALTIME SALDO PROVIDER ======================
+
+// GetFinanceSummary: GET /admin/finance/summary?date=YYYY-MM-DD&realtime=true
+func (h *AdminHandler) GetFinanceSummary(c *gin.Context) {
+	dateStr := c.Query("date")
+	realtime := c.Query("realtime") == "true" || c.Query("realtime") == "1"
+
+	summary, err := h.txService.GetFinanceSummary(dateStr, realtime)
+	if err != nil {
+		response.BadRequest(c, err.Error(), nil)
+		return
+	}
+
+	response.Success(c, "Ringkasan keuangan berhasil dimuat", summary)
+}
+
+// RefreshAllProviderBalances: POST /admin/providers/refresh-balances & GET /admin/providers/realtime-balances
+func (h *AdminHandler) RefreshAllProviderBalances(c *gin.Context) {
+	providers, err := h.txService.RefreshAllProviderBalances(c.Request.Context())
+	if err != nil {
+		response.InternalServerError(c, "Gagal memperbarui saldo provider", err)
+		return
+	}
+
+	safe := make([]gin.H, 0, len(providers))
+	for _, item := range providers {
+		safe = append(safe, gin.H{
+			"id":                 item.ID,
+			"name":               item.Name,
+			"code":               item.Code,
+			"base_url":           item.BaseURL,
+			"is_active":          item.IsActive,
+			"balance":            item.Balance,
+			"balance_unit":       providerBalanceUnit(item.Code),
+			"balance_checked_at": item.BalanceCheckedAt,
+			"api_key_configured": item.APIKey != "" || strings.Contains(item.Config, "encrypted_secret"),
+		})
+	}
+
+	response.Success(c, "Saldo semua provider berhasil diperbarui secara realtime", safe)
+}

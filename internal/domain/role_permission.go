@@ -20,12 +20,14 @@ const (
 	ResourcePaymentMethods PermissionResource = "payment_methods"
 	ResourceDocs           PermissionResource = "docs"
 	ResourceSettings       PermissionResource = "settings"
+	ResourceFinance        PermissionResource = "finance"
 	ResourceRoles          PermissionResource = "roles" // Superadmin only
 )
 
 // AllResources list of all standard module resources
 var AllResources = []PermissionResource{
 	ResourceDashboard,
+	ResourceFinance,
 	ResourceTransactions,
 	ResourceGames,
 	ResourceNominals,

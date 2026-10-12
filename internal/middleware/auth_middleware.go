@@ -116,3 +116,38 @@ func RequirePermission(rbacService service.RBACService, resource domain.Permissi
 		c.Next()
 	}
 }
+
+// RequireAnyPermission checks whether the authenticated user's role has permission to access at least one of the specified resources
+func RequireAnyPermission(rbacService service.RBACService, resources ...domain.PermissionResource) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		roleVal, exists := c.Get("user_role")
+		if !exists {
+			response.Forbidden(c, "User role not identified")
+			c.Abort()
+			return
+		}
+
+		userRole, ok := roleVal.(domain.Role)
+		if !ok {
+			response.Forbidden(c, "Invalid user role type")
+			c.Abort()
+			return
+		}
+
+		// Superadmin always has access to all resources
+		if userRole == domain.RoleSuperAdmin {
+			c.Next()
+			return
+		}
+
+		for _, res := range resources {
+			if rbacService.CanAccess(userRole, res) {
+				c.Next()
+				return
+			}
+		}
+
+		response.Forbidden(c, "Akses ditolak: Anda tidak memiliki izin untuk fitur ini")
+		c.Abort()
+	}
+}

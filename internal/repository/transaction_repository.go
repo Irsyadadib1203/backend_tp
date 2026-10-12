@@ -43,6 +43,19 @@ type TransactionRepository interface {
 	ListByUser(userID uint, offset, limit int) ([]domain.Transaction, int64, error)
 	ListAdmin(offset, limit int, status, search, startDate, endDate string) ([]domain.Transaction, int64, error)
 	GetDashboardStats() (map[string]interface{}, error)
+	GetDailyProviderStats(startDate, endDate string) ([]ProviderStatRow, error)
+	GetDailyTotals(startDate, endDate string) (totalSpent, totalRevenue, totalProfit float64, totalOrders, successOrders, pendingOrders, failedOrders int64, err error)
+	ListTransactionsByDate(startDate, endDate string, limit int) ([]domain.Transaction, error)
+}
+
+type ProviderStatRow struct {
+	ProviderID    uint    `gorm:"column:provider_id"`
+	TotalOrders   int64   `gorm:"column:total_orders"`
+	SuccessOrders int64   `gorm:"column:success_orders"`
+	FailedOrders  int64   `gorm:"column:failed_orders"`
+	TotalSpent    float64 `gorm:"column:total_spent"`
+	TotalRevenue  float64 `gorm:"column:total_revenue"`
+	TotalProfit   float64 `gorm:"column:total_profit"`
 }
 
 type transactionRepository struct {
@@ -319,4 +332,49 @@ func (r *transactionRepository) GetDashboardStats() (map[string]interface{}, err
 		"today_revenue":  todayRevenue,
 		"today_profit":   todayProfit,
 	}, nil
+}
+
+func (r *transactionRepository) GetDailyProviderStats(startDate, endDate string) ([]ProviderStatRow, error) {
+	var rows []ProviderStatRow
+	err := r.db.Model(&domain.Transaction{}).
+		Select(`provider_id,
+			COUNT(*) as total_orders,
+			SUM(CASE WHEN status = '` + string(domain.StatusSuccess) + `' THEN 1 ELSE 0 END) as success_orders,
+			SUM(CASE WHEN status IN ('` + string(domain.StatusFailed) + `', '` + string(domain.StatusRefunded) + `') THEN 1 ELSE 0 END) as failed_orders,
+			COALESCE(SUM(CASE WHEN status = '` + string(domain.StatusSuccess) + `' THEN base_price ELSE 0 END), 0) as total_spent,
+			COALESCE(SUM(CASE WHEN status = '` + string(domain.StatusSuccess) + `' THEN total_amount ELSE 0 END), 0) as total_revenue,
+			COALESCE(SUM(CASE WHEN status = '` + string(domain.StatusSuccess) + `' THEN profit ELSE 0 END), 0) as total_profit`).
+		Where("created_at >= ? AND created_at <= ?", startDate, endDate).
+		Group("provider_id").
+		Scan(&rows).Error
+	return rows, err
+}
+
+func (r *transactionRepository) GetDailyTotals(startDate, endDate string) (totalSpent, totalRevenue, totalProfit float64, totalOrders, successOrders, pendingOrders, failedOrders int64, err error) {
+	if countErr := r.db.Model(&domain.Transaction{}).Where("created_at >= ? AND created_at <= ?", startDate, endDate).Count(&totalOrders).Error; countErr != nil {
+		err = countErr
+		return
+	}
+	r.db.Model(&domain.Transaction{}).Where("status = ? AND created_at >= ? AND created_at <= ?", domain.StatusSuccess, startDate, endDate).Count(&successOrders)
+	r.db.Model(&domain.Transaction{}).Where("status IN (?, ?) AND created_at >= ? AND created_at <= ?", domain.StatusPending, domain.StatusProcessing, startDate, endDate).Count(&pendingOrders)
+	r.db.Model(&domain.Transaction{}).Where("status IN (?, ?) AND created_at >= ? AND created_at <= ?", domain.StatusFailed, domain.StatusRefunded, startDate, endDate).Count(&failedOrders)
+
+	r.db.Model(&domain.Transaction{}).Where("status = ? AND created_at >= ? AND created_at <= ?", domain.StatusSuccess, startDate, endDate).Select("COALESCE(SUM(base_price), 0)").Scan(&totalSpent)
+	r.db.Model(&domain.Transaction{}).Where("status = ? AND created_at >= ? AND created_at <= ?", domain.StatusSuccess, startDate, endDate).Select("COALESCE(SUM(total_amount), 0)").Scan(&totalRevenue)
+	r.db.Model(&domain.Transaction{}).Where("status = ? AND created_at >= ? AND created_at <= ?", domain.StatusSuccess, startDate, endDate).Select("COALESCE(SUM(profit), 0)").Scan(&totalProfit)
+
+	return
+}
+
+func (r *transactionRepository) ListTransactionsByDate(startDate, endDate string, limit int) ([]domain.Transaction, error) {
+	var txs []domain.Transaction
+	query := r.db.Model(&domain.Transaction{}).
+		Preload("Game").Preload("Nominal").Preload("Provider").Preload("User").
+		Where("created_at >= ? AND created_at <= ?", startDate, endDate).
+		Order("id DESC")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	err := query.Find(&txs).Error
+	return txs, err
 }

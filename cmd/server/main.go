@@ -300,6 +300,8 @@ func main() {
 
 			// Providers (Accessible if nominals or settings are allowed)
 			admin.GET("/providers", adminHandler.GetProviders)
+			admin.GET("/providers/realtime-balances", adminHandler.RefreshAllProviderBalances)
+			admin.POST("/providers/refresh-balances", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.RefreshAllProviderBalances)
 			admin.PUT("/providers/:id", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.UpdateProvider)
 			admin.GET("/providers/:id/balance", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetProviderBalance)
 			admin.GET("/providers/digiflazz", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetDigiflazzSettings)
@@ -308,6 +310,14 @@ func main() {
 			admin.PUT("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveFFZStoreSettings)
 			admin.GET("/settings/transaction-reference", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetTransactionReferenceSettings)
 			admin.PUT("/settings/transaction-reference", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveTransactionReferenceSettings)
+
+			// Keuangan / Financial Reports
+			finance := admin.Group("/finance", middleware.RequireAnyPermission(rbacService, domain.ResourceFinance, domain.ResourceDashboard, domain.ResourceTransactions))
+			{
+				finance.GET("/summary", adminHandler.GetFinanceSummary)
+				finance.POST("/refresh-balances", adminHandler.RefreshAllProviderBalances)
+				finance.GET("/realtime-balances", adminHandler.RefreshAllProviderBalances)
+			}
 
 			// Digiflazz Sync & Balances
 			digi := admin.Group("/digiflazz", middleware.RequirePermission(rbacService, domain.ResourceDigiflazz))

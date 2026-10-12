@@ -11,6 +11,7 @@ import (
 	"topup-backend/internal/domain"
 	"topup-backend/internal/provider"
 	"topup-backend/internal/provider/digiflazz"
+	"topup-backend/internal/repository"
 )
 
 // These fakes deliberately model only observability required by the legacy
@@ -54,6 +55,9 @@ func (r *characterizationTxRepo) FindByRefID(refID string) (*domain.Transaction,
 func (r *characterizationTxRepo) FindByIdempotencyKey(string) (*domain.Transaction, error) {
 	return nil, errors.New("not found")
 }
+func (r *characterizationTxRepo) FindByProviderOrderID(string) (*domain.Transaction, error) {
+	return nil, errors.New("not found")
+}
 func (r *characterizationTxRepo) Update(*domain.Transaction) error { r.updates++; return nil }
 func (r *characterizationTxRepo) UpdateStatus(id uint, status domain.TransactionStatus, reason string) error {
 	r.statusUpdates = append(r.statusUpdates, characterizationStatusUpdate{id, status, reason})
@@ -79,6 +83,15 @@ func (r *characterizationTxRepo) ListAdmin(int, int, string, string, string, str
 	return nil, 0, nil
 }
 func (r *characterizationTxRepo) GetDashboardStats() (map[string]interface{}, error) { return nil, nil }
+func (r *characterizationTxRepo) GetDailyProviderStats(string, string) ([]repository.ProviderStatRow, error) {
+	return nil, nil
+}
+func (r *characterizationTxRepo) GetDailyTotals(string, string) (float64, float64, float64, int64, int64, int64, int64, error) {
+	return 0, 0, 0, 0, 0, 0, 0, nil
+}
+func (r *characterizationTxRepo) ListTransactionsByDate(string, string, int) ([]domain.Transaction, error) {
+	return nil, nil
+}
 
 type characterizationNominalRepo struct{ nominals map[uint]*domain.Nominal }
 
