@@ -7,50 +7,49 @@ import (
 	"time"
 
 	"topup-backend/internal/provider"
-	"topup-backend/internal/service"
 )
 
 type fakeKiosgamer struct {
-	place, poll, recent                *service.KiosgamerOrderResult
+	place, poll, recent                *KiosgamerOrderResult
 	placeErr, pollErr, recentErr       error
 	placeCalls, pollCalls, recentCalls int
 	appID                              int
 }
 
-func (*fakeKiosgamer) SaveCredentials(string, string) error                     { return nil }
-func (*fakeKiosgamer) Status(context.Context) (*service.KiosgamerStatus, error) { return nil, nil }
-func (*fakeKiosgamer) HealthCheck(context.Context) (*service.KiosgamerUserInfo, error) {
+func (*fakeKiosgamer) SaveCredentials(string, string) error             { return nil }
+func (*fakeKiosgamer) Status(context.Context) (*KiosgamerStatus, error) { return nil, nil }
+func (*fakeKiosgamer) HealthCheck(context.Context) (*KiosgamerUserInfo, error) {
 	return nil, nil
 }
-func (*fakeKiosgamer) EnsureSession(context.Context) (*service.KiosgamerUserInfo, error) {
+func (*fakeKiosgamer) EnsureSession(context.Context) (*KiosgamerUserInfo, error) {
 	return nil, nil
 }
 func (*fakeKiosgamer) RecoverSession(context.Context) error   { return nil }
 func (*fakeKiosgamer) GenerateTOTP(time.Time) (string, error) { return "", nil }
-func (f *fakeKiosgamer) PlaceOrder(context.Context, string, string, string, string, string) (*service.KiosgamerOrderResult, error) {
+func (f *fakeKiosgamer) PlaceOrder(context.Context, string, string, string, string, string) (*KiosgamerOrderResult, error) {
 	f.placeCalls++
 	return f.place, f.placeErr
 }
-func (f *fakeKiosgamer) PollOrder(context.Context, string) (*service.KiosgamerOrderResult, error) {
+func (f *fakeKiosgamer) PollOrder(context.Context, string) (*KiosgamerOrderResult, error) {
 	f.pollCalls++
 	return f.poll, f.pollErr
 }
-func (f *fakeKiosgamer) CheckRecentOrder(_ context.Context, appID int) (*service.KiosgamerOrderResult, error) {
+func (f *fakeKiosgamer) CheckRecentOrder(_ context.Context, appID int) (*KiosgamerOrderResult, error) {
 	f.recentCalls++
 	f.appID = appID
 	return f.recent, f.recentErr
 }
 func (*fakeKiosgamer) KeepAlive(context.Context) error { return nil }
-func (*fakeKiosgamer) FetchCatalog(context.Context, string) ([]service.KiosgamerCatalogItem, error) {
+func (*fakeKiosgamer) FetchCatalog(context.Context, string) ([]KiosgamerCatalogItem, error) {
 	return nil, nil
 }
-func (*fakeKiosgamer) AutoSyncMapping(context.Context, uint, string) (*service.KiosgamerSyncResult, error) {
+func (*fakeKiosgamer) AutoSyncMapping(context.Context, uint, string) (*KiosgamerSyncResult, error) {
 	return nil, nil
 }
 func (*fakeKiosgamer) UpdateNominalKiosgamerCode(uint, string) error { return nil }
 
 func TestPurchasePreservesSafeRetry(t *testing.T) {
-	fake := &fakeKiosgamer{poll: &service.KiosgamerOrderResult{OrderID: "ORDER-1", Status: "pending"}}
+	fake := &fakeKiosgamer{poll: &KiosgamerOrderResult{OrderID: "ORDER-1", Status: "pending"}}
 	result, err := New(fake).Purchase(context.Background(), provider.PurchaseRequest{ExistingProviderOrderID: "ORDER-1"})
 	if err != nil || result.Status != provider.StatusPending || fake.pollCalls != 1 || fake.placeCalls != 0 {
 		t.Fatalf("result=%+v err=%v poll=%d place=%d", result, err, fake.pollCalls, fake.placeCalls)
@@ -71,7 +70,7 @@ func TestPurchaseEmptySKUReturnsConfigError(t *testing.T) {
 	})
 
 	t.Run("existing order ID bypasses SKU guard (safe-retry)", func(t *testing.T) {
-		fake := &fakeKiosgamer{poll: &service.KiosgamerOrderResult{OrderID: "ORDER-EXISTING", Status: "pending"}}
+		fake := &fakeKiosgamer{poll: &KiosgamerOrderResult{OrderID: "ORDER-EXISTING", Status: "pending"}}
 		// ExistingProviderOrderID present but ProductCode empty — must still poll without error.
 		result, err := New(fake).Purchase(context.Background(), provider.PurchaseRequest{ExistingProviderOrderID: "ORDER-EXISTING"})
 		if err != nil || result == nil || result.Status != provider.StatusPending || fake.pollCalls != 1 || fake.placeCalls != 0 {
@@ -87,8 +86,8 @@ func TestKiosgamerErrorClassificationOrder(t *testing.T) {
 		want   provider.Status
 		status string
 	}{
-		{"challenge precedes generic error", service.ErrKiosgamerChallengeRequired, provider.StatusFailedHold, "Challenge Required"},
-		{"session", service.ErrKiosgamerSessionExpired, provider.StatusFailedHold, "Session Error"},
+		{"challenge precedes generic error", ErrKiosgamerChallengeRequired, provider.StatusFailedHold, "Challenge Required"},
+		{"session", ErrKiosgamerSessionExpired, provider.StatusFailedHold, "Session Error"},
 		{"balance", errors.New("shell balance unavailable"), provider.StatusFailedHold, "Provider Pending"},
 		{"fatal customer", errors.New("player id tidak ditemukan"), provider.StatusFailedFinal, "Gagal"},
 		{"unknown holds", errors.New("unexpected upstream error"), provider.StatusFailedHold, "Provider Pending"},
@@ -121,7 +120,7 @@ func TestKiosgamerResultAndStatusCheckMapping(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			fake := &fakeKiosgamer{place: &service.KiosgamerOrderResult{OrderID: "ORDER-1", Status: tc.status, Message: tc.message, SerialNumber: "SN-1"}}
+			fake := &fakeKiosgamer{place: &KiosgamerOrderResult{OrderID: "ORDER-1", Status: tc.status, Message: tc.message, SerialNumber: "SN-1"}}
 			result, err := New(fake).Purchase(context.Background(), provider.PurchaseRequest{ProductCode: "KG-SKU"})
 			if err != nil || result.Status != tc.want || result.ProviderStatus != tc.ps || result.ProviderOrderID != "ORDER-1" || len(result.Raw) == 0 {
 				t.Fatalf("result=%+v err=%v", result, err)
@@ -130,7 +129,7 @@ func TestKiosgamerResultAndStatusCheckMapping(t *testing.T) {
 	}
 
 	t.Run("CODM check uses legacy app id", func(t *testing.T) {
-		fake := &fakeKiosgamer{recent: &service.KiosgamerOrderResult{Status: "pending"}}
+		fake := &fakeKiosgamer{recent: &KiosgamerOrderResult{Status: "pending"}}
 		result, err := New(fake).CheckStatus(context.Background(), provider.StatusRequest{GameSlug: "call-of-duty-mobile"})
 		if err != nil || result.Status != provider.StatusPending || fake.recentCalls != 1 || fake.appID != codmAppID || fake.placeCalls != 0 {
 			t.Fatalf("result=%+v err=%v app=%d", result, err, fake.appID)

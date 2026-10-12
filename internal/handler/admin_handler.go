@@ -2,13 +2,12 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
-	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
-
 
 	"github.com/gin-gonic/gin"
 
@@ -40,7 +39,7 @@ type AdminHandler struct {
 	tripayChannelService service.TripayChannelService
 	settingRepo          repository.SystemSettingRepository
 	providerRegistry     *provider.Registry
-	bulkTxService service.BulkTransactionService
+	bulkTxService        service.BulkTransactionService
 }
 
 func NewAdminHandler(
@@ -758,10 +757,11 @@ func (h *AdminHandler) GetProviders(c *gin.Context) {
 	// Nominal dropdowns and the browser.
 	safe := make([]gin.H, 0, len(providers))
 	for _, item := range providers {
-		safe = append(safe, gin.H{"id": item.ID, "name": item.Name, "code": item.Code, "base_url": item.BaseURL, "is_active": item.IsActive,"balance": item.Balance, "balance_unit": providerBalanceUnit(item.Code), "balance_checked_at": item.BalanceCheckedAt, "api_key_configured": item.APIKey != "" || strings.Contains(item.Config, "encrypted_secret")})
+		safe = append(safe, gin.H{"id": item.ID, "name": item.Name, "code": item.Code, "base_url": item.BaseURL, "is_active": item.IsActive, "balance": item.Balance, "balance_unit": providerBalanceUnit(item.Code), "balance_checked_at": item.BalanceCheckedAt, "api_key_configured": item.APIKey != "" || strings.Contains(item.Config, "encrypted_secret")})
 	}
 	response.Success(c, "Providers loaded", safe)
 }
+
 // SetProviderRegistry dipanggil dari main.go (tanpa mengubah signature NewAdminHandler).
 func (h *AdminHandler) SetProviderRegistry(r *provider.Registry) {
 	h.providerRegistry = r
@@ -992,13 +992,13 @@ func (h *AdminHandler) GetDigiflazzSettings(c *gin.Context) {
 	if err != nil || record == nil {
 		response.Success(c, "Digiflazz settings loaded", gin.H{
 			"configured": false, "name": "Digiflazz", "base_url": "https://api.digiflazz.com/v1",
-			"username": "", "is_active": true, "api_key_configured": false,"secret_configured": false,
+			"username": "", "is_active": true, "api_key_configured": false, "secret_configured": false,
 		})
 		return
 	}
 	response.Success(c, "Digiflazz settings loaded", gin.H{
 		"configured": true, "id": record.ID, "name": record.Name, "base_url": record.BaseURL,
-		"username": record.Username, "is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "","secret_configured": strings.TrimSpace(record.Secret) != "",
+		"username": record.Username, "is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "", "secret_configured": strings.TrimSpace(record.Secret) != "",
 	})
 }
 
@@ -1041,7 +1041,84 @@ func (h *AdminHandler) SaveDigiflazzSettings(c *gin.Context) {
 	}
 	response.Success(c, "Digiflazz settings saved", gin.H{
 		"id": record.ID, "name": record.Name, "code": record.Code, "base_url": record.BaseURL,
-		"username": record.Username, "is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "","secret_configured": strings.TrimSpace(record.Secret) != "",
+		"username": record.Username, "is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "", "secret_configured": strings.TrimSpace(record.Secret) != "",
+	})
+}
+
+// ExcellentStoreSettingsRequest intentionally accepts only ExcellentStore's
+// fixed credentials and base URL. It does not expose arbitrary request
+// templates or return any secrets.
+type ExcellentStoreSettingsRequest struct {
+	Name     string `json:"name"`
+	BaseURL  string `json:"base_url" binding:"required"`
+	APIKey   string `json:"api_key"`
+	Secret   string `json:"secret"`
+	IsActive bool   `json:"is_active"`
+}
+
+const excellentStoreCode = "EXCELLENTSTORE"
+
+func (h *AdminHandler) GetExcellentStoreSettings(c *gin.Context) {
+	record, err := h.providerRepo.GetByCode(excellentStoreCode)
+	if err != nil || record == nil {
+		response.Success(c, "ExcellentStore settings loaded", gin.H{
+			"configured": false, "name": "ExcellentStore", "base_url": "",
+			"is_active": false, "api_key_configured": false, "secret_configured": false,
+		})
+		return
+	}
+	response.Success(c, "ExcellentStore settings loaded", gin.H{
+		"configured": true, "id": record.ID, "name": record.Name, "base_url": record.BaseURL,
+		"is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
+		"secret_configured": strings.TrimSpace(record.Secret) != "",
+	})
+}
+
+func (h *AdminHandler) SaveExcellentStoreSettings(c *gin.Context) {
+	var req ExcellentStoreSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid ExcellentStore settings", err.Error())
+		return
+	}
+	if err := provider.ValidateEndpointURL(req.BaseURL); err != nil {
+		response.BadRequest(c, "Base URL ExcellentStore tidak valid", err.Error())
+		return
+	}
+
+	record, lookupErr := h.providerRepo.GetByCode(excellentStoreCode)
+	if lookupErr != nil || record == nil {
+		record = &domain.Provider{Code: excellentStoreCode}
+	}
+	if req.IsActive && strings.TrimSpace(req.APIKey) == "" && strings.TrimSpace(record.APIKey) == "" {
+		response.BadRequest(c, "API key wajib diisi sebelum ExcellentStore diaktifkan", nil)
+		return
+	}
+	if req.IsActive && strings.TrimSpace(req.Secret) == "" && strings.TrimSpace(record.Secret) == "" {
+		response.BadRequest(c, "Webhook secret wajib diisi sebelum ExcellentStore diaktifkan", nil)
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = "ExcellentStore"
+	}
+	record.Name = name
+	record.BaseURL = strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+	if strings.TrimSpace(req.APIKey) != "" {
+		record.APIKey = strings.TrimSpace(req.APIKey)
+	}
+	if strings.TrimSpace(req.Secret) != "" {
+		record.Secret = strings.TrimSpace(req.Secret)
+	}
+	record.IsActive = req.IsActive
+	if err := h.providerRepo.Update(record); err != nil {
+		response.InternalServerError(c, "Failed to save ExcellentStore settings", err)
+		return
+	}
+	response.Success(c, "ExcellentStore settings saved", gin.H{
+		"id": record.ID, "name": record.Name, "code": record.Code, "base_url": record.BaseURL,
+		"is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
+		"secret_configured": strings.TrimSpace(record.Secret) != "",
 	})
 }
 

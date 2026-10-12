@@ -1,4 +1,7 @@
-package service
+// Package kiosgamer contains the Kiosgamer protocol client and its provider
+// adapter. Keeping both at the provider boundary mirrors Digiflazz and keeps
+// session/cookie details out of the application service layer.
+package kiosgamer
 
 import (
 	"bytes"
@@ -140,7 +143,9 @@ type kiosgamerService struct {
 	orderMu             sync.Mutex
 }
 
-func NewKiosgamerService(
+// NewClient builds the stateful Kiosgamer client used by its adapter, admin
+// handler, and keep-alive scheduler.
+func NewClient(
 	repo repository.KiosgamerRepository,
 	providerRepo repository.ProviderRepository,
 	nominalRepo repository.NominalRepository,

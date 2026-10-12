@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	providerkiosgamer "topup-backend/internal/provider/kiosgamer"
 	"topup-backend/internal/service"
 )
 
@@ -92,7 +93,7 @@ func (s *AutoSyncScheduler) Stop() {
 // ---------------------------------------------------------------------------
 
 type KiosgamerKeepAliveScheduler struct {
-	kiosgamerService service.KiosgamerService
+	kiosgamerService providerkiosgamer.KiosgamerService
 	interval         time.Duration
 	ctx              context.Context
 	cancel           context.CancelFunc
@@ -146,7 +147,7 @@ func (s *ProviderBalanceRetryScheduler) Start() {
 
 func (s *ProviderBalanceRetryScheduler) Stop() { s.stopOnce.Do(func() { s.cancel(); s.wg.Wait() }) }
 
-func NewKiosgamerKeepAliveScheduler(kiosgamerService service.KiosgamerService, interval time.Duration) *KiosgamerKeepAliveScheduler {
+func NewKiosgamerKeepAliveScheduler(kiosgamerService providerkiosgamer.KiosgamerService, interval time.Duration) *KiosgamerKeepAliveScheduler {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &KiosgamerKeepAliveScheduler{
 		kiosgamerService: kiosgamerService,
@@ -290,6 +291,7 @@ func (s *PriceSyncScheduler) Stop() {
 		s.wg.Wait()
 	})
 }
+
 // ---------------------------------------------------------------------------
 // ProviderTaskScheduler
 // Menjalankan satu tugas per provider dengan interval masing-masing

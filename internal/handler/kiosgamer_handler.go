@@ -7,14 +7,14 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"topup-backend/internal/pkg/response"
-	"topup-backend/internal/service"
+	providerkiosgamer "topup-backend/internal/provider/kiosgamer"
 )
 
 type KiosgamerHandler struct {
-	service service.KiosgamerService
+	service providerkiosgamer.KiosgamerService
 }
 
-func NewKiosgamerHandler(service service.KiosgamerService) *KiosgamerHandler {
+func NewKiosgamerHandler(service providerkiosgamer.KiosgamerService) *KiosgamerHandler {
 	return &KiosgamerHandler{service: service}
 }
 
@@ -53,11 +53,11 @@ func (h *KiosgamerHandler) HealthCheck(c *gin.Context) {
 	info, err := h.service.HealthCheck(c.Request.Context())
 	if err != nil {
 		switch {
-		case errors.Is(err, service.ErrKiosgamerNotConfigured):
+		case errors.Is(err, providerkiosgamer.ErrKiosgamerNotConfigured):
 			response.Error(c, http.StatusServiceUnavailable, "Kiosgamer is not configured")
-		case errors.Is(err, service.ErrKiosgamerChallengeRequired):
+		case errors.Is(err, providerkiosgamer.ErrKiosgamerChallengeRequired):
 			response.Error(c, http.StatusServiceUnavailable, "Kiosgamer requires browser challenge verification")
-		case errors.Is(err, service.ErrKiosgamerSessionExpired):
+		case errors.Is(err, providerkiosgamer.ErrKiosgamerSessionExpired):
 			response.BadRequest(c, "Kiosgamer session expired: silakan perbarui session_key", nil)
 		default:
 			response.InternalServerError(c, "Kiosgamer health check failed", err)
@@ -70,9 +70,9 @@ func (h *KiosgamerHandler) HealthCheck(c *gin.Context) {
 func (h *KiosgamerHandler) Recover(c *gin.Context) {
 	if err := h.service.RecoverSession(c.Request.Context()); err != nil {
 		switch {
-		case errors.Is(err, service.ErrKiosgamerReauthRequired):
+		case errors.Is(err, providerkiosgamer.ErrKiosgamerReauthRequired):
 			response.BadRequest(c, "Garena SSO session sudah kadaluarsa; silakan update session_key secara manual", nil)
-		case errors.Is(err, service.ErrKiosgamerChallengeRequired):
+		case errors.Is(err, providerkiosgamer.ErrKiosgamerChallengeRequired):
 			response.Error(c, http.StatusServiceUnavailable, "Kiosgamer memerlukan verifikasi bot/challenge")
 		default:
 			response.InternalServerError(c, "Kiosgamer session recovery failed: "+err.Error(), err)

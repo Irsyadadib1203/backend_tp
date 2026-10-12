@@ -22,6 +22,7 @@ import (
 	"topup-backend/internal/pkg/worker"
 	"topup-backend/internal/provider"
 	providerdigiflazz "topup-backend/internal/provider/digiflazz"
+	providerexcellentstore "topup-backend/internal/provider/excellentstore"
 	providerkiosgamer "topup-backend/internal/provider/kiosgamer"
 	providerotomax "topup-backend/internal/provider/otomax"
 	"topup-backend/internal/repository"
@@ -60,15 +61,18 @@ func main() {
 	authService := service.NewAuthService(userRepo, cfg)
 	nicknameService := service.NewNicknameService()
 	digiflazzClient := providerdigiflazz.NewClient(providerRepo, cfg)
-	kiosgamerService := service.NewKiosgamerService(kiosgamerRepo, providerRepo, nominalRepo, gameRepo, cfg, providerProductRepo)
+	kiosgamerClient := providerkiosgamer.NewClient(kiosgamerRepo, providerRepo, nominalRepo, gameRepo, cfg, providerProductRepo)
 	// Provider registry is the sole transaction execution path after the
 	// multi-provider rollout; adapters retain provider-specific protocol work.
 	providerRegistry := provider.NewRegistry()
 	if err := providerRegistry.Register(providerdigiflazz.New(digiflazzClient)); err != nil {
 		log.Fatalf("register Digiflazz provider adapter: %v", err)
 	}
-	if err := providerRegistry.Register(providerkiosgamer.New(kiosgamerService)); err != nil {
+	if err := providerRegistry.Register(providerkiosgamer.New(kiosgamerClient)); err != nil {
 		log.Fatalf("register Kiosgamer provider adapter: %v", err)
+	}
+	if err := providerRegistry.Register(providerexcellentstore.NewWithCallbackBaseURL(providerRepo, cfg.PublicAPIURL)); err != nil {
+		log.Fatalf("register ExcellentStore provider adapter: %v", err)
 	}
 	if err := providerRegistry.Register(providerotomax.NewWithCallbackBaseURL(providerotomax.FFZStoreCode, providerRepo, cfg.PublicAPIURL)); err != nil {
 		log.Fatalf("register FFZStore OtoMax provider adapter: %v", err)
@@ -99,7 +103,7 @@ func main() {
 	txHandler := handler.NewTransactionHandler(txService, authService)
 	depositHandler := handler.NewDepositHandler(depositService)
 	h2hHandler := handler.NewH2HHandler(h2hService)
-	kiosgamerHandler := handler.NewKiosgamerHandler(kiosgamerService)
+	kiosgamerHandler := handler.NewKiosgamerHandler(kiosgamerClient)
 	rbacHandler := handler.NewRBACHandler(rbacService)
 	tripayChannelService := service.NewTripayChannelService(cfg.TripayAPIKey, cfg.TripayPrivateKey, cfg.TripayMerchantCode, cfg.TripayBaseURL, paymentRepo)
 	txService.SetTripayService(tripayChannelService)
@@ -118,13 +122,13 @@ func main() {
 	autoSyncScheduler.Start()
 
 	// 5.2 Start Background Kiosgamer Keep-Alive Scheduler (Heartbeat & auto-persist rotated cookies every 20 minutes)
-	kiosKeepAliveScheduler := scheduler.NewKiosgamerKeepAliveScheduler(kiosgamerService, 20*time.Minute)
+	kiosKeepAliveScheduler := scheduler.NewKiosgamerKeepAliveScheduler(kiosgamerClient, 20*time.Minute)
 	kiosKeepAliveScheduler.Start()
 	// 5.2b Sinkron harga per provider (interval dari PRICE_SYNC_INTERVALS)
 	priceSyncService := service.NewPriceSyncService(providerRepo, providerProductRepo, providerRegistry)
 	priceSyncScheduler := scheduler.NewPriceSyncScheduler(priceSyncService, cfg.PriceSyncIntervals)
 	priceSyncScheduler.Start()
-		// 5.2c Saldo provider per interval (BALANCE_SYNC_INTERVALS)
+	// 5.2c Saldo provider per interval (BALANCE_SYNC_INTERVALS)
 	if balanceStore, ok := providerRepo.(service.ProviderBalanceStore); ok {
 		balanceSyncService := service.NewBalanceSyncService(balanceStore, providerRegistry)
 		balanceSyncScheduler := scheduler.NewProviderTaskScheduler("BalanceSync", cfg.BalanceSyncIntervals, 10*time.Second, balanceSyncService.SyncProviderBalance)
@@ -225,7 +229,7 @@ func main() {
 		// -------------------------------------------------------------
 		// DIGIFLAZZ BUYER CALLBACK & PAYMENT WEBHOOKS
 		// -------------------------------------------------------------
-				// URL callback lama Digiflazz tetap diterima, tapi diproses lewat jalur generik (adapter + applyResult).
+		// URL callback lama Digiflazz tetap diterima, tapi diproses lewat jalur generik (adapter + applyResult).
 		digiflazzCallback := func(c *gin.Context) {
 			c.Params = append(c.Params, gin.Param{Key: "code", Value: provider.DigiflazzCode})
 			providerCallbackHandler.HandleCallback(c)
@@ -306,6 +310,8 @@ func main() {
 			admin.GET("/providers/:id/balance", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetProviderBalance)
 			admin.GET("/providers/digiflazz", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetDigiflazzSettings)
 			admin.PUT("/providers/digiflazz", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveDigiflazzSettings)
+			admin.GET("/providers/excellentstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetExcellentStoreSettings)
+			admin.PUT("/providers/excellentstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveExcellentStoreSettings)
 			admin.GET("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetFFZStoreSettings)
 			admin.PUT("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveFFZStoreSettings)
 			admin.GET("/settings/transaction-reference", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetTransactionReferenceSettings)

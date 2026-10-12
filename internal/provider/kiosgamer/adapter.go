@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"topup-backend/internal/provider"
-	"topup-backend/internal/service"
 )
 
 const (
@@ -16,10 +15,10 @@ const (
 	codmAppID    = 100054
 )
 
-type Adapter struct{ service service.KiosgamerService }
+type Adapter struct{ service KiosgamerService }
 
-func New(s service.KiosgamerService) *Adapter { return &Adapter{service: s} }
-func (a *Adapter) Code() string               { return provider.KiosgamerCode }
+func New(s KiosgamerService) *Adapter { return &Adapter{service: s} }
+func (a *Adapter) Code() string       { return provider.KiosgamerCode }
 
 func (a *Adapter) Purchase(ctx context.Context, r provider.PurchaseRequest) (*provider.Result, error) {
 	// Safe-retry: if an order already exists, poll its status without placing a new order.
@@ -45,7 +44,7 @@ func (a *Adapter) CheckStatus(ctx context.Context, r provider.StatusRequest) (*p
 
 func (a *Adapter) checkStatus(ctx context.Context, r provider.StatusRequest, statusCheck bool) (*provider.Result, error) {
 	var (
-		result *service.KiosgamerOrderResult
+		result *KiosgamerOrderResult
 		err    error
 	)
 	if r.ProviderOrderID != "" && r.ProviderOrderID != "-" {
@@ -83,7 +82,7 @@ func appID(gameSlug string) int {
 	return defaultAppID
 }
 
-func mapResult(result *service.KiosgamerOrderResult, statusCheck bool) *provider.Result {
+func mapResult(result *KiosgamerOrderResult, statusCheck bool) *provider.Result {
 	if result == nil {
 		return &provider.Result{Status: provider.StatusFailedHold, ProviderStatus: "Provider Pending", Message: "empty Kiosgamer response"}
 	}
@@ -120,9 +119,9 @@ func mapResult(result *service.KiosgamerOrderResult, statusCheck bool) *provider
 func classifyError(err error) *provider.ProviderError {
 	message, lower := err.Error(), strings.ToLower(err.Error())
 	switch {
-	case errors.Is(err, service.ErrKiosgamerChallengeRequired) || strings.Contains(lower, "challenge") || strings.Contains(lower, "anti-bot"):
+	case errors.Is(err, ErrKiosgamerChallengeRequired) || strings.Contains(lower, "challenge") || strings.Contains(lower, "anti-bot"):
 		return &provider.ProviderError{Status: provider.StatusFailedHold, Kind: provider.ErrorAuthentication, ProviderStatus: "Challenge Required", Message: fmt.Sprintf("Kiosgamer anti-bot challenge: %v", err), Cause: err}
-	case errors.Is(err, service.ErrKiosgamerReauthRequired) || errors.Is(err, service.ErrKiosgamerSessionExpired) || errors.Is(err, service.ErrKiosgamerNotConfigured) || strings.Contains(lower, "session") || strings.Contains(lower, "reauth"):
+	case errors.Is(err, ErrKiosgamerReauthRequired) || errors.Is(err, ErrKiosgamerSessionExpired) || errors.Is(err, ErrKiosgamerNotConfigured) || strings.Contains(lower, "session") || strings.Contains(lower, "reauth"):
 		return &provider.ProviderError{Status: provider.StatusFailedHold, Kind: provider.ErrorAuthentication, ProviderStatus: "Session Error", Message: fmt.Sprintf("Kiosgamer session error: %v", err), Cause: err}
 	case containsAny(lower, "saldo", "shell", "balance", "uid", "totp", "preflight", "timeout", "connection"):
 		kind := provider.ErrorTemporary

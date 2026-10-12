@@ -44,7 +44,7 @@ func SeedInitialData(db *gorm.DB) {
 		log.Println("[Seeder] ⚠️  SEGERA ganti password admin melalui Admin Panel!")
 	}
 
-	// 2. Seed Digiflazz & Kiosgamer Provider configs (hanya jika belum ada)
+	// 2. Seed provider configs (hanya jika belum ada)
 	var providerCount int64
 	db.Model(&domain.Provider{}).Where("code = ?", "DIGIFLAZZ").Count(&providerCount)
 	if providerCount == 0 {
@@ -73,6 +73,16 @@ func SeedInitialData(db *gorm.DB) {
 			IsActive: true,
 		})
 		log.Println("[Seeder] Created Kiosgamer Provider config")
+	}
+
+	var excellentStoreCount int64
+	db.Model(&domain.Provider{}).Where("code = ?", "EXCELLENTSTORE").Count(&excellentStoreCount)
+	if excellentStoreCount == 0 {
+		db.Create(&domain.Provider{
+			Name: "ExcellentStore", Code: "EXCELLENTSTORE",
+			BaseURL: "https://api.exellentstore.id/api/v1", IsActive: false,
+		})
+		log.Println("[Seeder] Created inactive ExcellentStore Provider config; configure it in Providers Center before activation")
 	}
 
 	var ffzStoreCount int64
