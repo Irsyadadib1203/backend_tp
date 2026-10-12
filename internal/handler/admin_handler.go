@@ -33,6 +33,7 @@ type AdminHandler struct {
 	digiflazzBuyer       DigiflazzBalanceChecker
 	userRepo             repository.UserRepository
 	providerRepo         repository.ProviderRepository
+	providerProductRepo  repository.ProviderProductRepository
 	paymentRepo          repository.PaymentRepository
 	bannerRepo           repository.BannerRepository
 	articleRepo          repository.ArticleRepository
@@ -331,6 +332,59 @@ func (h *AdminHandler) ManualRefundTx(c *gin.Context) {
 
 func (h *AdminHandler) SetBulkTransactionService(s service.BulkTransactionService) {
 	h.bulkTxService = s
+}
+
+// SetProviderProductRepo dipanggil dari main.go untuk inject repo tanpa ubah signature NewAdminHandler.
+func (h *AdminHandler) SetProviderProductRepo(r repository.ProviderProductRepository) {
+	h.providerProductRepo = r
+}
+
+// UpsertNominalProviderProducts — PUT /admin/nominals/:id/provider-products
+// Simpan/update SKU dan cost_price per provider untuk satu nominal.
+// Tidak ubah DB schema, hanya upsert ke tabel provider_products yang sudah ada.
+func (h *AdminHandler) UpsertNominalProviderProducts(c *gin.Context) {
+	nominalID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || nominalID == 0 {
+		response.BadRequest(c, "Invalid nominal ID", nil)
+		return
+	}
+
+	if h.providerProductRepo == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Provider product repository is not configured")
+		return
+	}
+
+	type ProviderProductEntry struct {
+		ProviderID  uint     `json:"provider_id" binding:"required"`
+		ProductCode string   `json:"product_code"`
+		CostPrice   *float64 `json:"cost_price"`
+	}
+	var entries []ProviderProductEntry
+	if err := c.ShouldBindJSON(&entries); err != nil {
+		response.BadRequest(c, "Invalid request body", err.Error())
+		return
+	}
+
+	var upsertErrors []string
+	for _, e := range entries {
+		pp := &domain.ProviderProduct{
+			NominalID:   uint(nominalID),
+			ProviderID:  e.ProviderID,
+			ProductCode: e.ProductCode,
+			CostPrice:   e.CostPrice,
+			IsActive:    true,
+		}
+		if err := h.providerProductRepo.Upsert(pp); err != nil {
+			upsertErrors = append(upsertErrors, fmt.Sprintf("provider_id=%d: %v", e.ProviderID, err))
+		}
+	}
+
+	if len(upsertErrors) > 0 {
+		response.Error(c, http.StatusInternalServerError, "Sebagian gagal disimpan: "+strings.Join(upsertErrors, "; "))
+		return
+	}
+
+	response.Success(c, "Provider products updated successfully", gin.H{"nominal_id": nominalID, "updated": len(entries)})
 }
 
 // POST /admin/transactions/bulk  {"action":"retry|success|fail","ids":[1,2],"notes":""}

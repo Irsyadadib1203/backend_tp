@@ -110,6 +110,7 @@ func main() {
 	depositService.SetTripayService(tripayChannelService)
 	adminHandler := handler.NewAdminHandler(gameService, txService, depositService, digiflazzClient, userRepo, providerRepo, paymentRepo, bannerRepo, articleRepo, tripayChannelService, settingRepo)
 	adminHandler.SetProviderRegistry(providerRegistry)
+	adminHandler.SetProviderProductRepo(providerProductRepo)
 	if bulkTxService, ok := txService.(service.BulkTransactionService); ok {
 		adminHandler.SetBulkTransactionService(bulkTxService)
 	}
@@ -300,6 +301,7 @@ func main() {
 				nominals.PUT("/:id", adminHandler.UpdateNominal)
 				nominals.DELETE("/:id", adminHandler.DeleteNominal)
 				nominals.POST("/batch-switch-provider", adminHandler.BatchSwitchProvider)
+				nominals.PUT("/:id/provider-products", adminHandler.UpsertNominalProviderProducts)
 			}
 
 			// Providers (Accessible if nominals or settings are allowed)
