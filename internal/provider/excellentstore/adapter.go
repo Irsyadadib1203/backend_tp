@@ -23,7 +23,7 @@ import (
 
 const (
 	Code    = "EXCELLENTSTORE"
-	BaseURL = "https://api.exellentstore.id/api/v1"
+	BaseURL = "https://api.excellentstore.id/api/v1"
 )
 
 type Adapter struct {
