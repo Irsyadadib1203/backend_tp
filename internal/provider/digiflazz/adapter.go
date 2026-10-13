@@ -111,7 +111,12 @@ func (a *Adapter) CheckStatus(_ context.Context, r provider.StatusRequest) (*pro
 	// Digiflazz mengecek status dengan ref_id yang sama saat order dibuat.
 	refID := strings.TrimSpace(r.RefID)
 	if refID == "" || refID == "-" {
-		refID = strings.TrimSpace(r.ProviderOrderID)
+		return nil, &provider.ProviderError{
+			Status:         provider.StatusFailedHold,
+			Kind:           provider.ErrorConfiguration,
+			ProviderStatus: "Konfigurasi Error",
+			Message:        "Digiflazz: ref_id kosong, tidak bisa cek status",
+		}
 	}
 	resp, err := a.client.CheckTransactionStatus(refID, r.ProductCode, customerNo)
 	if err != nil {
@@ -170,7 +175,7 @@ func resultFromResponse(resp *TransactionResponse, statusCheck bool) *provider.R
 	if len(raw) == 0 {
 		raw, _ = json.Marshal(resp.Data)
 	}
-	res := mapResult(resp.Data.RefID, resp.Data.RC, resp.Data.Status, resp.Data.Message, resp.Data.SN, raw, statusCheck)
+	res := mapResult(strings.TrimSpace(resp.Data.TrxID), resp.Data.RC, resp.Data.Status, resp.Data.Message, resp.Data.SN, raw, statusCheck)
 	if len(resp.RawRequest) > 0 {
 		res.RequestRaw = resp.RawRequest
 	}
@@ -184,7 +189,7 @@ func resultFromCallback(payload *CallbackPayload, raw []byte) (*provider.Result,
 	if len(raw) == 0 {
 		raw, _ = json.Marshal(payload.Data)
 	}
-	return mapResult(payload.Data.RefID, payload.Data.RC, payload.Data.Status, payload.Data.Message, payload.Data.SN, raw, false), nil
+	return mapResult(strings.TrimSpace(payload.Data.TrxID), payload.Data.RC, payload.Data.Status, payload.Data.Message, payload.Data.SN, raw, false), nil
 }
 
 // mapResult menerjemahkan balasan Digiflazz menjadi hasil standar berdasarkan kelompok RC.

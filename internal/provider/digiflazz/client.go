@@ -38,6 +38,7 @@ type PriceListItem struct {
 
 type TransactionResponse struct {
 	Data struct {
+		TrxID        string  `json:"trx_id"`
 		RefID        string  `json:"ref_id"`
 		CustomerNo   string  `json:"customer_no"`
 		BuyerSkuCode string  `json:"buyer_sku_code"`
@@ -72,6 +73,7 @@ func (e *APIError) Unwrap() error {
 
 type CallbackPayload struct {
 	Data struct {
+		TrxID 		 string   `json:"trx_id"`
 		RefID        string  `json:"ref_id"`
 		CustomerNo   string  `json:"customer_no"`
 		BuyerSkuCode string  `json:"buyer_sku_code"`
