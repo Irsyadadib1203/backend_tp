@@ -508,17 +508,10 @@ func statusToRC(st domain.TransactionStatus) string {
 // partnerMessage menjaga pesan ke partner tetap generik selama transaksi belum
 // final, supaya error internal (sesi provider, saldo, konfigurasi) tidak bocor.
 func partnerMessage(tx *domain.Transaction) string {
-	message := strings.TrimSpace(tx.ProviderMessage)
 	switch tx.Status {
 	case domain.StatusSuccess:
-		if message != "" {
-			return message
-		}
 		return "Transaksi Sukses"
 	case domain.StatusFailed, domain.StatusRefunded:
-		if message != "" {
-			return message
-		}
 		return "Transaksi Gagal"
 	default:
 		return "Transaksi sedang diproses"
