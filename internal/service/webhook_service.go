@@ -180,15 +180,14 @@ func (n *partnerNotifier) buildPayload(tx *domain.Transaction, apiKey *domain.AP
 	}
 
 	msg := tx.ProviderMessage
-	if msg == "" {
-		if tx.Status == domain.StatusSuccess {
-			msg = "Transaksi Sukses"
-		} else if tx.Status == domain.StatusFailed {
-			msg = "Transaksi Gagal"
-		} else {
-			msg = "Transaksi sedang diproses"
-		}
+	if tx.Status == domain.StatusSuccess {
+		msg = "Transaksi Sukses"
+	} else if tx.Status == domain.StatusFailed {
+		msg = "Transaksi Gagal"
+	} else {
+		msg = "Transaksi sedang diproses"
 	}
+	
 
 	data := &H2HResponseData{
 		RefID:         refID,
