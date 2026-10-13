@@ -108,13 +108,12 @@ func (a *Adapter) Purchase(_ context.Context, r provider.PurchaseRequest) (*prov
 
 func (a *Adapter) CheckStatus(_ context.Context, r provider.StatusRequest) (*provider.Result, error) {
 	customerNo := provider.CustomerNumber(r.CustomerID, r.ServerID)
-	providerOrderID := strings.TrimSpace(r.ProviderOrderID)
-	if providerOrderID == "" || providerOrderID == "-" {
-		// Digiflazz mengecek status dengan ref_id yang sama saat order dibuat.
-		// Tanpa ProviderOrderID, pakai ref_id transaksi (jangan kirim ref_id kosong).
-		providerOrderID = strings.TrimSpace(r.RefID)
+	// Digiflazz mengecek status dengan ref_id yang sama saat order dibuat.
+	refID := strings.TrimSpace(r.RefID)
+	if refID == "" || refID == "-" {
+		refID = strings.TrimSpace(r.ProviderOrderID)
 	}
-	resp, err := a.client.CheckTransactionStatus(providerOrderID, r.ProductCode, customerNo)
+	resp, err := a.client.CheckTransactionStatus(refID, r.ProductCode, customerNo)
 	if err != nil {
 		var rawReq []byte
 		var rawResp []byte

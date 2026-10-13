@@ -147,7 +147,7 @@ func (s *transactionService) CreateOrder(req *CreateOrderRequest) (*domain.Trans
 	}
 
 	totalAmount := sellingPrice + adminFee
-	invoiceNumber, providerOrderID := s.NewReferences(nominal, req.CustomerID, req.ServerID)
+	invoiceNumber, providerRefID := s.NewReferences(nominal, req.CustomerID, req.ServerID)
 
 	// If paying with SALDO
 	if req.PaymentMethod == "SALDO" {
@@ -184,7 +184,8 @@ func (s *transactionService) CreateOrder(req *CreateOrderRequest) (*domain.Trans
 		Profit:        sellingPrice - nominal.BasePrice,
 		Status:        domain.StatusPending,
 		PaymentMethod: req.PaymentMethod,
-		ProviderOrderID: providerOrderID, // ref_id yang dikirim ke provider (kolom ref_id khusus mitra H2H)
+		ProviderRefID: providerRefID, // ref internal yang dikirim ke provider
+		// ProviderOrderID dibiarkan kosong; akan diisi dari respons provider
 	}
 
 	if req.PaymentMethod == "SALDO" {
@@ -312,7 +313,8 @@ const (
 	maxProviderRefLength           = 100 // transactions.ref_id size
 )
 
-// NewReferences membuat invoice number dan ref_id provider untuk transaksi baru.
+// NewReferences membuat invoice number dan provider_ref_id untuk transaksi baru.
+// provider_ref_id adalah ref internal yang dikirim ke provider saat purchase.
 // Format custom (Settings > Transaction Reference) berlaku global untuk semua
 // provider dan semua jalur (web maupun H2H); tanpa setting dipakai format bawaan.
 func (s *transactionService) NewReferences(nominal *domain.Nominal, customerID, serverID string) (string, string) {
@@ -730,8 +732,14 @@ func (s *transactionService) HandleProviderCallback(providerCode string, req *ht
 	}
 	if err != nil || tx == nil {
 		// Callback bisa tiba sebelum provider_order_id tersimpan; cocokkan lewat
-		// ref_id yang kita kirim ke provider.
-		if byRef, refErr := s.txRepo.FindByRefID(refID); refErr == nil && byRef != nil && byRef.ProviderReference() == refID {
+		// provider_ref_id yang kita kirim ke provider.
+		if byRef, refErr := s.txRepo.FindByProviderRefID(refID); refErr == nil && byRef != nil {
+			tx, err = byRef, nil
+		}
+	}
+	if err != nil || tx == nil {
+		// Final fallback untuk order lama (sebelum ProviderRefID): cari di ref_id dan provider_order_id.
+		if byRef, refErr := s.txRepo.FindByRefID(refID); refErr == nil && byRef != nil {
 			tx, err = byRef, nil
 		}
 	}
@@ -863,9 +871,9 @@ func (s *transactionService) ManualRetry(transactionID uint) error {
 	worker.GlobalPool.Submit(func() {
 		if err := s.retryProviderOrder(targetTx); err != nil {
 			log.Printf(
-				"[ManualRetry] invoice=%s provider_order_id=%s error=%v",
+				"[ManualRetry] invoice=%s provider_ref_id=%s error=%v",
 				targetTx.InvoiceNumber,
-				targetTx.ProviderOrderID,
+				targetTx.ProviderRefID,
 				err,
 			)
 		}
@@ -893,10 +901,11 @@ func (s *transactionService) prepareProviderSwitchForRetry(tx *domain.Transactio
 	if tx.Status != domain.StatusFailed {
 		return errors.New("provider produk sudah diganti, tetapi order lama masih tercatat di provider sebelumnya. Cek status dulu, atau tandai gagal lalu retry")
 	}
+	tx.ProviderRefID = ""
 	tx.ProviderOrderID = ""
 	tx.ProviderCallbackData = ""
 	tx.SN = ""
-	_, tx.ProviderOrderID = s.NewReferences(nominal, tx.CustomerID, tx.ServerID) // ref baru untuk provider baru
+	_, tx.ProviderRefID = s.NewReferences(nominal, tx.CustomerID, tx.ServerID) // ref baru untuk provider baru
 	return nil
 }
 

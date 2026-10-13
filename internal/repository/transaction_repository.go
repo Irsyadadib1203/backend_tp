@@ -17,6 +17,7 @@ type TransactionRepository interface {
 	FindByInvoiceNumber(invoice string) (*domain.Transaction, error)
 	FindByRefID(refID string) (*domain.Transaction, error)
 	FindByProviderOrderID(providerOrderID string) (*domain.Transaction, error)
+	FindByProviderRefID(providerRefID string) (*domain.Transaction, error)
 	FindByIdempotencyKey(key string) (*domain.Transaction, error)
 	FindByRefIDAndUserID(refID string,userID uint,) (*domain.Transaction, error)
 	Update(tx *domain.Transaction) error
@@ -105,10 +106,20 @@ func (r *transactionRepository) FindByProviderOrderID(
     return &tx, nil
 }
 
+func (r *transactionRepository) FindByProviderRefID(providerRefID string) (*domain.Transaction, error) {
+	var tx domain.Transaction
+	err := r.db.Preload("Game").Preload("Nominal").Preload("Provider").Preload("User").
+		Where("provider_ref_id = ?", providerRefID).First(&tx).Error
+	if err != nil {
+		return nil, err
+	}
+	return &tx, nil
+}
+
 func (r *transactionRepository) FindByRefID(refID string) (*domain.Transaction, error) {
 	var tx domain.Transaction
 	err := r.db.Preload("Game").Preload("Nominal").Preload("Provider").Preload("User").
-		Where("ref_id = ? OR provider_order_id = ?", refID, refID).First(&tx).Error
+		Where("ref_id = ? OR provider_ref_id = ? OR provider_order_id = ?", refID, refID, refID).First(&tx).Error
 	if err != nil {
 		return nil, err
 	}
@@ -204,13 +215,12 @@ func (r *transactionRepository) FindProcessingBalanceHolds(providerID uint, batc
 	if err != nil {
 		return nil, err
 	}
-	// provider_order_id kini berisi ref_id yang kita kirim sejak order dibuat,
-	// jadi "belum ada order di provider" berarti: kosong, atau masih sama dengan
-	// ref yang kita kirim (bukan ID order asli dari provider).
+	// "belum ada order di provider" berarti ProviderOrderID kosong
+	// (ProviderOrderID kini hanya diisi dari respons provider, bukan dari ref internal).
 	txs := make([]domain.Transaction, 0, batchSize)
 	for _, tx := range candidates {
 		id := strings.TrimSpace(tx.ProviderOrderID)
-		if id == "" || id == "-" || id == tx.ProviderReference() {
+		if id == "" || id == "-" {
 			txs = append(txs, tx)
 			if len(txs) >= batchSize {
 				break

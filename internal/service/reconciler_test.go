@@ -61,6 +61,9 @@ func (r *fakeReconcilerTxRepo) UpdateStatus(uint, domain.TransactionStatus, stri
 func (r *fakeReconcilerTxRepo) FindByProviderOrderID(string) (*domain.Transaction, error) {
 	return nil, nil
 }
+func (r *fakeReconcilerTxRepo) FindByProviderRefID(string) (*domain.Transaction, error) {
+	return nil, nil
+}
 func (r *fakeReconcilerTxRepo) MarkAsProcessingIfPending(uint, string, time.Time) (bool, error) {
 	return false, nil
 }

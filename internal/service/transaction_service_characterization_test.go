@@ -59,6 +59,14 @@ func (r *characterizationTxRepo) FindByIdempotencyKey(string) (*domain.Transacti
 func (r *characterizationTxRepo) FindByProviderOrderID(string) (*domain.Transaction, error) {
 	return nil, errors.New("not found")
 }
+func (r *characterizationTxRepo) FindByProviderRefID(providerRefID string) (*domain.Transaction, error) {
+	for _, tx := range r.byID {
+		if tx.ProviderRefID == providerRefID {
+			return tx, nil
+		}
+	}
+	return nil, errors.New("not found")
+}
 func (r *characterizationTxRepo) Update(*domain.Transaction) error { r.updates++; return nil }
 func (r *characterizationTxRepo) UpdateStatus(id uint, status domain.TransactionStatus, reason string) error {
 	r.statusUpdates = append(r.statusUpdates, characterizationStatusUpdate{id, status, reason})

@@ -136,8 +136,8 @@ type h2hService struct {
 // satu aturan yang sama.
 
 type H2HOrderProcessor interface {
-    FulfillOrder(tx *domain.Transaction) error
-    NewReferences(nominal *domain.Nominal, customerID, serverID string) (invoiceNumber, providerOrderID string)
+	FulfillOrder(tx *domain.Transaction) error
+	NewReferences(nominal *domain.Nominal, customerID, serverID string) (invoiceNumber, providerRefID string)
 }
 
 
@@ -368,7 +368,7 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 		return fail("Layanan transaksi belum siap", "40", price), errors.New("h2h order processor is not configured")
 	}
 	
-	invoiceNumber, providerOrderID := s.orderProcessor.NewReferences(
+	invoiceNumber, providerRefID := s.orderProcessor.NewReferences(
 		nominal,
 		userID,
 		serverID,
@@ -398,8 +398,9 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 		Profit:             price - nominal.BasePrice,
 		Status:             domain.StatusProcessing,
 		PaymentMethod:      "SALDO_H2H",
-		RefID:              req.RefID,
-		ProviderOrderID:    providerOrderID,
+		RefID:              req.RefID,          // ref_id dari mitra H2H
+		ProviderRefID:      providerRefID,      // ref internal yang dikirim ke provider
+		// ProviderOrderID dibiarkan kosong; akan diisi dari respons provider
 		PartnerCallbackURL: callbackURL,
 	}
 

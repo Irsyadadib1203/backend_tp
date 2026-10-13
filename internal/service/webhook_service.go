@@ -163,7 +163,7 @@ func (n *partnerNotifier) buildPayload(tx *domain.Transaction, apiKey *domain.AP
 		refID = strings.TrimPrefix(tx.IdempotencyKey, fmt.Sprintf("h2h_%d_", *tx.UserID))
 	}
 	if refID == "" {
-		refID = tx.ProviderOrderID
+		refID = tx.ProviderRefID
 	}
 
 	sku := ""

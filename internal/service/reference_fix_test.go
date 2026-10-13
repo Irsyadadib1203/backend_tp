@@ -25,9 +25,9 @@ func TestProviderReferenceLegacyWebUsesRefID(t *testing.T) {
 	}
 }
 
-func TestNewWebOrderKeepsRefInProviderOrderID(t *testing.T) {
-	// Order web baru: RefID kosong, ProviderOrderID berisi ref untuk provider.
-	web := &domain.Transaction{Source: domain.SourceWeb, ProviderOrderID: "REF-NEW"}
+func TestNewWebOrderKeepsRefInProviderRefID(t *testing.T) {
+	// Order web baru: ProviderRefID berisi ref untuk provider, ProviderOrderID kosong sampai ada respons provider.
+	web := &domain.Transaction{Source: domain.SourceWeb, ProviderRefID: "REF-NEW"}
 	if web.ProviderReference() != "REF-NEW" {
 		t.Fatalf("provider ref = %q", web.ProviderReference())
 	}
@@ -36,20 +36,20 @@ func TestNewWebOrderKeepsRefInProviderOrderID(t *testing.T) {
 	}
 }
 
-func TestProviderReferenceH2HUsesProviderOrderIDPlaceholder(t *testing.T) {
-	// Order H2H baru: ref_id milik mitra, ProviderOrderID berisi ref untuk provider.
-	h2h := &domain.Transaction{Source: domain.SourceH2H, RefID: "PARTNER-1", ProviderOrderID: "REF-PROVIDER"}
+func TestProviderReferenceH2HUsesProviderRefID(t *testing.T) {
+	// Order H2H baru: ref_id milik mitra, ProviderRefID berisi ref untuk provider, ProviderOrderID kosong.
+	h2h := &domain.Transaction{Source: domain.SourceH2H, RefID: "PARTNER-1", ProviderRefID: "REF-PROVIDER"}
 	if h2h.ProviderReference() != "REF-PROVIDER" {
-		t.Fatalf("h2h should send ProviderOrderID as provider ref, got %q", h2h.ProviderReference())
+		t.Fatalf("h2h should send ProviderRefID as provider ref, got %q", h2h.ProviderReference())
 	}
 	if h2h.RealProviderOrderID() != "" || hasProviderOrder(h2h) {
-		t.Fatal("placeholder ref must not count as a real provider order")
+		t.Fatal("unsubmitted order must not count as a real provider order")
 	}
 }
 
 func TestProviderReferenceH2HSurvivesRealOrderID(t *testing.T) {
 	h2h := &domain.Transaction{
-		Source: domain.SourceH2H, RefID: "PARTNER-1", ProviderOrderID: "KG-777",
+		Source: domain.SourceH2H, RefID: "PARTNER-1", ProviderRefID: "REF-PROVIDER", ProviderOrderID: "KG-777",
 		ProviderCallbackData: `{"action":"fulfill","request":{"ref_id":"REF-PROVIDER"},"response":{"order_id":"KG-777"}}`,
 	}
 	if h2h.ProviderReference() != "REF-PROVIDER" {
