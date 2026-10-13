@@ -193,7 +193,6 @@ func main() {
 		{
 			auth.POST("/register", authLimiter, authHandler.Register)
 			auth.POST("/login", authLimiter, authHandler.Login)
-			auth.POST("/2fa/verify", authHandler.Verify2FA)
 			auth.POST("/2fa/verify", authLimiter, authHandler.Verify2FA)
 			auth.GET("/me", middleware.AuthMiddleware(authService), authHandler.Me)
 			auth.POST("/api-key", middleware.AuthMiddleware(authService), authHandler.GenerateAPIKey)
