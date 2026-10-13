@@ -70,29 +70,22 @@ func (h *ProviderCallbackHandler) HandleCallback(c *gin.Context) {
 
 	// 2. Process callback through service and registry (§3.4, §5)
 	tx, result, err := h.txService.HandleProviderCallback(code, c.Request)
-	
 	if err != nil {
 		errStr := err.Error()
 		lowerErr := strings.ToLower(errStr)
-		// Callback tidak valid atau format tidak didukung.
+		// Signature validation, empty data, or unsupported provider errors return HTTP 400
 		if strings.Contains(lowerErr, "signature") ||
 			strings.Contains(lowerErr, "empty callback") ||
 			strings.Contains(lowerErr, "not found in registry") ||
 			strings.Contains(lowerErr, "does not support callbacks") ||
-			strings.Contains(lowerErr, "invalid json") ||
-			strings.Contains(lowerErr, "event callback tidak didukung") ||
-			strings.Contains(lowerErr, "callback tidak memiliki") {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"message": "Invalid callback",
-			})
+			strings.Contains(lowerErr, "invalid json") {
+			c.JSON(http.StatusBadRequest, gin.H{"message": errStr})
 			return
 		}
 
-		// Callback gagal diproses. Jangan mengaku berhasil.
-		// HTTP 500 dapat memicu retry jika provider mendukungnya.
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "Callback processing failed",
-		})
+		// After signature is validated, processing errors (e.g. transaction not found)
+		// return HTTP 200 acknowledged with legacy format (§4.4)
+		c.JSON(http.StatusOK, gin.H{"message": "Callback received but handling returned: " + errStr})
 		return
 	}
 
