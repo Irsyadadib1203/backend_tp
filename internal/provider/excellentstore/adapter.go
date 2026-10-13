@@ -526,7 +526,7 @@ func (a *Adapter) ParseCallback(
 	result.Raw = body
 
 	// TransactionService mencocokkan nilai ini dengan RefID transaksi internal.
-	return result, strings.TrimSpace(callback.Data.ReferenceID), nil
+	return result, strings.TrimSpace(callback.Data.OrderID), nil
 }
 
 // Pastikan adapter memenuhi kontrak provider dan kapabilitas opsional.
