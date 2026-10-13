@@ -740,6 +740,7 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 			"channel_id":     kiosgamerGarenaShellChannelID,
 			"service":        "pc",
 			"item_id":        itemID,
+			"player_id":      strings.TrimSpace(customerID),
 			"channel_data": map[string]interface{}{
 				"otp_code":   otpCode,
 				"garena_uid": garenaUID,
