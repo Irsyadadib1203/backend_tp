@@ -40,6 +40,12 @@ type User struct {
 	UpdatedAt       time.Time      `json:"updated_at"`
 	DeletedAt       gorm.DeletedAt `gorm:"index" json:"-"`
 
+	TOTPSecret       string     `gorm:"size:255" json:"-"`           // terenkripsi
+	TOTPEnabled      bool       `gorm:"default:false" json:"totp_enabled"`
+	TOTPLastStep     int64      `gorm:"default:0" json:"-"`          // cegah replay
+	TwoFAFails       int        `gorm:"default:0" json:"-"`
+	TwoFALockedUntil *time.Time `json:"-"`
+
 	// Relations
 	APIKey       *APIKey           `gorm:"foreignKey:UserID" json:"api_key,omitempty"`
 	IPWhitelists []IPWhitelist     `gorm:"foreignKey:UserID" json:"ip_whitelists,omitempty"`

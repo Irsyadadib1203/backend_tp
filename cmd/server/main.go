@@ -193,9 +193,16 @@ func main() {
 		{
 			auth.POST("/register", authLimiter, authHandler.Register)
 			auth.POST("/login", authLimiter, authHandler.Login)
+			auth.POST("/2fa/verify", authHandler.Verify2FA)
+			auth.POST("/2fa/verify", authLimiter, authHandler.Verify2FA)
 			auth.GET("/me", middleware.AuthMiddleware(authService), authHandler.Me)
 			auth.POST("/api-key", middleware.AuthMiddleware(authService), authHandler.GenerateAPIKey)
 		}
+		sec := auth.Group("/2fa", middleware.AuthMiddleware(authService),
+			middleware.RequireRole(domain.RoleAdmin, domain.RoleOperator)) // superadmin otomatis lolos
+		sec.POST("/setup", authHandler.Setup2FA)
+		sec.POST("/enable", authHandler.Enable2FA)
+		sec.POST("/disable", authHandler.Disable2FA)
 
 		// Public Games & Nominals
 		api.GET("/games", gameHandler.GetGames)

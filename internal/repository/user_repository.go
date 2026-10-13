@@ -18,12 +18,17 @@ type UserRepository interface {
 	HasMutation(refType, refID string) (bool, error)
 	List(offset, limit int, role string) ([]domain.User, int64, error)
 	Delete(id uint) error
+	UpdateFields(id uint, fields map[string]interface{}) error
 	CreateAPIKey(apiKey *domain.APIKey) error
 	GetAPIKeyByUserID(userID uint) (*domain.APIKey, error)
 }
 
 type userRepository struct {
 	db *gorm.DB
+}
+
+func (r *userRepository) UpdateFields(id uint, fields map[string]interface{}) error {
+	return r.db.Model(&domain.User{}).Where("id = ?", id).Updates(fields).Error
 }
 
 func NewUserRepository(db *gorm.DB) UserRepository {

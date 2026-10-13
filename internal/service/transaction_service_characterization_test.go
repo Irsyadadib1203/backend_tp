@@ -253,6 +253,9 @@ func (k *characterizationKiosgamer) UpdateNominalKiosgamerCode(uint, string) err
 func newCharacterizationService(txRepo *characterizationTxRepo, nominalRepo *characterizationNominalRepo, gameRepo *characterizationGameRepo, providerRepo *characterizationProviderRepo, userRepo *characterizationUserRepo, digi *characterizationDigiflazz, kios *characterizationKiosgamer) *transactionService {
 	return &transactionService{txRepo: txRepo, nominalRepo: nominalRepo, gameRepo: gameRepo, providerRepo: providerRepo, userRepo: userRepo}
 }
+func (r *characterizationUserRepo) UpdateFields(id uint, fields map[string]interface{}) error {
+	return nil
+}
 
 func characterizationTx() *domain.Transaction {
 	userID := uint(7)

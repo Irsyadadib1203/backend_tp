@@ -18,15 +18,30 @@ type JWTClaims struct {
 	Email  string      `json:"email"`
 	Role   domain.Role `json:"role"`
 	Tier   domain.Tier `json:"tier"`
+	Purpose string      `json:"purpose,omitempty"` // "2fa_pending" untuk temp token
 	jwt.RegisteredClaims
 }
 
+type LoginResult struct {
+	User        *domain.User
+	Token       string
+	Requires2FA bool
+	TempToken   string
+}
+
+	const purpose2FA = "2fa_pending"
+
 type AuthService interface {
 	Register(name, email, password, phone string) (*domain.User, string, error)
-	Login(email, password string) (*domain.User, string, error)
+	Login(email, password string) (*LoginResult, error)
 	GetProfile(userID uint) (*domain.User, error)
 	GenerateAPIKey(userID uint, webhookURL string) (*domain.APIKey, error)
 	ValidateToken(tokenString string) (*JWTClaims, error)
+
+	Verify2FALogin(tempToken, code string) (*domain.User, string, error)
+	Setup2FA(userID uint) (string, error)
+	Enable2FA(userID uint, code string) error
+	Disable2FA(userID uint, password, code string) error
 }
 
 type authService struct {
@@ -72,26 +87,31 @@ func (s *authService) Register(name, email, password, phone string) (*domain.Use
 	return user, token, nil
 }
 
-func (s *authService) Login(email, password string) (*domain.User, string, error) {
+func (s *authService) Login(email, password string) (*LoginResult, error) {
 	user, err := s.userRepo.FindByEmail(email)
 	if err != nil {
-		return nil, "", errors.New("invalid email or password")
+		return nil, errors.New("invalid email or password")
 	}
-
 	if !user.IsActive {
-		return nil, "", errors.New("user account is inactive")
+		return nil, errors.New("user account is inactive")
+	}
+	if !crypto.CheckPasswordHash(password, user.Password) {
+		return nil, errors.New("invalid email or password")
 	}
 
-	if !crypto.CheckPasswordHash(password, user.Password) {
-		return nil, "", errors.New("invalid email or password")
+	if user.TOTPEnabled {
+		temp, err := s.generateTempToken(user)
+		if err != nil {
+			return nil, err
+		}
+		return &LoginResult{Requires2FA: true, TempToken: temp}, nil
 	}
 
 	token, err := s.generateJWT(user)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-
-	return user, token, nil
+	return &LoginResult{User: user, Token: token}, nil
 }
 
 func (s *authService) GetProfile(userID uint) (*domain.User, error) {
@@ -146,14 +166,36 @@ func (s *authService) generateJWT(user *domain.User) (string, error) {
 }
 
 func (s *authService) ValidateToken(tokenString string) (*JWTClaims, error) {
+	claims, err := s.parseToken(tokenString)
+	if err != nil || claims.Purpose != "" { // temp token ditolak
+		return nil, errors.New("invalid or expired token")
+	}
+	return claims, nil
+}
+
+func (s *authService) parseToken(tokenString string) (*JWTClaims, error) {
 	claims := &JWTClaims{}
-	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("unexpected signing method")
+		}
 		return []byte(s.cfg.JWTSecret), nil
 	})
-
 	if err != nil || !token.Valid {
 		return nil, errors.New("invalid or expired token")
 	}
-
 	return claims, nil
+}
+
+func (s *authService) generateTempToken(user *domain.User) (string, error) {
+	claims := &JWTClaims{
+		UserID:  user.ID,
+		Purpose: purpose2FA,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Issuer:    "topup-backend",
+		},
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(s.cfg.JWTSecret))
 }

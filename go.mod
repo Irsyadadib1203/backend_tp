@@ -23,8 +23,10 @@ require (
 	github.com/bogdanfinn/tls-client v1.16.0 // indirect
 	github.com/bogdanfinn/utls v1.7.8-barnius // indirect
 	github.com/bogdanfinn/websocket v1.5.6-barnius // indirect
+	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
 	github.com/cloudflare/circl v1.6.2 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
+	github.com/pquerna/otp v1.5.0 // indirect
 	github.com/tam7t/hpkp v0.0.0-20160821193359-2b70b4024ed5 // indirect
 )
 

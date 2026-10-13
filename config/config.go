@@ -62,6 +62,8 @@ type Config struct {
 	ReconcilerMinAge  time.Duration
 	PriceSyncIntervals map[string]time.Duration
 	BalanceSyncIntervals map[string]time.Duration
+
+	TOTPEncKey string // env: TOTP_ENC_KEY
 }
 
 var AppConfig *Config
@@ -95,6 +97,7 @@ func LoadConfig() *Config {
 
 		JWTSecret:      getEnv("JWT_SECRET", "jwt-secret-topup-system-secure-token-9988"),
 		JWTExpiryHours: expiryHours,
+		TOTPEncKey:     getEnv("TOTP_ENC_KEY", ""),
 
 		DigiflazzBuyerBaseURL:       getEnv("DIGIFLAZZ_BASE_URL", "https://api.digiflazz.com/v1"),
 		DigiflazzBuyerUsername:      getEnv("DIGIFLAZZ_USERNAME", ""),
@@ -114,6 +117,10 @@ func LoadConfig() *Config {
 		ReconcilerMinAge:  parseReconcilerMinAge(getEnv("RECONCILER_MIN_AGE", "5m")),
 		PriceSyncIntervals:   parseProviderIntervals("PRICE_SYNC_INTERVALS", getEnv("PRICE_SYNC_INTERVALS", "")),
 		BalanceSyncIntervals: parseProviderIntervals("BALANCE_SYNC_INTERVALS", getEnv("BALANCE_SYNC_INTERVALS", "")),
+	}
+
+	if cfg.TOTPEncKey == "" {
+		log.Fatal("TOTP_ENC_KEY wajib diisi")
 	}
 
 	AppConfig = cfg
