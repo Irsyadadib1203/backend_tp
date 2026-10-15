@@ -358,6 +358,7 @@ func (h *AdminHandler) UpsertNominalProviderProducts(c *gin.Context) {
 		ProviderID  uint     `json:"provider_id" binding:"required"`
 		ProductCode string   `json:"product_code"`
 		CostPrice   *float64 `json:"cost_price"`
+		AutoSyncPrice *bool    `json:"auto_sync_price"`
 	}
 	var entries []ProviderProductEntry
 	if err := c.ShouldBindJSON(&entries); err != nil {
@@ -376,6 +377,12 @@ func (h *AdminHandler) UpsertNominalProviderProducts(c *gin.Context) {
 		}
 		if err := h.providerProductRepo.Upsert(pp); err != nil {
 			upsertErrors = append(upsertErrors, fmt.Sprintf("provider_id=%d: %v", e.ProviderID, err))
+			continue // baris gagal dibuat, jangan lanjut set flag
+		}
+		if e.AutoSyncPrice != nil {
+			if err := h.providerProductRepo.SetAutoSyncPrice(uint(nominalID), e.ProviderID, *e.AutoSyncPrice); err != nil {
+				upsertErrors = append(upsertErrors, fmt.Sprintf("provider_id=%d: %v", e.ProviderID, err))
+			}
 		}
 	}
 

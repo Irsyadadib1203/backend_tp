@@ -559,7 +559,17 @@ func (s *gameService) AutoSyncAllPrices() (int, error) {
 			continue
 		}
 		digiActive := digiItem.BuyerProductStatus && digiItem.SellerProductStatus
-
+		// Cek toggle auto-sync untuk provider_product Digiflazz nominal ini
+		autoSync := true
+		for _, pp := range nom.ProviderProducts {
+			if pp.ProviderID == digiID {
+				autoSync = pp.AutoSyncPrice
+				break
+			}
+		}
+		if !autoSync {
+			continue
+		}
 		// Cost price Digiflazz selalu diperbarui, apa pun provider aktif nominal ini,
 		// supaya angkanya benar saat nominal dipindah balik ke Digiflazz.
 		if s.providerProductRepo != nil && digiID > 0 {

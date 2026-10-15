@@ -126,7 +126,7 @@ func main() {
 	kiosKeepAliveScheduler := scheduler.NewKiosgamerKeepAliveScheduler(kiosgamerClient, 20*time.Minute)
 	kiosKeepAliveScheduler.Start()
 	// 5.2b Sinkron harga per provider (interval dari PRICE_SYNC_INTERVALS)
-	priceSyncService := service.NewPriceSyncService(providerRepo, providerProductRepo, providerRegistry)
+	priceSyncService := service.NewPriceSyncService(providerRepo, providerProductRepo, providerRegistry, gameService)
 	priceSyncScheduler := scheduler.NewPriceSyncScheduler(priceSyncService, cfg.PriceSyncIntervals)
 	priceSyncScheduler.Start()
 	// 5.2c Saldo provider per interval (BALANCE_SYNC_INTERVALS)

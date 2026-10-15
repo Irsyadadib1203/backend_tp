@@ -18,24 +18,43 @@ import (
 // jadi harga jual tidak pernah berubah karena sinkron ini.
 type PriceSyncService interface {
 	SyncProvider(ctx context.Context, providerCode string) error
+	SupportsCatalog(providerCode string) bool
+}
+
+// BasePriceSyncer dipenuhi oleh GameService.
+type BasePriceSyncer interface {
+	SyncBasePriceFromActiveProvider(nominalID uint) (bool, error)
 }
 
 type priceSyncService struct {
 	providerRepo        repository.ProviderRepository
 	providerProductRepo repository.ProviderProductRepository
 	registry            *provider.Registry
+	basePriceSyncer     BasePriceSyncer
 }
 
 func NewPriceSyncService(
 	providerRepo repository.ProviderRepository,
 	providerProductRepo repository.ProviderProductRepository,
 	registry *provider.Registry,
+	basePriceSyncer BasePriceSyncer,
 ) PriceSyncService {
 	return &priceSyncService{
 		providerRepo:        providerRepo,
 		providerProductRepo: providerProductRepo,
 		registry:            registry,
+		basePriceSyncer:     basePriceSyncer,
 	}
+}
+
+// SupportsCatalog: true jika adapter provider punya SyncCatalog.
+func (s *priceSyncService) SupportsCatalog(providerCode string) bool {
+	adapter, ok := s.registry.Get(strings.ToUpper(strings.TrimSpace(providerCode)))
+	if !ok {
+		return false
+	}
+	_, ok = adapter.(provider.CatalogSyncer)
+	return ok
 }
 
 func (s *priceSyncService) SyncProvider(ctx context.Context, providerCode string) error {
@@ -76,10 +95,14 @@ func (s *priceSyncService) SyncProvider(ctx context.Context, providerCode string
 		return fmt.Errorf("baca provider_products %s: %w", code, err)
 	}
 
-	changed := 0
+	changed, skipped, repriced := 0, 0, 0
 	for _, row := range rows {
-		// Produk tidak ada di katalog, atau sedang nonaktif di provider => harga NULL
-		// supaya tidak ikut dihitung sebagai "termurah".
+		// Toggle mati => lewati, harga lama dibiarkan
+		if !row.AutoSyncPrice {
+			skipped++
+			continue
+		}
+
 		var newPrice *float64
 		if it, found := catalog[strings.TrimSpace(row.ProductCode)]; found && it.IsActive {
 			price := it.BasePrice
@@ -87,7 +110,7 @@ func (s *priceSyncService) SyncProvider(ctx context.Context, providerCode string
 		}
 
 		if sameCostPrice(row.CostPrice, newPrice) {
-			continue // tidak berubah, tidak perlu menulis ke database
+			continue
 		}
 
 		if err := s.providerProductRepo.UpdateCostPrice(dbProvider.ID, row.ProductCode, newPrice); err != nil {
@@ -95,6 +118,17 @@ func (s *priceSyncService) SyncProvider(ctx context.Context, providerCode string
 			continue
 		}
 		changed++
+
+		// Ikutkan base_price & harga jual jika provider ini adalah provider
+		// aktif nominal tersebut (dicek di dalam SyncBasePriceFromActiveProvider).
+		if s.basePriceSyncer != nil && newPrice != nil {
+			ok, err := s.basePriceSyncer.SyncBasePriceFromActiveProvider(row.NominalID)
+			if err != nil {
+				log.Printf("[PriceSync] %s: gagal update harga jual nominal %d: %v", code, row.NominalID, err)
+			} else if ok {
+				repriced++
+			}
+		}
 	}
 
 	// Hanya diisi jika sinkron berhasil.
@@ -102,7 +136,7 @@ func (s *priceSyncService) SyncProvider(ctx context.Context, providerCode string
 		return fmt.Errorf("simpan last_price_sync_at %s: %w", code, err)
 	}
 
-	log.Printf("[PriceSync] %s selesai: %d dari %d baris berubah", code, changed, len(rows))
+	log.Printf("[PriceSync] %s selesai: %d dari %d baris berubah, %d harga jual ikut diperbarui, %d dilewati (toggle off)", code, changed, len(rows), repriced, skipped)
 	return nil
 }
 

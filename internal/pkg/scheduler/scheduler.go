@@ -234,6 +234,10 @@ func (s *PriceSyncScheduler) Start() {
 		return
 	}
 	for code, every := range s.intervals {
+		if !s.svc.SupportsCatalog(code) {
+			log.Printf("[PriceSync] %s dilewati: adapter belum mendukung sinkron katalog", code)
+			continue
+		}
 		s.wg.Add(1)
 		go s.loop(code, every)
 	}

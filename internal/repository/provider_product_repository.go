@@ -18,6 +18,7 @@ type ProviderProductRepository interface {
 	ListByNominalID(nominalID uint) ([]domain.ProviderProduct, error)
 	ListByProviderID(providerID uint) ([]domain.ProviderProduct, error)
 	UpdateCostPrice(providerID uint, productCode string, price *float64) error
+	SetAutoSyncPrice(nominalID, providerID uint, enabled bool) error
 	Delete(id uint) error
 }
 
@@ -96,6 +97,12 @@ func (r *providerProductRepository) UpdateCostPrice(providerID uint, productCode
 	return r.db.Model(&domain.ProviderProduct{}).
 		Where("provider_id = ? AND product_code = ?", providerID, strings.TrimSpace(productCode)).
 		Update("cost_price", value).Error
+}
+
+func (r *providerProductRepository) SetAutoSyncPrice(nominalID, providerID uint, enabled bool) error {
+	return r.db.Model(&domain.ProviderProduct{}).
+		Where("nominal_id = ? AND provider_id = ?", nominalID, providerID).
+		Update("auto_sync_price", enabled).Error
 }
 
 func (r *providerProductRepository) Delete(id uint) error {

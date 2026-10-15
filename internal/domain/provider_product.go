@@ -15,7 +15,8 @@ type ProviderProduct struct {
 	ProductCode string         `gorm:"size:100;not null" json:"product_code"`
 	CostPrice   *float64       `gorm:"type:decimal(15,2)" json:"cost_price,omitempty"`
 	Priority    int            `gorm:"default:0" json:"priority"`
-	IsActive    bool           `gorm:"default:true" json:"is_active"`
+	IsActive      bool `gorm:"default:true" json:"is_active"`
+	AutoSyncPrice bool `gorm:"not null;default:true" json:"auto_sync_price"` // ikut sinkron harga otomatis
 	Extra       string         `gorm:"type:text" json:"extra,omitempty"` // Data-only JSON metadata (e.g. {"requires_server_id":true})
 
 	CreatedAt   time.Time      `json:"created_at"`
