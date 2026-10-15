@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,6 +82,7 @@ var referenceTokenRegex = regexp.MustCompile(`\{([^{}]*)\}`)
 var allowedReferenceTokens = map[string]bool{
 	"date": true, "time": true, "timestamp": true, "unix": true, "random": true,
 	"customer_id": true, "server_id": true, "nominal_id": true, "provider_code": true,
+	"date_short": true, "timestamp_short": true,"alnum": true, 
 }
 
 // ValidateReferenceTemplate menolak template invoice/ref_id yang akan diubah
@@ -128,9 +130,12 @@ func RenderReference(template, fallback, providerCode, customerID, serverID stri
 	replacer := strings.NewReplacer(
 		"{date}", now.Format("20060102"),
 		"{time}", now.Format("150405"),
+		"{date_short}", now.Format("060102"),
+		"{timestamp_short}", now.Format("060102150405"),
 		"{timestamp}", now.Format("20060102150405"),
 		"{unix}", fmt.Sprintf("%d", now.Unix()),
 		"{random}", randomReferencePart(),
+		"{alnum}", randomAlnum(6),
 		"{customer_id}", sanitizeReferencePart(customerID),
 		"{server_id}", sanitizeReferencePart(serverID),
 		"{nominal_id}", fmt.Sprintf("%d", nominalID),
@@ -151,6 +156,31 @@ func RenderReference(template, fallback, providerCode, customerID, serverID stri
 func randomReferencePart() string {
 	return strings.ToUpper(fmt.Sprintf("%x", time.Now().UnixNano()))[8:14]
 }
+	const referenceAlnum = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+	func randomAlnum(n int) string {
+		out := make([]byte, 0, n)
+		buf := make([]byte, n*2)
+		for len(out) < n {
+			if _, err := rand.Read(buf); err != nil {
+				seed := time.Now().UnixNano()
+				for i := range buf {
+					seed = seed*6364136223846793005 + 1442695040888963407
+					buf[i] = byte(seed >> 56)
+				}
+			}
+			for _, b := range buf {
+				if b >= 252 { // 252 = 36*7, buang sisa agar tiap karakter peluangnya sama
+					continue
+				}
+				out = append(out, referenceAlnum[int(b)%len(referenceAlnum)])
+				if len(out) == n {
+					break
+				}
+			}
+		}
+		return string(out)
+	}
 
 func sanitizeReferencePart(value string) string {
 	value = strings.ToUpper(strings.TrimSpace(value))
