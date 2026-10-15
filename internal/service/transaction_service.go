@@ -1038,6 +1038,7 @@ func (s *transactionService) ManualSetSuccess(transactionID uint, notes string, 
 
 	now := time.Now()
 	tx.Status = domain.StatusSuccess
+	tx.ProviderStatus = "Sukses (manual)"
 	tx.CompletedAt = &now
 	if tx.PaymentVerifiedAt == nil {
 		tx.PaymentVerifiedAt = &now
