@@ -22,7 +22,7 @@ type fakeBuyer struct {
 }
 
 func (f *fakeBuyer) GetPriceList() ([]PriceListItem, error) { return nil, nil }
-func (f *fakeBuyer) CheckBalance() (float64, error)                          { return 42, nil }
+func (f *fakeBuyer) CheckBalance() (float64, error)         { return 42, nil }
 func (f *fakeBuyer) CreateTransaction(_ string, _ string, customerNo string, _ bool) (*TransactionResponse, error) {
 	f.createCalls++
 	f.lastCustomerNo = customerNo

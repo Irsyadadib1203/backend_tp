@@ -58,14 +58,14 @@ type H2HProductRequest struct {
 }
 
 type H2HTransactionRequest struct {
-	APIKey       string `json:"apikey" binding:"required"`
+	APIKey      string `json:"apikey" binding:"required"`
 	SKUCode     string `json:"sku_code" binding:"required"`
-	UserID       string `json:"user_id" binding:"required"`
-	ServerID     string `json:"server_id,omitempty"` // optional
-	RefID        string `json:"ref_id" binding:"required"`
-	Sign         string `json:"sign" binding:"required"`
-	Testing      bool   `json:"testing"`
-	CallbackURL  string `json:"callback_url,omitempty"`
+	UserID      string `json:"user_id" binding:"required"`
+	ServerID    string `json:"server_id,omitempty"` // optional
+	RefID       string `json:"ref_id" binding:"required"`
+	Sign        string `json:"sign" binding:"required"`
+	Testing     bool   `json:"testing"`
+	CallbackURL string `json:"callback_url,omitempty"`
 }
 
 type H2HCheckStatusRequest struct {
@@ -80,17 +80,17 @@ type H2HCheckBalanceRequest struct {
 }
 
 type H2HResponseData struct {
-	RefID        string  `json:"ref_id"`
-	InvoiceNumber string `json:"invoice_number"`
-	UserID       string  `json:"user_id"`
-	ServerID     string  `json:"server_id,omitempty"`
-	SKUCode      string  `json:"sku_code"`
-	Message      string  `json:"message"`
-	Status       string  `json:"status"` // "Sukses", "Pending", "Gagal"
-	RC           string  `json:"rc"`     // "00", "03", "40", etc.
-	SN           string  `json:"sn"`
-	Price        float64 `json:"price"`
-	Sign         string  `json:"sign,omitempty"`
+	RefID         string  `json:"ref_id"`
+	InvoiceNumber string  `json:"invoice_number"`
+	UserID        string  `json:"user_id"`
+	ServerID      string  `json:"server_id,omitempty"`
+	SKUCode       string  `json:"sku_code"`
+	Message       string  `json:"message"`
+	Status        string  `json:"status"` // "Sukses", "Pending", "Gagal"
+	RC            string  `json:"rc"`     // "00", "03", "40", etc.
+	SN            string  `json:"sn"`
+	Price         float64 `json:"price"`
+	Sign          string  `json:"sign,omitempty"`
 }
 
 type H2HProduct struct {
@@ -140,7 +140,6 @@ type H2HOrderProcessor interface {
 	NewReferences(nominal *domain.Nominal, customerID, serverID string) (invoiceNumber, providerRefID string)
 }
 
-
 type H2HOrderProcessorSetter interface {
 	SetOrderProcessor(H2HOrderProcessor)
 }
@@ -153,9 +152,9 @@ func NewH2HService(
 	txRepo repository.TransactionRepository,
 ) H2HService {
 	return &h2hService{
-		userRepo:       userRepo,
-		nominalRepo:    nominalRepo,
-		txRepo:         txRepo,
+		userRepo:    userRepo,
+		nominalRepo: nominalRepo,
+		txRepo:      txRepo,
 	}
 }
 
@@ -212,11 +211,11 @@ func (s *h2hService) buildProducts(user *domain.User) ([]H2HProduct, error) {
 		}
 
 		products = append(products, H2HProduct{
-			ProductName:         nom.Name,
-			Category:            category,
-			Brand:               brand,
-			Price:               partnerPrice(user, nom.PriceReseller, nom.PriceVIP),
-			SKUCode:             sku,
+			ProductName: nom.Name,
+			Category:    category,
+			Brand:       brand,
+			Price:       partnerPrice(user, nom.PriceReseller, nom.PriceVIP),
+			SKUCode:     sku,
 		})
 	}
 	return products, nil
@@ -291,14 +290,14 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 
 	fail := func(msg, rc string, price float64) *H2HResponseData {
 		return &H2HResponseData{
-			RefID:        req.RefID,
-			UserID:       userID,
-			ServerID:     serverID,
-			SKUCode:      req.SKUCode,
-			Message:      msg,
-			Status:       "Gagal",
-			RC:           rc,
-			Price:        price,
+			RefID:    req.RefID,
+			UserID:   userID,
+			ServerID: serverID,
+			SKUCode:  req.SKUCode,
+			Message:  msg,
+			Status:   "Gagal",
+			RC:       rc,
+			Price:    price,
 		}
 	}
 
@@ -311,7 +310,7 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 	if userID == "" {
 		return fail("user_id wajib diisi", "40", 0), errors.New("user_id is required")
 	}
-		callbackURL := strings.TrimSpace(req.CallbackURL)
+	callbackURL := strings.TrimSpace(req.CallbackURL)
 	if callbackURL == "" && apiKey.WebhookURL != "" {
 		callbackURL = strings.TrimSpace(apiKey.WebhookURL)
 	}
@@ -367,13 +366,12 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 	if s.orderProcessor == nil {
 		return fail("Layanan transaksi belum siap", "40", price), errors.New("h2h order processor is not configured")
 	}
-	
+
 	invoiceNumber, providerRefID := s.orderProcessor.NewReferences(
 		nominal,
 		userID,
 		serverID,
 	)
-
 
 	err = s.userRepo.UpdateBalance(user.ID, price, domain.MutationDebit, "TRANSACTION_H2H", invoiceNumber,
 		fmt.Sprintf("Top up %s (%s)", nominal.Name, formatTarget(userID, serverID)))
@@ -382,24 +380,24 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 	}
 
 	tx := &domain.Transaction{
-		InvoiceNumber:      invoiceNumber,
-		IdempotencyKey:     idemKey,
-		Source:             domain.SourceH2H,
-		UserID:             &user.ID,
-		CustomerID:         userID,
-		ServerID:           serverID,
-		GameID:             nominal.GameID,
-		NominalID:          nominal.ID,
-		ProviderID:         nominal.ProviderID,
-		BasePrice:          nominal.BasePrice,
-		SellingPrice:       price,
-		AdminFee:           0,
-		TotalAmount:        price,
-		Profit:             price - nominal.BasePrice,
-		Status:             domain.StatusProcessing,
-		PaymentMethod:      "SALDO_H2H",
-		RefID:              req.RefID,          // ref_id dari mitra H2H
-		ProviderRefID:      providerRefID,      // ref internal yang dikirim ke provider
+		InvoiceNumber:  invoiceNumber,
+		IdempotencyKey: idemKey,
+		Source:         domain.SourceH2H,
+		UserID:         &user.ID,
+		CustomerID:     userID,
+		ServerID:       serverID,
+		GameID:         nominal.GameID,
+		NominalID:      nominal.ID,
+		ProviderID:     nominal.ProviderID,
+		BasePrice:      nominal.BasePrice,
+		SellingPrice:   price,
+		AdminFee:       0,
+		TotalAmount:    price,
+		Profit:         price - nominal.BasePrice,
+		Status:         domain.StatusProcessing,
+		PaymentMethod:  "SALDO_H2H",
+		RefID:          req.RefID,     // ref_id dari mitra H2H
+		ProviderRefID:  providerRefID, // ref internal yang dikirim ke provider
 		// ProviderOrderID dibiarkan kosong; akan diisi dari respons provider
 		PartnerCallbackURL: callbackURL,
 	}
@@ -442,12 +440,12 @@ func (s *h2hService) CheckStatus(req *H2HCheckStatusRequest) (*H2HResponseData, 
 	}
 
 	tx, err := s.txRepo.FindByRefIDAndUserID(
-        req.RefID,
-        user.ID,
-    )
-    if err != nil || tx == nil {
-        return nil, errors.New("transaction not found")
-    }
+		req.RefID,
+		user.ID,
+	)
+	if err != nil || tx == nil {
+		return nil, errors.New("transaction not found")
+	}
 
 	skuCode := ""
 	if nominal, _ := s.nominalRepo.FindByID(tx.NominalID); nominal != nil {
@@ -455,17 +453,17 @@ func (s *h2hService) CheckStatus(req *H2HCheckStatusRequest) (*H2HResponseData, 
 	}
 
 	return &H2HResponseData{
-		RefID:        req.RefID,
+		RefID:         req.RefID,
 		InvoiceNumber: tx.InvoiceNumber,
-		UserID:       tx.CustomerID,
-		ServerID:     tx.ServerID,
-		SKUCode:      skuCode,
-		Message:      partnerMessage(tx),
-		Status:       statusToDigiflazz(tx.Status),
-		RC:           statusToRC(tx.Status),
-		SN:           tx.PaymentReference,
-		Price:        tx.SellingPrice,
-		Sign:         crypto.MD5Hash(apiKey.Key + req.RefID),
+		UserID:        tx.CustomerID,
+		ServerID:      tx.ServerID,
+		SKUCode:       skuCode,
+		Message:       partnerMessage(tx),
+		Status:        statusToDigiflazz(tx.Status),
+		RC:            statusToRC(tx.Status),
+		SN:            tx.PaymentReference,
+		Price:         tx.SellingPrice,
+		Sign:          crypto.MD5Hash(apiKey.Key + req.RefID),
 	}, nil
 }
 

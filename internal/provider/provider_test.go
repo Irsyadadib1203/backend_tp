@@ -24,7 +24,7 @@ func (r resolverProviderRepo) GetByID(id uint) (*domain.Provider, error)  { retu
 func (resolverProviderRepo) List() ([]domain.Provider, error)             { return nil, nil }
 func (resolverProviderRepo) Update(*domain.Provider) error                { return nil }
 func (resolverProviderRepo) UpdateBalance(uint, float64) error            { return nil }
-func (resolverProviderRepo) UpdatePriceSyncAt(uint, time.Time) error { return nil }
+func (resolverProviderRepo) UpdatePriceSyncAt(uint, time.Time) error      { return nil }
 func (resolverProviderRepo) LogWebhook(*domain.WebhookLog) error          { return nil }
 func (resolverProviderRepo) ListWebhookLogs(int, int, string) ([]domain.WebhookLog, int64, error) {
 	return nil, 0, nil
@@ -105,7 +105,7 @@ func (r resolverProviderRepoError) GetByID(uint) (*domain.Provider, error)     {
 func (resolverProviderRepoError) List() ([]domain.Provider, error)             { return nil, nil }
 func (resolverProviderRepoError) Update(*domain.Provider) error                { return nil }
 func (resolverProviderRepoError) UpdateBalance(uint, float64) error            { return nil }
-func (resolverProviderRepoError) UpdatePriceSyncAt(uint, time.Time) error { return nil }
+func (resolverProviderRepoError) UpdatePriceSyncAt(uint, time.Time) error      { return nil }
 func (resolverProviderRepoError) LogWebhook(*domain.WebhookLog) error          { return nil }
 func (resolverProviderRepoError) ListWebhookLogs(int, int, string) ([]domain.WebhookLog, int64, error) {
 	return nil, 0, nil

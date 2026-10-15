@@ -392,10 +392,14 @@ type mockGameSupportProvider struct {
 	code string
 }
 
-func (p *mockGameSupportProvider) Code() string                                              { return p.code }
-func (*mockGameSupportProvider) Purchase(context.Context, provider.PurchaseRequest) (*provider.Result, error)  { return nil, nil }
-func (*mockGameSupportProvider) CheckStatus(context.Context, provider.StatusRequest) (*provider.Result, error) { return nil, nil }
-func (*mockGameSupportProvider) Balance(context.Context) (float64, error)                    { return 0, nil }
+func (p *mockGameSupportProvider) Code() string { return p.code }
+func (*mockGameSupportProvider) Purchase(context.Context, provider.PurchaseRequest) (*provider.Result, error) {
+	return nil, nil
+}
+func (*mockGameSupportProvider) CheckStatus(context.Context, provider.StatusRequest) (*provider.Result, error) {
+	return nil, nil
+}
+func (*mockGameSupportProvider) Balance(context.Context) (float64, error) { return 0, nil }
 func (*mockGameSupportProvider) Supports(gameSlug string) bool {
 	return gameSlug == "free-fire" || gameSlug == "codm"
 }
@@ -521,4 +525,3 @@ func TestDualWriteNominal_CreateAndUpdate(t *testing.T) {
 		t.Fatalf("expected updated Kiosgamer code KG-FF100-V2, got %+v", kgPPUpdated)
 	}
 }
-

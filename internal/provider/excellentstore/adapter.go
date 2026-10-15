@@ -253,6 +253,8 @@ func (a *Adapter) Purchase(
 			GameSlug:        request.GameSlug,
 			ProviderOrderID: request.ExistingProviderOrderID,
 			ProviderData:    request.ProviderData,
+			Nickname:        request.Nickname,
+			InvoiceNumber:   request.InvoiceNumber,
 		})
 	}
 
@@ -293,6 +295,10 @@ func (a *Adapter) Purchase(
 	}
 
 	result := resultFromOrder(order, raw)
+	if result.Status == provider.StatusSuccess {
+		result.SN = provider.BuildManualSN(request.Nickname, customerID, request.InvoiceNumber)
+		result.UpdateSN = true
+	}
 	result.RequestRaw, _ = json.Marshal(map[string]any{
 		"product_sku":  sku,
 		"customer":     payload.Customer,
@@ -344,6 +350,10 @@ func (a *Adapter) CheckStatus(
 	}
 
 	result := resultFromOrder(order, raw)
+	if result.Status == provider.StatusSuccess {
+		result.SN = provider.BuildManualSN(request.Nickname, request.CustomerID, request.InvoiceNumber)
+		result.UpdateSN = true
+	}
 	result.RequestRaw, _ = json.Marshal(map[string]string{
 		"action":            "check_status",
 		"provider_order_id": orderID,

@@ -1,8 +1,7 @@
-
 package kiosgamer
 
 import (
-    "testing"
+	"testing"
 )
 
 func TestResolveAppID(t *testing.T) {
@@ -29,4 +28,3 @@ func TestResolveAppID(t *testing.T) {
 // Jalankan diagnostik integrasi secara manual hanya jika
 // tersedia credential dan repository yang valid.
 // Jangan membuat order atau memanggil endpoint pembayaran.
-

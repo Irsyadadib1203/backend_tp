@@ -14,10 +14,10 @@ import (
 )
 
 type JWTClaims struct {
-	UserID uint        `json:"user_id"`
-	Email  string      `json:"email"`
-	Role   domain.Role `json:"role"`
-	Tier   domain.Tier `json:"tier"`
+	UserID  uint        `json:"user_id"`
+	Email   string      `json:"email"`
+	Role    domain.Role `json:"role"`
+	Tier    domain.Tier `json:"tier"`
 	Purpose string      `json:"purpose,omitempty"` // "2fa_pending" untuk temp token
 	jwt.RegisteredClaims
 }
@@ -29,7 +29,7 @@ type LoginResult struct {
 	TempToken   string
 }
 
-	const purpose2FA = "2fa_pending"
+const purpose2FA = "2fa_pending"
 
 type AuthService interface {
 	Register(name, email, password, phone string) (*domain.User, string, error)

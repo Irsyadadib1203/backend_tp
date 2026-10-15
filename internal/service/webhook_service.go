@@ -187,7 +187,6 @@ func (n *partnerNotifier) buildPayload(tx *domain.Transaction, apiKey *domain.AP
 	} else {
 		msg = "Transaksi sedang diproses"
 	}
-	
 
 	data := &H2HResponseData{
 		RefID:         refID,

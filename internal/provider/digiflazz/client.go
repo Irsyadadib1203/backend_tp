@@ -7,10 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
-	"log"
 
 	"topup-backend/config"
 	"topup-backend/internal/domain"
@@ -73,7 +73,7 @@ func (e *APIError) Unwrap() error {
 
 type CallbackPayload struct {
 	Data struct {
-		TrxID 		 string   `json:"trx_id"`
+		TrxID        string  `json:"trx_id"`
 		RefID        string  `json:"ref_id"`
 		CustomerNo   string  `json:"customer_no"`
 		BuyerSkuCode string  `json:"buyer_sku_code"`

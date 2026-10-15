@@ -30,7 +30,7 @@ type GameService interface {
 	UpdateGame(game *domain.Game) error
 	DeleteGame(id uint) error
 	ListGamesAdmin(offset, limit int, search, category string) ([]domain.Game, int64, error)
-	
+
 	// Nominals
 	GetNominalByID(id uint) (*domain.Nominal, error)
 	CreateNominal(nominal *domain.Nominal) error
@@ -39,7 +39,7 @@ type GameService interface {
 	ListNominalsAdmin(offset, limit int, gameID uint, providerID uint, search string) ([]domain.Nominal, int64, error)
 	BatchSwitchProvider(nominalIDs []uint, providerID uint) (*SwitchProviderResult, error)
 	SwitchProviderByGame(gameID uint, providerID uint) (*SwitchProviderResult, error)
-	
+
 	// Catalog Sync from Digiflazz
 	SyncDigiflazzProducts(targetGameID uint, brandFilter string, defaultMarginPercent float64) (int, error)
 	AutoSyncAllPrices() (int, error)
@@ -314,7 +314,7 @@ func isKiosgamerSupportedGame(game *domain.Game) bool {
 	}
 	slug := strings.ToLower(strings.TrimSpace(game.Slug))
 	name := strings.ToLower(strings.TrimSpace(game.Name))
-	
+
 	if strings.Contains(slug, "free-fire") || strings.Contains(slug, "freefire") || strings.Contains(name, "free fire") {
 		return true
 	}
@@ -550,4 +550,3 @@ func (s *gameService) AutoSyncAllPrices() (int, error) {
 
 	return updatedCount, nil
 }
-

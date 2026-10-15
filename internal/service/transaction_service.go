@@ -63,16 +63,16 @@ type TransactionService interface {
 }
 
 type transactionService struct {
-	txRepo       repository.TransactionRepository
-	nominalRepo  repository.NominalRepository
-	gameRepo     repository.GameRepository
-	userRepo     repository.UserRepository
-	paymentRepo  repository.PaymentRepository
-	providerRepo repository.ProviderRepository
-	settingRepo  repository.SystemSettingRepository
-	tripayService          TripayChannelService
-	providerRegistry       *provider.Registry
-	partnerNotifier        PartnerNotifier
+	txRepo           repository.TransactionRepository
+	nominalRepo      repository.NominalRepository
+	gameRepo         repository.GameRepository
+	userRepo         repository.UserRepository
+	paymentRepo      repository.PaymentRepository
+	providerRepo     repository.ProviderRepository
+	settingRepo      repository.SystemSettingRepository
+	tripayService    TripayChannelService
+	providerRegistry *provider.Registry
+	partnerNotifier  PartnerNotifier
 }
 
 func (s *transactionService) SetTripayService(tripayService TripayChannelService) {
@@ -302,7 +302,6 @@ func (s *transactionService) safeRefundTransaction(tx *domain.Transaction, reaso
 	)
 }
 
-
 func (s *transactionService) FulfillOrder(tx *domain.Transaction) error {
 	return s.fulfillOrderRegistry(tx)
 }
@@ -415,7 +414,6 @@ func (s *transactionService) recordConfigurationError(tx *domain.Transaction, er
 	_ = s.txRepo.Update(tx)
 }
 
-
 const (
 	providerResultSourceFulfill   = "fulfill"
 	providerResultSourceCheck     = "check"
@@ -449,6 +447,8 @@ func (s *transactionService) fulfillOrderRegistry(tx *domain.Transaction) error 
 		CustomerID: tx.CustomerID, ServerID: tx.ServerID, GameSlug: gameSlug,
 		ExistingProviderOrderID: tx.RealProviderOrderID(),
 		ProviderData:            tx.ProviderCallbackData,
+		Nickname:                tx.Nickname,
+		InvoiceNumber:           tx.InvoiceNumber,
 	})
 	if result != nil && len(result.RequestRaw) == 0 {
 		result.RequestRaw = requestSnapshot
@@ -492,6 +492,8 @@ func (s *transactionService) checkProviderStatusRegistry(transactionID uint, sou
 	result, callErr := p.CheckStatus(context.Background(), provider.StatusRequest{
 		RefID: tx.ProviderReference(), ProductCode: productCode, CustomerID: tx.CustomerID, ServerID: tx.ServerID,
 		GameSlug: gameSlug, ProviderOrderID: providerOrderID, ProviderData: tx.ProviderCallbackData,
+		Nickname:      tx.Nickname,
+		InvoiceNumber: tx.InvoiceNumber,
 	})
 	if result != nil && len(result.RequestRaw) == 0 {
 		result.RequestRaw = requestSnapshot
@@ -752,6 +754,12 @@ func (s *transactionService) HandleProviderCallback(providerCode string, req *ht
 		return tx, result, nil
 	}
 
+	if result != nil && result.Status == provider.StatusSuccess &&
+		strings.EqualFold(p.Code(), "EXCELLENTSTORE") {
+		result.SN = provider.BuildManualSN(tx.Nickname, tx.CustomerID, tx.InvoiceNumber)
+		result.UpdateSN = true
+	}
+
 	// Apply result through boundary (§3.4, §5)
 	if err := s.applyResult(tx, result, nil, providerResultSourceCallback); err != nil {
 		return nil, nil, err
@@ -759,7 +767,6 @@ func (s *transactionService) HandleProviderCallback(providerCode string, req *ht
 
 	return tx, result, nil
 }
-
 
 func isFinalTransactionStatus(status domain.TransactionStatus) bool {
 	return status == domain.StatusSuccess || status == domain.StatusFailed || status == domain.StatusRefunded
@@ -882,7 +889,6 @@ func (s *transactionService) ManualRetry(transactionID uint) error {
 	return nil
 }
 
-
 // prepareProviderSwitchForRetry menangani retry setelah nominal dipindah provider.
 // Order yang sudah dikirim ke provider lama tidak boleh dikirim lagi ke provider
 // baru selama statusnya belum final gagal (risiko order ganda). Jika sudah
@@ -932,6 +938,8 @@ func (s *transactionService) retryProviderOrder(tx *domain.Transaction) error {
 		CustomerID: tx.CustomerID, ServerID: tx.ServerID, GameSlug: gameSlug,
 		ExistingProviderOrderID: tx.RealProviderOrderID(),
 		ProviderData:            tx.ProviderCallbackData,
+		Nickname:                tx.Nickname,
+		InvoiceNumber:           tx.InvoiceNumber,
 	})
 	if result != nil && len(result.RequestRaw) == 0 {
 		result.RequestRaw = requestSnapshot
@@ -1034,17 +1042,17 @@ func (s *transactionService) ManualSetSuccess(transactionID uint, notes string, 
 	if tx.PaymentVerifiedAt == nil {
 		tx.PaymentVerifiedAt = &now
 	}
-		if sn != "" {
-			tx.SN = sn
-		} else if tx.SN == "" {
-			tx.SN = buildManualSN(tx)
-		}
-		if notes != "" {
-			tx.ProviderMessage = truncateManualText("Manual success: "+notes, 255)
-		}
-		if tx.PaymentReference == "" {
-			tx.PaymentReference = tx.SN
-		}
+	if sn != "" {
+		tx.SN = sn
+	} else if tx.SN == "" {
+		tx.SN = buildManualSN(tx)
+	}
+	if notes != "" {
+		tx.ProviderMessage = truncateManualText("Manual success: "+notes, 255)
+	}
+	if tx.PaymentReference == "" {
+		tx.PaymentReference = tx.SN
+	}
 
 	_ = s.txRepo.Update(tx)
 	err = s.txRepo.UpdateStatus(transactionID, domain.StatusSuccess, fmt.Sprintf("Manual success by admin: %s", notes))

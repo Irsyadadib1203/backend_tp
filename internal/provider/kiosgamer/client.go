@@ -884,39 +884,38 @@ func (s *kiosgamerService) fetchPackedRoleID(ctx context.Context, appID int, ser
 // DiagnosePackedRoleID menguji endpoint roles tanpa membuat transaksi.
 // Fungsi ini hanya untuk diagnostik dan tidak memanggil pay/init.
 func (s *kiosgamerService) DiagnosePackedRoleID(
-    ctx context.Context,
-    gameSlug string,
-    serverID string,
+	ctx context.Context,
+	gameSlug string,
+	serverID string,
 ) (int64, error) {
-    appID := s.resolveAppID(gameSlug)
+	appID := s.resolveAppID(gameSlug)
 
-    if _, err := s.EnsureSession(ctx); err != nil {
-        return 0, fmt.Errorf(
-            "diagnostik gagal pada pemeriksaan sesi: %w", err,
-        )
-    }
+	if _, err := s.EnsureSession(ctx); err != nil {
+		return 0, fmt.Errorf(
+			"diagnostik gagal pada pemeriksaan sesi: %w", err,
+		)
+	}
 
-    packedRoleID, err := s.fetchPackedRoleID(ctx, appID, serverID)
-    if err != nil {
-        return 0, fmt.Errorf(
-            "diagnostik endpoint roles gagal: %w", err,
-        )
-    }
+	packedRoleID, err := s.fetchPackedRoleID(ctx, appID, serverID)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"diagnostik endpoint roles gagal: %w", err,
+		)
+	}
 
-    if packedRoleID <= 0 {
-        return 0, errors.New(
-            "endpoint roles tidak mengembalikan packed_role_id valid",
-        )
-    }
+	if packedRoleID <= 0 {
+		return 0, errors.New(
+			"endpoint roles tidak mengembalikan packed_role_id valid",
+		)
+	}
 
-    log.Printf(
-        "[Kiosgamer Diagnostic] roles berhasil; app_id=%d",
-        appID,
-    )
+	log.Printf(
+		"[Kiosgamer Diagnostic] roles berhasil; app_id=%d",
+		appID,
+	)
 
-    return packedRoleID, nil
+	return packedRoleID, nil
 }
-
 
 func (s *kiosgamerService) pollKiosgamerOrder(ctx context.Context, displayID string) (*KiosgamerOrderResult, error) {
 	delays := []time.Duration{0, 2 * time.Second, 3 * time.Second, 5 * time.Second, 8 * time.Second}

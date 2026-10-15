@@ -161,10 +161,10 @@ func (r *characterizationProviderRepo) ListWebhookLogs(int, int, string) ([]doma
 }
 
 func (r *characterizationTxRepo) FindByRefIDAndUserID(
-    refID string,
-    userID uint,
+	refID string,
+	userID uint,
 ) (*domain.Transaction, error) {
-    return nil, nil
+	return nil, nil
 }
 
 type characterizationUserRepo struct {
@@ -186,14 +186,13 @@ func (r *characterizationUserRepo) UpdateBalance(_ uint, _ float64, mutation dom
 	return nil
 }
 func (r *characterizationProviderRepo) UpdatePriceSyncAt(uint, time.Time) error { return nil }
-func (r *characterizationUserRepo) HasMutation(string, string) (bool, error) { return r.hasRefund, nil }
+func (r *characterizationUserRepo) HasMutation(string, string) (bool, error)    { return r.hasRefund, nil }
 func (r *characterizationUserRepo) List(int, int, string) ([]domain.User, int64, error) {
 	return nil, 0, nil
 }
 func (r *characterizationUserRepo) Delete(uint) error                              { return nil }
 func (r *characterizationUserRepo) CreateAPIKey(*domain.APIKey) error              { return nil }
 func (r *characterizationUserRepo) GetAPIKeyByUserID(uint) (*domain.APIKey, error) { return nil, nil }
-
 
 type characterizationDigiflazz struct {
 	createResp              *digiflazz.TransactionResponse
@@ -203,8 +202,10 @@ type characterizationDigiflazz struct {
 	createCalls, checkCalls int
 }
 
-func (d *characterizationDigiflazz) GetPriceList() ([]digiflazz.PriceListItem, error) { return nil, nil }
-func (d *characterizationDigiflazz) CheckBalance() (float64, error)                  { return 0, nil }
+func (d *characterizationDigiflazz) GetPriceList() ([]digiflazz.PriceListItem, error) {
+	return nil, nil
+}
+func (d *characterizationDigiflazz) CheckBalance() (float64, error) { return 0, nil }
 func (d *characterizationDigiflazz) CreateTransaction(string, string, string, bool) (*digiflazz.TransactionResponse, error) {
 	d.createCalls++
 	return d.createResp, d.createErr
@@ -275,7 +276,6 @@ func characterizationDigiflazzResponse(status, message, sn string) *digiflazz.Tr
 	r.Data.RefID, r.Data.Status, r.Data.Message, r.Data.SN = "DF-ORDER", status, message, sn
 	return r
 }
-
 
 type registryTestProvider struct {
 	code                      string

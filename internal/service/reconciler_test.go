@@ -25,10 +25,10 @@ type fakeReconcilerTxRepo struct {
 }
 
 func (r *fakeReconcilerTxRepo) FindByRefIDAndUserID(
-    refID string,
-    userID uint,
+	refID string,
+	userID uint,
 ) (*domain.Transaction, error) {
-    return nil, nil
+	return nil, nil
 }
 
 func (r *fakeReconcilerTxRepo) Create(*domain.Transaction) error { return nil }
@@ -155,7 +155,7 @@ func (s *reconcilerTestSvc) GetFinanceSummary(string, bool) (*domain.DailyFinanc
 func (s *reconcilerTestSvc) RefreshAllProviderBalances(context.Context) ([]domain.Provider, error) {
 	return nil, nil
 }
-func (s *reconcilerTestSvc) SetTripayService(TripayChannelService)       {}
+func (s *reconcilerTestSvc) SetTripayService(TripayChannelService) {}
 
 // Verify that reconcilerTestSvc satisfies the service interface at compile time.
 var _ TransactionService = (*reconcilerTestSvc)(nil)
