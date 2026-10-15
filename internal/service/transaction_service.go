@@ -1080,6 +1080,7 @@ func (s *transactionService) ManualRefund(transactionID uint, notes string) erro
 
 	now := time.Now()
 	tx.Status = domain.StatusRefunded
+	tx.ProviderStatus = "Refunded"
 	tx.CompletedAt = &now
 
 	_ = s.txRepo.Update(tx)
