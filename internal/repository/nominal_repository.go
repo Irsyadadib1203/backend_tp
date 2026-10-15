@@ -19,10 +19,20 @@ type NominalRepository interface {
 	UpsertFromDigiflazz(nominals []domain.Nominal) error
 	BatchSwitchProvider(nominalIDs []uint, providerID uint) error
 	SwitchProviderByGame(gameID uint, providerID uint) error
+	SwitchProviderWithPrices(providerID uint, updates []NominalSwitchUpdate) error
 }
 
 type nominalRepository struct {
 	db *gorm.DB
+}
+
+type NominalSwitchUpdate struct {
+	ID            uint
+	BasePrice     float64
+	PricePublic   float64
+	PriceMember   float64
+	PriceVIP      float64
+	PriceReseller float64
 }
 
 func NewNominalRepository(db *gorm.DB) NominalRepository {
@@ -187,6 +197,26 @@ func (r *nominalRepository) UpsertFromDigiflazz(nominals []domain.Nominal) error
 				if err := tx.Save(&existing).Error; err != nil {
 					return err
 				}
+			}
+		}
+		return nil
+	})
+}
+func (r *nominalRepository) SwitchProviderWithPrices(providerID uint, updates []NominalSwitchUpdate) error {
+	if providerID == 0 || len(updates) == 0 {
+		return nil
+	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		for _, u := range updates {
+			if err := tx.Model(&domain.Nominal{}).Where("id = ?", u.ID).Updates(map[string]interface{}{
+				"provider_id":    providerID,
+				"base_price":     u.BasePrice,
+				"price_public":   u.PricePublic,
+				"price_member":   u.PriceMember,
+				"price_vip":      u.PriceVIP,
+				"price_reseller": u.PriceReseller,
+			}).Error; err != nil {
+				return err
 			}
 		}
 		return nil

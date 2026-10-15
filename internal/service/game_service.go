@@ -337,68 +337,91 @@ func (s *gameService) BatchSwitchProvider(nominalIDs []uint, providerID uint) (*
 		TotalRequested: len(nominalIDs),
 		SkippedItems:   make([]string, 0),
 	}
-
-	var validIDs []uint
-
-	if strings.EqualFold(provider.Code, "KIOSGAMER") {
-		for _, nid := range nominalIDs {
-			nom, err := s.nominalRepo.FindByID(nid)
-			if err != nil || nom == nil {
-				result.SkippedCount++
-				result.SkippedItems = append(result.SkippedItems, fmt.Sprintf("Nominal ID %d (Tidak ditemukan)", nid))
-				continue
-			}
-
-			// 1. Tolok Ukur Game Whitelist (capability GameSupport)
-			game := nom.Game
-			if game == nil && nom.GameID > 0 {
-				game, _ = s.gameRepo.FindByID(nom.GameID)
-			}
-
-			if !s.isGameSupportedByProvider(provider, game) {
-				gameTitle := "Game ini"
-				if game != nil {
-					gameTitle = game.Name
-				}
-				result.SkippedCount++
-				if strings.EqualFold(provider.Code, "KIOSGAMER") {
-					result.SkippedItems = append(result.SkippedItems, fmt.Sprintf("%s (%s tidak didukung oleh Kiosgamer, tetap di provider saat ini)", nom.Name, gameTitle))
-				} else {
-					result.SkippedItems = append(result.SkippedItems, fmt.Sprintf("%s (%s tidak didukung oleh %s, tetap di provider saat ini)", nom.Name, gameTitle, provider.Name))
-				}
-				continue
-			}
-
-			// 2. Tolok Ukur SKU Kiosgamer Mapping (Harus sudah terhubung ke KiosgamerProductCode)
-			if strings.TrimSpace(nom.KiosgamerProductCode) == "" {
-				result.SkippedCount++
-				result.SkippedItems = append(result.SkippedItems, fmt.Sprintf("%s (SKU Kiosgamer belum di-mapping, tetap di provider saat ini)", nom.Name))
-				continue
-			}
-
-			validIDs = append(validIDs, nid)
-		}
-	} else {
-		// Non-Kiosgamer (e.g. Digiflazz) -> switch all
-		validIDs = nominalIDs
+	skip := func(msg string) {
+		result.SkippedCount++
+		result.SkippedItems = append(result.SkippedItems, msg)
 	}
 
-	if len(validIDs) > 0 {
-		if err := s.nominalRepo.BatchSwitchProvider(validIDs, providerID); err != nil {
+	isKios := strings.EqualFold(provider.Code, "KIOSGAMER")
+	var updates []repository.NominalSwitchUpdate
+
+	for _, nid := range nominalIDs {
+		nom, err := s.nominalRepo.FindByID(nid)
+		if err != nil || nom == nil {
+			skip(fmt.Sprintf("Nominal ID %d (Tidak ditemukan)", nid))
+			continue
+		}
+
+		// 1. Game harus didukung provider tujuan
+		game := nom.Game
+		if game == nil && nom.GameID > 0 {
+			game, _ = s.gameRepo.FindByID(nom.GameID)
+		}
+		if !s.isGameSupportedByProvider(provider, game) {
+			gameTitle := "Game ini"
+			if game != nil {
+				gameTitle = game.Name
+			}
+			skip(fmt.Sprintf("%s (%s tidak didukung oleh %s, tetap di provider saat ini)", nom.Name, gameTitle, provider.Name))
+			continue
+		}
+
+		// 2. Cari provider_product milik provider tujuan
+		var pp *domain.ProviderProduct
+		for i := range nom.ProviderProducts {
+			if nom.ProviderProducts[i].ProviderID == providerID {
+				pp = &nom.ProviderProducts[i]
+				break
+			}
+		}
+
+		// 3. SKU provider tujuan harus ada
+		sku := ""
+		if pp != nil {
+			sku = strings.TrimSpace(pp.ProductCode)
+		}
+		if sku == "" && isKios {
+			sku = strings.TrimSpace(nom.KiosgamerProductCode) // legacy
+		}
+		if sku == "" {
+			skip(fmt.Sprintf("%s (SKU %s belum diisi, tetap di provider saat ini)", nom.Name, provider.Name))
+			continue
+		}
+
+		// 4. Harga modal provider tujuan harus ada dan > 0
+		if pp == nil || pp.CostPrice == nil || *pp.CostPrice <= 0 {
+			skip(fmt.Sprintf("%s (Harga modal %s belum diisi, tetap di provider saat ini)", nom.Name, provider.Name))
+			continue
+		}
+
+		// 5. base_price = cost_price, semua tier dihitung ulang dari margin nominal ini
+		nom.ApplyBasePrice(*pp.CostPrice)
+		updates = append(updates, repository.NominalSwitchUpdate{
+			ID:            nom.ID,
+			BasePrice:     nom.BasePrice,
+			PricePublic:   nom.PricePublic,
+			PriceMember:   nom.PriceMember,
+			PriceVIP:      nom.PriceVIP,
+			PriceReseller: nom.PriceReseller,
+		})
+	}
+
+	if len(updates) > 0 {
+		if err := s.nominalRepo.SwitchProviderWithPrices(providerID, updates); err != nil {
 			return nil, fmt.Errorf("gagal memperbarui provider: %w", err)
 		}
 		s.invalidateGameCache()
-		result.SwitchedCount = len(validIDs)
+		result.SwitchedCount = len(updates)
 	}
 
-	if result.SkippedCount > 0 && result.SwitchedCount > 0 {
-		result.Message = fmt.Sprintf("%d nominal berhasil dialihkan ke %s. %d nominal tetap di provider lama (karena game tidak didukung / SKU belum dimapping).", result.SwitchedCount, provider.Name, result.SkippedCount)
-	} else if result.SkippedCount > 0 && result.SwitchedCount == 0 {
-		result.Message = fmt.Sprintf("Tidak ada nominal yang dialihkan. Semua %d nominal tetap di provider lama karena game tidak didukung atau SKU belum dimapping.", result.SkippedCount)
-	} else {
-		result.Message = fmt.Sprintf("Berhasil mengalihkan %d nominal ke provider %s.", result.SwitchedCount, provider.Name)
+	switch {
+	case result.SkippedCount > 0 && result.SwitchedCount > 0:
+		result.Message = fmt.Sprintf("%d nominal berhasil dialihkan ke %s (harga modal & harga jual ikut diperbarui). %d nominal tetap di provider lama (game tidak didukung / SKU atau harga modal belum diisi).", result.SwitchedCount, provider.Name, result.SkippedCount)
+	case result.SkippedCount > 0:
+		result.Message = fmt.Sprintf("Tidak ada nominal yang dialihkan. Semua %d nominal tetap di provider lama karena game tidak didukung atau SKU/harga modal belum diisi.", result.SkippedCount)
+	default:
+		result.Message = fmt.Sprintf("Berhasil mengalihkan %d nominal ke provider %s. Harga modal dan harga jual sudah diperbarui.", result.SwitchedCount, provider.Name)
 	}
-
 	return result, nil
 }
 

@@ -8,6 +8,7 @@ import (
 
 	"topup-backend/internal/domain"
 	"topup-backend/internal/provider"
+	"topup-backend/internal/repository"
 )
 
 // Mock ProviderRepository
@@ -451,6 +452,21 @@ func TestBatchSwitchProvider_WithRegistryCapabilityGameSupport(t *testing.T) {
 	if res.SkippedCount != 2 {
 		t.Errorf("expected SkippedCount = 2, got %d", res.SkippedCount)
 	}
+}
+func ppCost(v float64) *float64 { return &v }
+
+func (m *mockNominalRepo) SwitchProviderWithPrices(providerID uint, updates []repository.NominalSwitchUpdate) error {
+	for _, u := range updates {
+		if n, ok := m.nominals[u.ID]; ok {
+			n.ProviderID = providerID
+			n.BasePrice = u.BasePrice
+			n.PricePublic = u.PricePublic
+			n.PriceMember = u.PriceMember
+			n.PriceVIP = u.PriceVIP
+			n.PriceReseller = u.PriceReseller
+		}
+	}
+	return nil
 }
 
 func TestDualWriteNominal_CreateAndUpdate(t *testing.T) {
