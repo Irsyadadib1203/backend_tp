@@ -889,7 +889,7 @@ func (h *AdminHandler) GetTransactionReferenceSettings(c *gin.Context) {
 			reference = provider.ParseReferenceConfig(setting.Value)
 		}
 	}
-	response.Success(c, "Global transaction reference settings loaded", gin.H{"invoice_template": reference.InvoiceTemplate, "ref_id_template": reference.RefIDTemplate, "tokens": []string{"{date}", "{time}", "{timestamp}", "{unix}", "{random}", "{customer_id}", "{server_id}", "{nominal_id}", "{provider_code}"}})
+	response.Success(c, "Global transaction reference settings loaded", gin.H{"invoice_template": reference.InvoiceTemplate, "ref_id_template": reference.RefIDTemplate, "tokens": []string{"{date}", "{time}", "{timestamp}", "{unix}", "{random}", "{customer_id}", "{server_id}", "{nominal_id}", "{provider_code}","{date_short}","{timestamp_short}","{alnum}"}})
 }
 
 func (h *AdminHandler) SaveTransactionReferenceSettings(c *gin.Context) {
