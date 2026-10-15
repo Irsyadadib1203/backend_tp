@@ -328,16 +328,16 @@ func (a *Adapter) CheckStatus(
 		return nil, configurationError(err)
 	}
 
-	orderID := strings.TrimSpace(request.ProviderOrderID)
-	if orderID == "" {
-		return nil, configurationError(errors.New("ExcellentStore: ProviderOrderID diperlukan untuk cek status"))
+	refID := strings.TrimSpace(request.RefID)
+	if refID == "" {
+		return nil, configurationError(errors.New("ExcellentStore: RefID diperlukan untuk cek status"))
 	}
 
 	raw, err := a.request(
 		ctx,
 		creds,
 		http.MethodGet,
-		"/orders/"+url.PathEscape(orderID),
+		"/orders/by-reference/"+url.PathEscape(refID),
 		nil,
 	)
 	if err != nil {
@@ -356,7 +356,7 @@ func (a *Adapter) CheckStatus(
 	}
 	result.RequestRaw, _ = json.Marshal(map[string]string{
 		"action":            "check_status",
-		"provider_order_id": orderID,
+		"reference_id":      refID,
 	})
 	result.Raw = raw
 	return result, nil
