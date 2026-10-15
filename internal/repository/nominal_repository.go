@@ -181,22 +181,26 @@ func (r *nominalRepository) UpsertFromDigiflazz(nominals []domain.Nominal) error
 			var existing domain.Nominal
 			err := tx.Where("provider_product_code = ?", nom.ProviderProductCode).First(&existing).Error
 			if err != nil {
-				// Create new
+				// Nominal baru
 				nom.CalculatePrices()
 				if err := tx.Create(&nom).Error; err != nil {
 					return err
 				}
-			} else {
-				// Update base price and recalculate
+				continue
+			}
+
+			if nom.Name != "" {
+				existing.Name = nom.Name
+			}
+			// Harga & status hanya mengikuti Digiflazz jika Digiflazz
+			// memang provider aktif nominal ini.
+			if existing.ProviderID == nom.ProviderID {
 				existing.BasePrice = nom.BasePrice
 				existing.IsActive = nom.IsActive
-				if nom.Name != "" {
-					existing.Name = nom.Name
-				}
 				existing.ForceCalculatePrices()
-				if err := tx.Save(&existing).Error; err != nil {
-					return err
-				}
+			}
+			if err := tx.Save(&existing).Error; err != nil {
+				return err
 			}
 		}
 		return nil

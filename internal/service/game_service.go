@@ -39,6 +39,7 @@ type GameService interface {
 	ListNominalsAdmin(offset, limit int, gameID uint, providerID uint, search string) ([]domain.Nominal, int64, error)
 	BatchSwitchProvider(nominalIDs []uint, providerID uint) (*SwitchProviderResult, error)
 	SwitchProviderByGame(gameID uint, providerID uint) (*SwitchProviderResult, error)
+	SyncBasePriceFromActiveProvider(nominalID uint) (bool, error)
 
 	// Catalog Sync from Digiflazz
 	SyncDigiflazzProducts(targetGameID uint, brandFilter string, defaultMarginPercent float64) (int, error)
@@ -510,7 +511,7 @@ func (s *gameService) SyncDigiflazzProducts(targetGameID uint, brandFilter strin
 		if s.providerProductRepo != nil {
 			for _, nom := range syncedNominals {
 				if existing, err := s.nominalRepo.FindByProviderCode(nom.ProviderProductCode); err == nil && existing != nil {
-					costPrice := existing.BasePrice
+					costPrice := nom.BasePrice
 					_ = s.providerProductRepo.Upsert(&domain.ProviderProduct{
 						NominalID:   existing.ID,
 						ProviderID:  providerID,
@@ -527,22 +528,28 @@ func (s *gameService) SyncDigiflazzProducts(targetGameID uint, brandFilter strin
 }
 
 func (s *gameService) AutoSyncAllPrices() (int, error) {
-	// 1. Fetch latest prices from Digiflazz
+	// 1. Ambil harga terbaru dari Digiflazz
 	products, err := s.digiflazzBuyer.GetPriceList()
 	if err != nil {
 		return 0, err
 	}
 
-	// 2. Map Digiflazz products by SKU for O(1) lookup
+	// 2. Map produk Digiflazz berdasarkan SKU
 	skuMap := make(map[string]digiflazz.PriceListItem, len(products))
 	for _, p := range products {
 		skuMap[strings.TrimSpace(p.BuyerSkuCode)] = p
 	}
 
-	// 3. Fetch all nominals from database
+	// 3. Ambil semua nominal dari database
 	existingNominals, _, err := s.nominalRepo.ListAllAdmin(0, 5000, 0, 0, "")
 	if err != nil {
 		return 0, err
+	}
+
+	digiProvider, _ := s.providerRepo.GetByCode("DIGIFLAZZ")
+	var digiID uint
+	if digiProvider != nil {
+		digiID = digiProvider.ID
 	}
 
 	updatedCount := 0
@@ -551,18 +558,35 @@ func (s *gameService) AutoSyncAllPrices() (int, error) {
 		if !found {
 			continue
 		}
+		digiActive := digiItem.BuyerProductStatus && digiItem.SellerProductStatus
 
-		// Check if price or status changed
+		// Cost price Digiflazz selalu diperbarui, apa pun provider aktif nominal ini,
+		// supaya angkanya benar saat nominal dipindah balik ke Digiflazz.
+		if s.providerProductRepo != nil && digiID > 0 {
+			cp := digiItem.Price
+			_ = s.providerProductRepo.Upsert(&domain.ProviderProduct{
+				NominalID:   nom.ID,
+				ProviderID:  digiID,
+				ProductCode: nom.ProviderProductCode,
+				CostPrice:   &cp,
+				IsActive:    digiActive,
+			})
+		}
+
+		// Harga jual & status nominal hanya mengikuti Digiflazz
+		// jika Digiflazz adalah provider aktif nominal ini.
+		if digiID > 0 && nom.ProviderID != digiID {
+			continue
+		}
+
 		priceChanged := nom.BasePrice != digiItem.Price
-		statusChanged := nom.IsActive != (digiItem.BuyerProductStatus && digiItem.SellerProductStatus)
-
+		statusChanged := nom.IsActive != digiActive
 		if priceChanged || statusChanged {
 			nom.BasePrice = digiItem.Price
-			nom.IsActive = digiItem.BuyerProductStatus && digiItem.SellerProductStatus
+			nom.IsActive = digiActive
 			nom.ForceCalculatePrices()
 			if err := s.nominalRepo.Update(&nom); err == nil {
 				updatedCount++
-				s.dualWriteProviderProducts(&nom)
 			}
 		}
 	}
@@ -572,4 +596,29 @@ func (s *gameService) AutoSyncAllPrices() (int, error) {
 	}
 
 	return updatedCount, nil
+}
+func (s *gameService) SyncBasePriceFromActiveProvider(nominalID uint) (bool, error) {
+	nom, err := s.nominalRepo.FindByID(nominalID)
+	if err != nil || nom == nil {
+		return false, fmt.Errorf("nominal %d tidak ditemukan", nominalID)
+	}
+	for i := range nom.ProviderProducts {
+		pp := nom.ProviderProducts[i]
+		if pp.ProviderID != nom.ProviderID {
+			continue
+		}
+		if pp.CostPrice == nil || *pp.CostPrice <= 0 {
+			return false, nil
+		}
+		if nom.BasePrice == *pp.CostPrice {
+			return false, nil
+		}
+		nom.ApplyBasePrice(*pp.CostPrice)
+		if err := s.nominalRepo.Update(nom); err != nil {
+			return false, err
+		}
+		s.invalidateGameCache()
+		return true, nil
+	}
+	return false, nil
 }

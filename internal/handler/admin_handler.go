@@ -383,8 +383,12 @@ func (h *AdminHandler) UpsertNominalProviderProducts(c *gin.Context) {
 		response.Error(c, http.StatusInternalServerError, "Sebagian gagal disimpan: "+strings.Join(upsertErrors, "; "))
 		return
 	}
-
-	response.Success(c, "Provider products updated successfully", gin.H{"nominal_id": nominalID, "updated": len(entries)})
+	repriced, err := h.gameService.SyncBasePriceFromActiveProvider(uint(nominalID))
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "SKU tersimpan, tetapi gagal memperbarui harga jual: "+err.Error())
+		return
+	}
+	response.Success(c, "Provider products updated successfully", gin.H{"nominal_id": nominalID, "updated": len(entries), "repriced": repriced})
 }
 
 // POST /admin/transactions/bulk  {"action":"retry|success|fail","ids":[1,2],"notes":""}
