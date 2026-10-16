@@ -18,7 +18,7 @@ type Nominal struct {
 	BasePrice           float64        `gorm:"type:decimal(15,2);not null" json:"base_price"`
 	PricePublic         float64        `gorm:"type:decimal(15,2);not null" json:"price_public"`
 	PriceMember         float64        `gorm:"type:decimal(15,2);not null" json:"price_member"`
-	PriceVIP            float64        `gorm:"type:decimal(15,2);not null" json:"price_vip"`
+	PriceVIP            float64        `gorm:"column:price_vip;type:decimal(15,2);not null" json:"price_vip"`
 	PriceReseller       float64        `gorm:"type:decimal(15,2);not null" json:"price_reseller"` // for H2H Seller
 	
 	MarginPercent       float64        `gorm:"type:decimal(5,2);default:0" json:"margin_percent"`
