@@ -28,6 +28,7 @@ type nominalRepository struct {
 
 type NominalSwitchUpdate struct {
 	ID            uint
+	ProviderProductCode string
 	BasePrice     float64
 	PricePublic   float64
 	PriceMember   float64
@@ -214,6 +215,7 @@ func (r *nominalRepository) SwitchProviderWithPrices(providerID uint, updates []
 		for _, u := range updates {
 			if err := tx.Model(&domain.Nominal{}).Where("id = ?", u.ID).Updates(map[string]interface{}{
 				"provider_id":    providerID,
+				"provider_product_code": u.ProviderProductCode,
 				"base_price":     u.BasePrice,
 				"price_public":   u.PricePublic,
 				"price_member":   u.PriceMember,

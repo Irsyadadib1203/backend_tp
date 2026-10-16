@@ -215,7 +215,9 @@ func (s *gameService) validateNominalProvider(nominal *domain.Nominal) error {
 		}
 		return fmt.Errorf("provider %s tidak mendukung game '%s'", provider.Name, game.Name)
 	}
-	if strings.EqualFold(provider.Code, "KIOSGAMER") && strings.TrimSpace(nominal.KiosgamerProductCode) == "" {
+	if strings.EqualFold(provider.Code, "KIOSGAMER") &&
+		strings.TrimSpace(nominal.ProviderProductCode) == "" &&
+		strings.TrimSpace(nominal.KiosgamerProductCode) == "" {
 		return errors.New("SKU Kiosgamer wajib diisi jika memilih provider pemrosesan Kiosgamer")
 	}
 	return nil
@@ -231,7 +233,7 @@ func (s *gameService) CreateNominal(nominal *domain.Nominal) error {
 	nominal.CalculatePrices()
 	err := s.nominalRepo.Create(nominal)
 	if err == nil {
-		s.dualWriteProviderProducts(nominal)
+		s.dualWriteProviderProducts(nominal, nil)
 		s.invalidateGameCache()
 	}
 	return err
@@ -244,6 +246,12 @@ func (s *gameService) UpdateNominal(nominal *domain.Nominal) error {
 	// Dual-write safety: kolom lama tetap ditulis dan tidak boleh tertimpa kosong (§3.6, §5)
 	existing, _ := s.nominalRepo.FindByID(nominal.ID)
 	if existing != nil {
+		if nominal.ProviderID == 0 {
+			nominal.ProviderID = existing.ProviderID
+		}
+		if existing.ProviderID != 0 && nominal.ProviderID != existing.ProviderID {
+			return errors.New("provider pemrosesan tidak bisa diubah lewat edit; gunakan fitur Pindah Provider")
+		}
 		if strings.TrimSpace(nominal.ProviderProductCode) == "" && existing.ProviderProductCode != "" {
 			nominal.ProviderProductCode = existing.ProviderProductCode
 		}
@@ -257,44 +265,54 @@ func (s *gameService) UpdateNominal(nominal *domain.Nominal) error {
 	nominal.CalculatePrices()
 	err := s.nominalRepo.Update(nominal)
 	if err == nil {
-		s.dualWriteProviderProducts(nominal)
+		s.dualWriteProviderProducts(nominal, existing)
 		s.invalidateGameCache()
 	}
 	return err
 }
 
-func (s *gameService) dualWriteProviderProducts(nominal *domain.Nominal) {
+func (s *gameService) dualWriteProviderProducts(nominal, existing *domain.Nominal) {
 	if s.providerProductRepo == nil || nominal == nil || nominal.ID == 0 {
 		return
 	}
-	if strings.TrimSpace(nominal.ProviderProductCode) != "" {
-		pID := nominal.ProviderID
-		if pID == 0 {
-			if p, err := s.providerRepo.GetByCode("DIGIFLAZZ"); err == nil && p != nil {
-				pID = p.ID
+	code := strings.TrimSpace(nominal.ProviderProductCode)
+	if code == "" {
+		return
+	}
+	pID := nominal.ProviderID
+	if pID == 0 {
+		if p, err := s.providerRepo.GetByCode("DIGIFLAZZ"); err == nil && p != nil {
+			pID = p.ID
+		}
+	}
+	if pID == 0 {
+		return
+	}
+
+	pp := &domain.ProviderProduct{
+		NominalID:     nominal.ID,
+		ProviderID:    pID,
+		ProductCode:   code,
+		IsActive:      nominal.IsActive,
+		AutoSyncPrice: true,
+	}
+	var prev *domain.ProviderProduct
+	if existing != nil {
+		for i := range existing.ProviderProducts {
+			if existing.ProviderProducts[i].ProviderID == pID {
+				prev = &existing.ProviderProducts[i]
+				break
 			}
 		}
-		if pID > 0 {
-			costPrice := nominal.BasePrice
-			_ = s.providerProductRepo.Upsert(&domain.ProviderProduct{
-				NominalID:   nominal.ID,
-				ProviderID:  pID,
-				ProductCode: nominal.ProviderProductCode,
-				CostPrice:   &costPrice,
-				IsActive:    nominal.IsActive,
-			})
-		}
 	}
-	if strings.TrimSpace(nominal.KiosgamerProductCode) != "" {
-		if p, err := s.providerRepo.GetByCode("KIOSGAMER"); err == nil && p != nil {
-			_ = s.providerProductRepo.Upsert(&domain.ProviderProduct{
-				NominalID:   nominal.ID,
-				ProviderID:  p.ID,
-				ProductCode: nominal.KiosgamerProductCode,
-				IsActive:    nominal.IsActive,
-			})
-		}
+	if prev != nil {
+		pp.CostPrice = prev.CostPrice
+		pp.AutoSyncPrice = prev.AutoSyncPrice
+	} else {
+		cp := nominal.BasePrice
+		pp.CostPrice = &cp
 	}
+	_ = s.providerProductRepo.Upsert(pp)
 }
 
 func (s *gameService) DeleteNominal(id uint) error {
@@ -396,14 +414,16 @@ func (s *gameService) BatchSwitchProvider(nominalIDs []uint, providerID uint) (*
 		}
 
 		// 5. base_price = cost_price, semua tier dihitung ulang dari margin nominal ini
+		
 		nom.ApplyBasePrice(*pp.CostPrice)
 		updates = append(updates, repository.NominalSwitchUpdate{
-			ID:            nom.ID,
-			BasePrice:     nom.BasePrice,
-			PricePublic:   nom.PricePublic,
-			PriceMember:   nom.PriceMember,
-			PriceVIP:      nom.PriceVIP,
-			PriceReseller: nom.PriceReseller,
+			ID:                  nom.ID,
+			ProviderProductCode: sku,
+			BasePrice:           nom.BasePrice,
+			PricePublic:         nom.PricePublic,
+			PriceMember:         nom.PriceMember,
+			PriceVIP:            nom.PriceVIP,
+			PriceReseller:       nom.PriceReseller,
 		})
 	}
 
@@ -554,12 +574,21 @@ func (s *gameService) AutoSyncAllPrices() (int, error) {
 
 	updatedCount := 0
 	for _, nom := range existingNominals {
-		digiItem, found := skuMap[strings.TrimSpace(nom.ProviderProductCode)]
+		digiSku := ""
+		for _, pp := range nom.ProviderProducts {
+			if pp.ProviderID == digiID {
+				digiSku = strings.TrimSpace(pp.ProductCode)
+				break
+			}
+		}
+		if digiSku == "" && nom.ProviderID == digiID {
+			digiSku = strings.TrimSpace(nom.ProviderProductCode)
+		}
+		digiItem, found := skuMap[digiSku]
 		if !found {
 			continue
 		}
 		digiActive := digiItem.BuyerProductStatus && digiItem.SellerProductStatus
-		// Cek toggle auto-sync untuk provider_product Digiflazz nominal ini
 		autoSync := true
 		for _, pp := range nom.ProviderProducts {
 			if pp.ProviderID == digiID {
@@ -570,16 +599,15 @@ func (s *gameService) AutoSyncAllPrices() (int, error) {
 		if !autoSync {
 			continue
 		}
-		// Cost price Digiflazz selalu diperbarui, apa pun provider aktif nominal ini,
-		// supaya angkanya benar saat nominal dipindah balik ke Digiflazz.
 		if s.providerProductRepo != nil && digiID > 0 {
 			cp := digiItem.Price
 			_ = s.providerProductRepo.Upsert(&domain.ProviderProduct{
-				NominalID:   nom.ID,
-				ProviderID:  digiID,
-				ProductCode: nom.ProviderProductCode,
-				CostPrice:   &cp,
-				IsActive:    digiActive,
+				NominalID:     nom.ID,
+				ProviderID:    digiID,
+				ProductCode:   digiSku,
+				CostPrice:     &cp,
+				IsActive:      digiActive,
+				AutoSyncPrice: true,
 			})
 		}
 
