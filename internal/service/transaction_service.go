@@ -488,6 +488,11 @@ func (s *transactionService) checkProviderStatusRegistry(transactionID uint, sou
 			}
 		}
 	}
+	if providerOrderID == "" &&
+		!strings.EqualFold(p.Code(), provider.KiosgamerCode) &&
+		shouldPurchaseInsteadOfCheck(tx) {
+		return s.purchaseInsteadOfCheck(tx, nominal, p, productCode, gameSlug, source)
+	}
 	requestSnapshot := provider.RequestSnapshot("check_status", p.Code(), tx.ProviderReference(), productCode, tx.CustomerID, tx.ServerID, providerOrderID)
 	result, callErr := p.CheckStatus(context.Background(), provider.StatusRequest{
 		RefID: tx.ProviderReference(), ProductCode: productCode, CustomerID: tx.CustomerID, ServerID: tx.ServerID,
@@ -515,6 +520,56 @@ func (s *transactionService) checkProviderStatusRegistry(transactionID uint, sou
 		tx = current
 	}
 	if err := s.applyResult(tx, result, callErr, source); err != nil {
+		return nil, registryCheckError(p.Code(), err)
+	}
+	return tx, nil
+}
+// Hanya transaksi yang sudah dibayar (processing) dengan status provider "pending".
+// "Harga Naik" dan "Konfigurasi Error" tetap tertahan, tidak ikut dikirim.
+func shouldPurchaseInsteadOfCheck(tx *domain.Transaction) bool {
+	if tx == nil || tx.Status != domain.StatusProcessing {
+		return false
+	}
+	ps := strings.ToLower(tx.ProviderStatus)
+	if !strings.Contains(ps, "pending") {
+		return false
+	}
+	return !strings.Contains(ps, "harga naik") && !strings.Contains(ps, "konfigurasi")
+}
+
+func (s *transactionService) purchaseInsteadOfCheck(tx *domain.Transaction, nominal *domain.Nominal, p provider.Provider, productCode, gameSlug, source string) (*domain.Transaction, error) {
+	// Guard yang sama dengan fulfillOrderRegistry
+	if nominal.BasePrice > tx.SellingPrice {
+		return tx, nil
+	}
+	providerRef := tx.ProviderReference()
+	requestSnapshot := provider.RequestSnapshot("purchase", p.Code(), providerRef, productCode, tx.CustomerID, tx.ServerID, "")
+	result, callErr := p.Purchase(context.Background(), provider.PurchaseRequest{
+		RefID: providerRef, ProductCode: productCode, ProductName: nominal.Name,
+		CustomerID: tx.CustomerID, ServerID: tx.ServerID, GameSlug: gameSlug,
+		ProviderData:  tx.ProviderCallbackData,
+		Nickname:      tx.Nickname,
+		InvoiceNumber: tx.InvoiceNumber,
+	})
+	if result != nil && len(result.RequestRaw) == 0 {
+		result.RequestRaw = requestSnapshot
+	}
+	if providerErr, ok := callErr.(*provider.ProviderError); ok && len(providerErr.RequestRaw) == 0 {
+		providerErr.RequestRaw = requestSnapshot
+	}
+	// Jangan timpa status final yang masuk saat request berjalan
+	if source == providerResultSourceReconcile {
+		current, err := s.txRepo.FindByID(tx.ID)
+		if err != nil || current == nil {
+			return nil, errors.New("transaksi tidak ditemukan")
+		}
+		if current.Status != domain.StatusProcessing {
+			return current, nil
+		}
+		tx = current
+	}
+	// source fulfill: hasil Purchase diterapkan (order ID tersimpan, pending -> processing)
+	if err := s.applyResult(tx, result, callErr, providerResultSourceFulfill); err != nil {
 		return nil, registryCheckError(p.Code(), err)
 	}
 	return tx, nil

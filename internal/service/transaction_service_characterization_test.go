@@ -91,6 +91,9 @@ func (r *characterizationTxRepo) ListByUser(uint, int, int) ([]domain.Transactio
 func (r *characterizationTxRepo) ListAdmin(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string) ([]domain.Transaction, int64, error) {
 	return nil, 0, nil
 }
+func (r *characterizationTxRepo) FindReconcileQueue(minAge time.Duration, limit int) ([]domain.Transaction, error) {
+	return nil, nil
+}
 func (r *characterizationTxRepo) GetDashboardStats() (map[string]interface{}, error) { return nil, nil }
 func (r *characterizationTxRepo) GetDailyProviderStats(string, string) ([]repository.ProviderStatRow, error) {
 	return nil, nil

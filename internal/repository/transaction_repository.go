@@ -47,6 +47,7 @@ type TransactionRepository interface {
 	GetDailyProviderStats(startDate, endDate string) ([]ProviderStatRow, error)
 	GetDailyTotals(startDate, endDate string) (totalSpent, totalRevenue, totalProfit float64, totalOrders, successOrders, pendingOrders, failedOrders int64, err error)
 	ListTransactionsByDate(startDate, endDate string, limit int) ([]domain.Transaction, error)
+	FindReconcileQueue(minAge time.Duration, limit int) ([]domain.Transaction, error)
 }
 
 type ProviderStatRow struct {
@@ -403,5 +404,26 @@ func (r *transactionRepository) ListTransactionsByDate(startDate, endDate string
 		query = query.Limit(limit)
 	}
 	err := query.Find(&txs).Error
+	return txs, err
+}
+// Transaksi yang lebih tua dari ini keluar dari antrean reconciler
+// supaya tidak menyumbat jendela. Admin menanganinya manual.
+const reconcileMaxAge = 24 * time.Hour
+
+func (r *transactionRepository) FindReconcileQueue(minAge time.Duration, limit int) ([]domain.Transaction, error) {
+	var txs []domain.Transaction
+	now := time.Now()
+	newest := now.Add(-minAge)          // minimal sudah 1 menit
+	oldest := now.Add(-reconcileMaxAge) // maksimal 24 jam
+	err := r.db.Preload("Nominal").Preload("Provider").
+		Where("status = ?", domain.StatusProcessing).
+		Where("COALESCE(payment_verified_at, created_at) <= ?", newest).
+		Where("COALESCE(payment_verified_at, created_at) >= ?", oldest).
+		Where("(LOWER(COALESCE(provider_status,'')) LIKE ? OR LOWER(COALESCE(provider_status,'')) LIKE ? OR COALESCE(provider_status,'') = '')",
+			"%pending%", "%process%").
+		Where("LOWER(COALESCE(provider_status,'')) NOT LIKE ? AND LOWER(COALESCE(provider_status,'')) NOT LIKE ?",
+			"%harga naik%", "%konfigurasi error%").
+		Order("COALESCE(payment_verified_at, created_at) ASC, id ASC").
+		Limit(limit).Find(&txs).Error
 	return txs, err
 }

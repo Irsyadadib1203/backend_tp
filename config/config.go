@@ -114,7 +114,7 @@ func LoadConfig() *Config {
 		GenericWebhookSecrets: parseProviderSecrets(getEnv("GENERIC_WEBHOOK_SECRETS", "")),
 
 		ReconcilerEnabled: strings.ToLower(strings.TrimSpace(getEnv("RECONCILER_ENABLED", "false"))) == "true",
-		ReconcilerMinAge:  parseReconcilerMinAge(getEnv("RECONCILER_MIN_AGE", "5m")),
+		ReconcilerMinAge:  parseReconcilerMinAge(getEnv("RECONCILER_MIN_AGE", "1m")),
 		PriceSyncIntervals:   parseProviderIntervals("PRICE_SYNC_INTERVALS", getEnv("PRICE_SYNC_INTERVALS", "")),
 		BalanceSyncIntervals: parseProviderIntervals("BALANCE_SYNC_INTERVALS", getEnv("BALANCE_SYNC_INTERVALS", "")),
 	}

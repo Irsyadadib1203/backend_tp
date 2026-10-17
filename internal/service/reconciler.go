@@ -41,8 +41,8 @@ type ReconcilerConfig struct {
 func DefaultReconcilerConfig(minAge time.Duration) ReconcilerConfig {
 	return ReconcilerConfig{
 		MinAge:            minAge,
-		Interval:          time.Minute,
-		BatchSize:         20,
+		Interval:          15 * time.Second,
+		BatchSize:         30,
 		Concurrency:       4,
 		ProviderRateLimit: 500 * time.Millisecond,
 	}
@@ -109,53 +109,52 @@ func (w *ReconcilerWorker) Run(ctx context.Context) {
 // runOnce executes one reconciliation cycle: query batch, fan-out, wait.
 func (w *ReconcilerWorker) runOnce(ctx context.Context) {
 	if w.registry == nil {
-		return // registry not initialized, skip silently
+		return
 	}
 
-	txs, err := w.txRepo.FindProcessingOlderThan(w.cfg.MinAge, w.cfg.BatchSize)
+	// Ambil lebih banyak dari BatchSize, karena sebagian akan dibuang oleh shouldSkip.
+	queue, err := w.txRepo.FindReconcileQueue(w.cfg.MinAge, w.cfg.BatchSize*5)
 	if err != nil {
-		log.Printf("[Reconciler] Error querying stale transactions: %v", err)
-		return
-	}
-	if len(txs) == 0 {
+		log.Printf("[Reconciler] Error querying queue: %v", err)
 		return
 	}
 
-	log.Printf("[Reconciler] Reconciling %d stale transactions.", len(txs))
+	// Jendela: N transaksi pertama di antrean.
+	window := make([]*domain.Transaction, 0, w.cfg.BatchSize)
+	for i := range queue {
+		if w.shouldSkip(&queue[i]) {
+			continue
+		}
+		window = append(window, &queue[i])
+		if len(window) >= w.cfg.BatchSize {
+			break
+		}
+	}
+	if len(window) == 0 {
+		return
+	}
 
+	dueBefore := time.Now().Add(-w.cfg.MinAge)
 	sem := make(chan struct{}, w.cfg.Concurrency)
 	var wg sync.WaitGroup
 
-	for i := range txs {
-		tx := &txs[i]
-
-		// Skip transactions that should not be reconciled (PRD §5)
-		if w.shouldSkip(tx) {
+	for _, tx := range window {
+		// Belum 1 menit sejak pengecekan terakhir: tetap menempati slot jendela.
+		if tx.UpdatedAt.After(dueBefore) {
 			continue
 		}
-
-		// Per-provider rate limiting: enforce minimum gap between calls
-		pvdCode := resolveProviderCodeFromTx(tx)
-		if pvdCode != "" && !w.acquireRateSlot(pvdCode) {
-			log.Printf("[Reconciler] Rate-limited provider %s, skipping tx %d this cycle.", pvdCode, tx.ID)
-			continue
-		}
-
-		// Claim before the provider request. This is a short conditional update,
-		// not a lock held across the network call, so another worker can neither
-		// duplicate this check nor block normal transaction processing.
-		claimed, claimErr := w.txRepo.ClaimProcessingForReconciliation(tx.ID, time.Now().Add(-w.cfg.MinAge))
+		claimed, claimErr := w.txRepo.ClaimProcessingForReconciliation(tx.ID, dueBefore)
 		if claimErr != nil {
 			log.Printf("[Reconciler] Could not claim tx %d: %v", tx.ID, claimErr)
 			continue
 		}
 		if !claimed {
-			log.Printf("[Reconciler] tx %d was already claimed or finalized; skipping.", tx.ID)
 			continue
 		}
 
 		select {
 		case <-ctx.Done():
+			wg.Wait()
 			return
 		case sem <- struct{}{}:
 		}
@@ -164,11 +163,32 @@ func (w *ReconcilerWorker) runOnce(ctx context.Context) {
 		go func(tx *domain.Transaction) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			w.waitRateSlot(ctx, resolveProviderCodeFromTx(tx))
 			w.reconcileOne(tx)
 		}(tx)
 	}
-
 	wg.Wait()
+}
+
+// waitRateSlot menjeda (bukan melewati) panggilan ke provider yang sama.
+func (w *ReconcilerWorker) waitRateSlot(ctx context.Context, pvdCode string) {
+	if pvdCode == "" || w.cfg.ProviderRateLimit <= 0 {
+		return
+	}
+	w.mu.Lock()
+	at := time.Now()
+	if next := w.lastCallByPvd[pvdCode].Add(w.cfg.ProviderRateLimit); next.After(at) {
+		at = next
+	}
+	w.lastCallByPvd[pvdCode] = at
+	w.mu.Unlock()
+
+	if d := time.Until(at); d > 0 {
+		select {
+		case <-time.After(d):
+		case <-ctx.Done():
+		}
+	}
 }
 
 // shouldSkip returns true for transactions that must never be reconciled by
@@ -180,19 +200,19 @@ func (w *ReconcilerWorker) runOnce(ctx context.Context) {
 func (w *ReconcilerWorker) shouldSkip(tx *domain.Transaction) bool {
 	status := tx.ProviderStatus
 	if strings.Contains(status, "Harga Naik") || strings.Contains(status, "Konfigurasi Error") {
-		log.Printf("[Reconciler] Skipping tx %d (provider status: %q)", tx.ID, status)
 		return true
 	}
 
 	// Determine if this is a Kiosgamer transaction
 	pvdCode := resolveProviderCodeFromTx(tx)
 	if strings.EqualFold(pvdCode, "KIOSGAMER") && !hasProviderOrder(tx) {
-		log.Printf("[Reconciler] Skipping Kiosgamer tx %d (no ProviderOrderID)", tx.ID)
 		return true
 	}
 
 	return false
 }
+
+
 
 // resolveProviderCodeFromTx returns the uppercased provider code for a transaction,
 // reading from the preloaded Provider relation. Returns "" if not available.
@@ -203,20 +223,6 @@ func resolveProviderCodeFromTx(tx *domain.Transaction) string {
 	return ""
 }
 
-// acquireRateSlot returns true if the caller may proceed with a CheckStatus
-// call for pvdCode (i.e., enough time has elapsed since the last call).
-// It updates the last-call timestamp atomically.
-func (w *ReconcilerWorker) acquireRateSlot(pvdCode string) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	last, seen := w.lastCallByPvd[pvdCode]
-	if seen && time.Since(last) < w.cfg.ProviderRateLimit {
-		return false
-	}
-	w.lastCallByPvd[pvdCode] = time.Now()
-	return true
-}
 
 // reconcileOne calls the registry-only reconciliation path for a single transaction.
 // Errors from the registry/provider are logged but never directly trigger a

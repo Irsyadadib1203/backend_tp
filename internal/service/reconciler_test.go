@@ -155,6 +155,9 @@ func (s *reconcilerTestSvc) GetFinanceSummary(string, bool) (*domain.DailyFinanc
 func (s *reconcilerTestSvc) RefreshAllProviderBalances(context.Context) ([]domain.Provider, error) {
 	return nil, nil
 }
+func (r *fakeReconcilerTxRepo) FindReconcileQueue(minAge time.Duration, limit int) ([]domain.Transaction, error) {
+	return r.FindProcessingOlderThan(minAge, limit) // atau data fake sesuai kebutuhan test
+}
 func (s *reconcilerTestSvc) SetTripayService(TripayChannelService) {}
 
 // Verify that reconcilerTestSvc satisfies the service interface at compile time.
