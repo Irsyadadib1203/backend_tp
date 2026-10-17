@@ -358,6 +358,7 @@ func main() {
 				txs.GET("", adminHandler.GetTransactions)
 				txs.POST("/:id/retry", adminHandler.ManualRetryTx)
 				txs.POST("/:id/check-status", adminHandler.CheckStatusTx)
+				txs.POST("/:id/regenerate-ref", adminHandler.RegenerateProviderRefTx)
 				txs.POST("/:id/success", adminHandler.ManualSuccessTx)
 				txs.POST("/:id/refund", adminHandler.ManualRefundTx)
 				txs.POST("/bulk", adminHandler.BulkTransactions)

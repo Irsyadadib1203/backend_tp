@@ -53,6 +53,7 @@ type TransactionService interface {
 	ReconcileProcessingTransaction(transactionID uint) (*domain.Transaction, error)
 	ManualSetSuccess(transactionID uint, notes string, sn string) error
 	ManualRefund(transactionID uint, notes string) error
+	RegenerateProviderRefID(transactionID uint) (*domain.Transaction, error)
 
 	// Finance & Provider Balances
 	GetFinanceSummary(date string, refreshRealtime bool) (*domain.DailyFinanceSummary, error)
@@ -272,6 +273,12 @@ func (s *transactionService) CreateOrder(req *CreateOrderRequest) (*domain.Trans
 	}
 
 	return tx, nil
+}
+func markProviderFirstResponse(tx *domain.Transaction) {
+	if tx != nil && tx.ProviderFirstResponseAt == nil {
+		now := time.Now()
+		tx.ProviderFirstResponseAt = &now
+	}
 }
 
 // safeRefundTransaction mengembalikan saldo pengguna secara aman dan idempotent (mencegah double-refund).
@@ -617,6 +624,9 @@ func (s *transactionService) applyResult(tx *domain.Transaction, result *provide
 		if source == providerResultSourceCheck {
 			return providerErr
 		}
+		if len(providerErr.Raw) > 0 {
+			markProviderFirstResponse(tx)
+		}
 		if providerErr.Kind != provider.ErrorConfiguration {
 			tx.RetryCount++
 		}
@@ -663,6 +673,7 @@ func (s *transactionService) applyResult(tx *domain.Transaction, result *provide
 	if result == nil {
 		return errors.New("provider returned no result")
 	}
+	markProviderFirstResponse(tx)
 
 	if result.ProviderOrderID != "" {
 		tx.ProviderOrderID = result.ProviderOrderID
@@ -1278,4 +1289,36 @@ func providerBalanceUnit(code string) string {
 	default:
 		return "IDR"
 	}
+}
+// RegenerateProviderRefID membuat ProviderRefID baru untuk transaksi yang
+// belum punya order nyata di provider. Tidak mengirim order dan tidak
+// menyentuh saldo; ref baru dipakai pada retry/purchase berikutnya.
+func (s *transactionService) RegenerateProviderRefID(transactionID uint) (*domain.Transaction, error) {
+	tx, err := s.txRepo.FindByID(transactionID)
+	if err != nil || tx == nil {
+		return nil, errors.New("transaksi tidak ditemukan")
+	}
+	if tx.Status == domain.StatusSuccess || tx.Status == domain.StatusRefunded {
+		return nil, errors.New("transaksi sudah final, ProviderRefID tidak bisa diganti")
+	}
+	if hasProviderOrder(tx) {
+		return nil, errors.New("order sudah tercatat di provider (ada Provider Order ID). Ganti ref akan memutus pelacakan dan berisiko order ganda; cek status saja")
+	}
+	nominal, err := s.nominalRepo.FindByID(tx.NominalID)
+	if err != nil || nominal == nil {
+		return nil, errors.New("nominal tidak ditemukan")
+	}
+
+	oldRef := tx.ProviderRefID
+	_, newRef := s.NewReferences(nominal, tx.CustomerID, tx.ServerID)
+	if newRef == "" || newRef == oldRef {
+		return nil, errors.New("gagal membuat ProviderRefID baru, coba lagi")
+	}
+
+	tx.ProviderRefID = newRef
+	if err := s.txRepo.Update(tx); err != nil {
+		return nil, err
+	}
+	log.Printf("[RegenerateRef] invoice=%s old=%q new=%q", tx.InvoiceNumber, oldRef, newRef)
+	return tx, nil
 }

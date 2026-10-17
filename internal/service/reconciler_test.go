@@ -116,6 +116,9 @@ type reconcilerTestSvc struct {
 	checkCalls []uint
 	checkErr   error
 }
+func (m *reconcilerTestSvc) RegenerateProviderRefID(transactionID uint) (*domain.Transaction, error) {
+	return nil, nil
+}
 
 func (s *reconcilerTestSvc) CreateOrder(*CreateOrderRequest) (*domain.Transaction, error) {
 	return nil, nil

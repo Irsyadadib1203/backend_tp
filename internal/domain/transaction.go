@@ -76,6 +76,8 @@ type Transaction struct {
 	ProviderMessage      string `gorm:"size:255" json:"provider_message"`
 	ProviderCallbackData string `gorm:"type:text" json:"provider_callback_data"`
 	SN                   string `gorm:"size:255" json:"sn"` // Serial number / Voucher code from provider
+	// Waktu respons pertama provider diterima (untuk hitung provider latency).
+	ProviderFirstResponseAt *time.Time `json:"provider_first_response_at"`
 
 	// Retries & Completion
 	RetryCount  int        `gorm:"default:0" json:"retry_count"`

@@ -431,6 +431,16 @@ func (h *AdminHandler) BulkTransactions(c *gin.Context) {
 	})
 }
 
+func (h *AdminHandler) RegenerateProviderRefTx(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	tx, err := h.txService.RegenerateProviderRefID(uint(id))
+	if err != nil {
+		response.BadRequest(c, err.Error(), nil)
+		return
+	}
+	response.Success(c, "ProviderRefID berhasil dibuat ulang", tx)
+}
+
 // ----------------- USERS & RESELLERS -----------------
 
 func (h *AdminHandler) GetUsers(c *gin.Context) {

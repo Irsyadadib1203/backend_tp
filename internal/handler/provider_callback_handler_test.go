@@ -66,6 +66,9 @@ func (s *mockCallbackTransactionService) GetFinanceSummary(string, bool) (*domai
 func (s *mockCallbackTransactionService) RefreshAllProviderBalances(context.Context) ([]domain.Provider, error) {
 	return nil, nil
 }
+func (m *mockCallbackTransactionService) RegenerateProviderRefID(transactionID uint) (*domain.Transaction, error) {
+	return nil, nil
+}
 func (s *mockCallbackTransactionService) SetTripayService(service.TripayChannelService) {}
 
 func (s *mockCallbackTransactionService) HandleProviderCallback(code string, req *http.Request) (*domain.Transaction, *provider.Result, error) {
