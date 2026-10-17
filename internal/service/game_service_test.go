@@ -61,6 +61,10 @@ func (m *mockProviderRepo) ListWebhookLogs(offset, limit int, provider string) (
 	return nil, 0, nil
 }
 
+func (m *mockProviderProductRepo) SetAutoSyncPrice(nominalID, providerID uint, enabled bool) error {
+	return nil
+}
+
 // Mock GameRepository
 type mockGameRepo struct {
 	games map[uint]*domain.Game

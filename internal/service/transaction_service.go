@@ -37,7 +37,7 @@ type TransactionService interface {
 	GetByInvoice(invoice string) (*domain.Transaction, error)
 	ListRecent(limit int) ([]domain.Transaction, error)
 	ListUserTransactions(userID uint, offset, limit int) ([]domain.Transaction, int64, error)
-	ListAdminTransactions(offset, limit int, status, search, startDate, endDate string) ([]domain.Transaction, int64, error)
+	ListAdminTransactions(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string) ([]domain.Transaction, int64, error)
 	GetDashboardStats() (map[string]interface{}, error)
 
 	// Fulfill and Callback
@@ -827,8 +827,8 @@ func (s *transactionService) ListUserTransactions(userID uint, offset, limit int
 	return s.txRepo.ListByUser(userID, offset, limit)
 }
 
-func (s *transactionService) ListAdminTransactions(offset, limit int, status, search, startDate, endDate string) ([]domain.Transaction, int64, error) {
-	return s.txRepo.ListAdmin(offset, limit, status, search, startDate, endDate)
+func (s *transactionService) ListAdminTransactions(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string) ([]domain.Transaction, int64, error) {
+	return s.txRepo.ListAdmin(offset, limit, status, search, startDate, endDate, providerID, providerStatus)
 }
 
 func (s *transactionService) GetDashboardStats() (map[string]interface{}, error) {

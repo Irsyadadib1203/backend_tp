@@ -37,7 +37,7 @@ func (s *mockCallbackTransactionService) ListRecent(int) ([]domain.Transaction, 
 func (s *mockCallbackTransactionService) ListUserTransactions(uint, int, int) ([]domain.Transaction, int64, error) {
 	return nil, 0, nil
 }
-func (s *mockCallbackTransactionService) ListAdminTransactions(int, int, string, string, string, string) ([]domain.Transaction, int64, error) {
+func (m *mockCallbackTransactionService) ListAdminTransactions(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string) ([]domain.Transaction, int64, error) {
 	return nil, 0, nil
 }
 func (s *mockCallbackTransactionService) GetDashboardStats() (map[string]interface{}, error) {

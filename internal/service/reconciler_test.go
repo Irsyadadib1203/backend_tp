@@ -95,7 +95,7 @@ func (r *fakeReconcilerTxRepo) ListRecent(int) ([]domain.Transaction, error) { r
 func (r *fakeReconcilerTxRepo) ListByUser(uint, int, int) ([]domain.Transaction, int64, error) {
 	return nil, 0, nil
 }
-func (r *fakeReconcilerTxRepo) ListAdmin(int, int, string, string, string, string) ([]domain.Transaction, int64, error) {
+func (r *fakeReconcilerTxRepo) ListAdmin(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string) ([]domain.Transaction, int64, error) {
 	return nil, 0, nil
 }
 func (r *fakeReconcilerTxRepo) GetDashboardStats() (map[string]interface{}, error) { return nil, nil }
@@ -125,7 +125,7 @@ func (s *reconcilerTestSvc) ListRecent(int) ([]domain.Transaction, error)     { 
 func (s *reconcilerTestSvc) ListUserTransactions(uint, int, int) ([]domain.Transaction, int64, error) {
 	return nil, 0, nil
 }
-func (s *reconcilerTestSvc) ListAdminTransactions(int, int, string, string, string, string) ([]domain.Transaction, int64, error) {
+func (m *reconcilerTestSvc) ListAdminTransactions(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string) ([]domain.Transaction, int64, error) {
 	return nil, 0, nil
 }
 func (s *reconcilerTestSvc) GetDashboardStats() (map[string]interface{}, error) { return nil, nil }

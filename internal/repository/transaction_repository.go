@@ -42,7 +42,7 @@ type TransactionRepository interface {
 	FindProcessingBalanceHolds(providerID uint, batchSize int) ([]domain.Transaction, error)
 	ListRecent(limit int) ([]domain.Transaction, error)
 	ListByUser(userID uint, offset, limit int) ([]domain.Transaction, int64, error)
-	ListAdmin(offset, limit int, status, search, startDate, endDate string) ([]domain.Transaction, int64, error)
+	ListAdmin(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string) ([]domain.Transaction, int64, error)
 	GetDashboardStats() (map[string]interface{}, error)
 	GetDailyProviderStats(startDate, endDate string) ([]ProviderStatRow, error)
 	GetDailyTotals(startDate, endDate string) (totalSpent, totalRevenue, totalProfit float64, totalOrders, successOrders, pendingOrders, failedOrders int64, err error)
@@ -285,7 +285,7 @@ func (r *transactionRepository) ListByUser(userID uint, offset, limit int) ([]do
 	return txs, total, err
 }
 
-func (r *transactionRepository) ListAdmin(offset, limit int, status, search, startDate, endDate string) ([]domain.Transaction, int64, error) {
+func (r *transactionRepository) ListAdmin(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string) ([]domain.Transaction, int64, error) {
 	var txs []domain.Transaction
 	var total int64
 
@@ -294,10 +294,27 @@ func (r *transactionRepository) ListAdmin(offset, limit int, status, search, sta
 		query = query.Where("status = ?", status)
 	}
 	if search != "" {
-		query = query.Where("invoice_number LIKE ? OR customer_id LIKE ? OR customer_phone LIKE ?", "%"+search+"%", "%"+search+"%", "%"+search+"%")
+		like := "%" + search + "%"
+		query = query.Where("(invoice_number LIKE ? OR customer_id LIKE ? OR customer_phone LIKE ?)", like, like, like)
 	}
-	if startDate != "" && endDate != "" {
-		query = query.Where("created_at BETWEEN ? AND ?", startDate, endDate)
+	if startDate != "" {
+		query = query.Where("created_at >= ?", startDate+" 00:00:00")
+	}
+	if endDate != "" {
+		query = query.Where("created_at <= ?", endDate+" 23:59:59")
+	}
+	if providerID > 0 {
+		query = query.Where("provider_id = ?", providerID)
+	}
+	switch strings.ToLower(strings.TrimSpace(providerStatus)) {
+	case "sukses":
+		query = query.Where("(LOWER(provider_status) LIKE ? OR LOWER(provider_status) LIKE ?)", "%sukses%", "%success%")
+	case "gagal":
+		query = query.Where("(LOWER(provider_status) LIKE ? OR LOWER(provider_status) LIKE ? OR LOWER(provider_status) LIKE ?)", "%gagal%", "%fail%", "%error%")
+	case "pending":
+		query = query.Where("LOWER(provider_status) LIKE ?", "%pending%")
+	case "processing":
+		query = query.Where("LOWER(provider_status) LIKE ?", "%process%")
 	}
 
 	if err := query.Count(&total).Error; err != nil {

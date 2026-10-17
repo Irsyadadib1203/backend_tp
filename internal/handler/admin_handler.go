@@ -264,9 +264,11 @@ func (h *AdminHandler) GetTransactions(c *gin.Context) {
 	search := c.Query("search")
 	startDate := c.Query("start_date")
 	endDate := c.Query("end_date")
+	providerID, _ := strconv.Atoi(c.Query("provider_id"))
+	providerStatus := c.Query("provider_status")
 	offset := (page - 1) * limit
 
-	txs, total, err := h.txService.ListAdminTransactions(offset, limit, status, search, startDate, endDate)
+	txs, total, err := h.txService.ListAdminTransactions(offset, limit, status, search, startDate, endDate, uint(providerID), providerStatus)
 	if err != nil {
 		response.InternalServerError(c, "Failed to load transactions", err)
 		return
