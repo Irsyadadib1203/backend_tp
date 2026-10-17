@@ -120,7 +120,7 @@ func (r *characterizationNominalRepo) FindBySellerCode(string) (*domain.Nominal,
 func (r *characterizationNominalRepo) Update(*domain.Nominal) error                { return nil }
 func (r *characterizationNominalRepo) Delete(uint) error                           { return nil }
 func (r *characterizationNominalRepo) ListByGameID(uint) ([]domain.Nominal, error) { return nil, nil }
-func (r *characterizationNominalRepo) ListAllAdmin(int, int, uint, uint, string) ([]domain.Nominal, int64, error) {
+func (m *characterizationNominalRepo) ListAllAdmin(offset, limit int, gameID uint, providerID uint, search string, isActive, sortBy, sortDir string) ([]domain.Nominal, int64, error) {
 	return nil, 0, nil
 }
 func (r *characterizationNominalRepo) ListForSellerH2H() ([]domain.Nominal, error) { return nil, nil }

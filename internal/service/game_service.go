@@ -36,7 +36,7 @@ type GameService interface {
 	CreateNominal(nominal *domain.Nominal) error
 	UpdateNominal(nominal *domain.Nominal) error
 	DeleteNominal(id uint) error
-	ListNominalsAdmin(offset, limit int, gameID uint, providerID uint, search string) ([]domain.Nominal, int64, error)
+	ListNominalsAdmin(offset, limit int, gameID uint, providerID uint, search string, isActive, sortBy, sortDir string) ([]domain.Nominal, int64, error)
 	BatchSwitchProvider(nominalIDs []uint, providerID uint) (*SwitchProviderResult, error)
 	SwitchProviderByGame(gameID uint, providerID uint) (*SwitchProviderResult, error)
 	SyncBasePriceFromActiveProvider(nominalID uint) (bool, error)
@@ -323,8 +323,8 @@ func (s *gameService) DeleteNominal(id uint) error {
 	return err
 }
 
-func (s *gameService) ListNominalsAdmin(offset, limit int, gameID uint, providerID uint, search string) ([]domain.Nominal, int64, error) {
-	return s.nominalRepo.ListAllAdmin(offset, limit, gameID, providerID, search)
+func (s *gameService) ListNominalsAdmin(offset, limit int, gameID uint, providerID uint, search string, isActive, sortBy, sortDir string) ([]domain.Nominal, int64, error) {
+	return s.nominalRepo.ListAllAdmin(offset, limit, gameID, providerID, search, isActive, sortBy, sortDir)
 }
 
 func isKiosgamerSupportedGame(game *domain.Game) bool {
@@ -455,7 +455,7 @@ func (s *gameService) SwitchProviderByGame(gameID uint, providerID uint) (*Switc
 		return nil, errors.New("provider not found")
 	}
 
-	nominals, _, err := s.nominalRepo.ListAllAdmin(0, 0, gameID, 0, "")
+	nominals, _, err := s.nominalRepo.ListAllAdmin(0, 0, gameID, 0, "", "", "", "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to list nominals for game %d: %w", gameID, err)
 	}
@@ -561,7 +561,7 @@ func (s *gameService) AutoSyncAllPrices() (int, error) {
 	}
 
 	// 3. Ambil semua nominal dari database
-	existingNominals, _, err := s.nominalRepo.ListAllAdmin(0, 5000, 0, 0, "")
+	existingNominals, _, err := s.nominalRepo.ListAllAdmin(0, 5000, 0, 0, "", "", "", "")
 	if err != nil {
 		return 0, err
 	}

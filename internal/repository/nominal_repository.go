@@ -2,6 +2,7 @@ package repository
 
 import (
 	"gorm.io/gorm"
+	"strings"
 
 	"topup-backend/internal/domain"
 )
@@ -14,7 +15,7 @@ type NominalRepository interface {
 	Update(nominal *domain.Nominal) error
 	Delete(id uint) error
 	ListByGameID(gameID uint) ([]domain.Nominal, error)
-	ListAllAdmin(offset, limit int, gameID uint, providerID uint, search string) ([]domain.Nominal, int64, error)
+	ListAllAdmin(offset, limit int, gameID uint, providerID uint, search string, isActive, sortBy, sortDir string) ([]domain.Nominal, int64, error)
 	ListForSellerH2H() ([]domain.Nominal, error)
 	UpsertFromDigiflazz(nominals []domain.Nominal) error
 	BatchSwitchProvider(nominalIDs []uint, providerID uint) error
@@ -123,7 +124,7 @@ func (r *nominalRepository) ListByGameID(gameID uint) ([]domain.Nominal, error) 
 	return nominals, err
 }
 
-func (r *nominalRepository) ListAllAdmin(offset, limit int, gameID uint, providerID uint, search string) ([]domain.Nominal, int64, error) {
+func (r *nominalRepository) ListAllAdmin(offset, limit int, gameID uint, providerID uint, search string, isActive, sortBy, sortDir string) ([]domain.Nominal, int64, error) {
 	var nominals []domain.Nominal
 	var total int64
 
@@ -137,13 +138,33 @@ func (r *nominalRepository) ListAllAdmin(offset, limit int, gameID uint, provide
 	if search != "" {
 		query = query.Where("name LIKE ? OR provider_product_code LIKE ? OR seller_product_code LIKE ? OR kiosgamer_product_code LIKE ?", "%"+search+"%", "%"+search+"%", "%"+search+"%", "%"+search+"%")
 	}
+	// Filter status harus sebelum Count() supaya total ikut terfilter
+	switch isActive {
+	case "true":
+		query = query.Where("is_active = ?", true)
+	case "false":
+		query = query.Where("is_active = ?", false)
+	}
 
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
+	// sortBy/sortDir sudah di-whitelist di handler; dicek lagi di sini agar aman
+	dir := "ASC"
+	if strings.EqualFold(sortDir, "desc") {
+		dir = "DESC"
+	}
+	switch sortBy {
+	case "name":
+		query = query.Order("name " + dir).Order("id ASC")
+	case "base_price":
+		query = query.Order("base_price " + dir).Order("id ASC")
+	default:
+		query = query.Order("game_id ASC, sort_order ASC, id DESC")
+	}
+
 	err := query.Preload("Game").Preload("Provider").Preload("ProviderProducts.Provider").
-		Order("game_id ASC, sort_order ASC, id DESC").
 		Offset(offset).Limit(limit).
 		Find(&nominals).Error
 	return nominals, total, err

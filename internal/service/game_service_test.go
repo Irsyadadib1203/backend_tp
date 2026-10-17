@@ -190,8 +190,7 @@ func (m *mockNominalRepo) ListByGameID(gameID uint) ([]domain.Nominal, error) {
 	return list, nil
 }
 
-func (m *mockNominalRepo) ListAllAdmin(offset, limit int, gameID uint, providerID uint, search string) ([]domain.Nominal, int64, error) {
-	var list []domain.Nominal
+func (m *mockNominalRepo) ListAllAdmin(offset, limit int, gameID uint, providerID uint, search string, isActive, sortBy, sortDir string) ([]domain.Nominal, int64, error) {	var list []domain.Nominal
 	for _, n := range m.nominals {
 		if gameID > 0 && n.GameID != gameID {
 			continue

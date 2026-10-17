@@ -163,7 +163,24 @@ func (h *AdminHandler) GetNominals(c *gin.Context) {
 	search := c.Query("search")
 	offset := (page - 1) * limit
 
-	nominals, total, err := h.gameService.ListNominalsAdmin(offset, limit, uint(gameID), uint(providerID), search)
+	// Filter status: "" = semua, "true" = aktif, "false" = nonaktif
+	isActive := c.Query("is_active")
+	if isActive != "true" && isActive != "false" {
+		isActive = ""
+	}
+
+	// Whitelist kolom urutan supaya tidak ada SQL injection
+	sortBy := c.Query("sort_by")
+	if sortBy != "name" && sortBy != "base_price" {
+		sortBy = ""
+	}
+	sortDir := strings.ToLower(c.Query("sort_dir"))
+	if sortDir != "desc" {
+		sortDir = "asc"
+	}
+
+	nominals, total, err := h.gameService.ListNominalsAdmin(offset, limit, uint(gameID), uint(providerID), search, isActive, sortBy, sortDir)
+
 	if err != nil {
 		response.InternalServerError(c, "Failed to load nominals", err)
 		return
