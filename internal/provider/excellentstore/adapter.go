@@ -458,6 +458,7 @@ func resultFromOrder(order orderData, raw []byte) *provider.Result {
 		result.IncludeSNInSuccessEvent = true
 	case "pending", "processing", "created":
 		result.Status = provider.StatusPending
+		result.ProviderStatus = "processing" // pending/processing/created ditampilkan seragam
 		result.StatusReason = "ExcellentStore: transaksi sedang diproses"
 	case "failed", "refunded", "cancelled", "canceled":
 		result.Status = provider.StatusFailedFinal
@@ -467,9 +468,11 @@ func resultFromOrder(order orderData, raw []byte) *provider.Result {
 			result.RefundReason = strings.TrimSpace(*order.Fulfillment.FailureReason)
 		}
 	default:
-		// Status baru/tidak dikenal tidak boleh menyebabkan refund otomatis.
-		result.Status = provider.StatusFailedHold
-		result.StatusReason = "ExcellentStore: status belum dikenali, perlu pemeriksaan"
+		// Status anomali: tidak di-refund dan tidak dianggap sukses, dibiarkan di pending.
+		result.Status = provider.StatusPending
+		result.ProviderStatus = "pending"
+		result.Message = "ExcellentStore: status tidak dikenal (" + status + "), ditahan di pending"
+		result.StatusReason = "ExcellentStore: status anomali, ditahan di pending"
 	}
 
 	return result
