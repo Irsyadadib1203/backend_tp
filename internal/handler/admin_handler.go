@@ -1216,6 +1216,79 @@ func (h *AdminHandler) SaveExcellentStoreSettings(c *gin.Context) {
 	})
 }
 
+// ASMarketSettingsRequest hanya menerima base URL dan API key. Tidak ada
+// webhook secret karena ASMarket belum menyediakan callback.
+type ASMarketSettingsRequest struct {
+	Name     string `json:"name"`
+	BaseURL  string `json:"base_url" binding:"required"`
+	APIKey   string `json:"api_key"`
+	IsActive bool   `json:"is_active"`
+}
+
+const (
+	asMarketCode           = "ASMARKET"
+	asMarketDefaultBaseURL = "https://api.asmarket.id"
+)
+
+func (h *AdminHandler) GetASMarketSettings(c *gin.Context) {
+	record, err := h.providerRepo.GetByCode(asMarketCode)
+	if err != nil || record == nil {
+		response.Success(c, "ASMarket settings loaded", gin.H{
+			"configured": false, "name": "ASMarket", "base_url": asMarketDefaultBaseURL,
+			"is_active": false, "api_key_configured": false,
+		})
+		return
+	}
+	baseURL := strings.TrimSpace(record.BaseURL)
+	if baseURL == "" {
+		baseURL = asMarketDefaultBaseURL
+	}
+	response.Success(c, "ASMarket settings loaded", gin.H{
+		"configured": true, "id": record.ID, "name": record.Name, "base_url": baseURL,
+		"is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
+	})
+}
+
+func (h *AdminHandler) SaveASMarketSettings(c *gin.Context) {
+	var req ASMarketSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid ASMarket settings", err.Error())
+		return
+	}
+	if err := provider.ValidateEndpointURL(req.BaseURL); err != nil {
+		response.BadRequest(c, "Base URL ASMarket tidak valid", err.Error())
+		return
+	}
+
+	record, lookupErr := h.providerRepo.GetByCode(asMarketCode)
+	if lookupErr != nil || record == nil {
+		record = &domain.Provider{Code: asMarketCode}
+	}
+	if req.IsActive && strings.TrimSpace(req.APIKey) == "" && strings.TrimSpace(record.APIKey) == "" {
+		response.BadRequest(c, "API key wajib diisi sebelum ASMarket diaktifkan", nil)
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = "ASMarket"
+	}
+	record.Name = name
+	record.BaseURL = strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+	if strings.TrimSpace(req.APIKey) != "" {
+		record.APIKey = strings.TrimSpace(req.APIKey)
+	}
+	record.IsActive = req.IsActive
+	if err := h.providerRepo.Update(record); err != nil {
+		response.InternalServerError(c, "Failed to save ASMarket settings", err)
+		return
+	}
+	response.Success(c, "ASMarket settings saved", gin.H{
+		"id": record.ID, "name": record.Name, "code": record.Code, "base_url": record.BaseURL,
+		"is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
+	})
+}
+
 type UpdateProviderRequest struct {
 	Name     string `json:"name"`
 	BaseURL  string `json:"base_url"`

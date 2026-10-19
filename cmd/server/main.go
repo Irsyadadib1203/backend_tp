@@ -23,6 +23,7 @@ import (
 	"topup-backend/internal/provider"
 	providerdigiflazz "topup-backend/internal/provider/digiflazz"
 	providerexcellentstore "topup-backend/internal/provider/excellentstore"
+	providerasmarket "topup-backend/internal/provider/asmarket"
 	providerkiosgamer "topup-backend/internal/provider/kiosgamer"
 	providerotomax "topup-backend/internal/provider/otomax"
 	"topup-backend/internal/repository"
@@ -73,6 +74,9 @@ func main() {
 	}
 	if err := providerRegistry.Register(providerexcellentstore.NewWithCallbackBaseURL(providerRepo, cfg.PublicAPIURL)); err != nil {
 		log.Fatalf("register ExcellentStore provider adapter: %v", err)
+	}
+	if err := providerRegistry.Register(providerasmarket.New(providerRepo)); err != nil {
+		log.Fatalf("register ASMarket provider adapter: %v", err)
 	}
 	if err := providerRegistry.Register(providerotomax.NewWithCallbackBaseURL(providerotomax.FFZStoreCode, providerRepo, cfg.PublicAPIURL)); err != nil {
 		log.Fatalf("register FFZStore OtoMax provider adapter: %v", err)
@@ -320,6 +324,8 @@ func main() {
 			admin.PUT("/providers/digiflazz", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveDigiflazzSettings)
 			admin.GET("/providers/excellentstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetExcellentStoreSettings)
 			admin.PUT("/providers/excellentstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveExcellentStoreSettings)
+			admin.GET("/providers/asmarket", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetASMarketSettings)
+			admin.PUT("/providers/asmarket", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveASMarketSettings)
 			admin.GET("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetFFZStoreSettings)
 			admin.PUT("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveFFZStoreSettings)
 			admin.GET("/settings/transaction-reference", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetTransactionReferenceSettings)
