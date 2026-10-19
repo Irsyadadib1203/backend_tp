@@ -1289,6 +1289,95 @@ func (h *AdminHandler) SaveASMarketSettings(c *gin.Context) {
 	})
 }
 
+// VexagameSettingsRequest: base URL, API key, dan PIN transaksi.
+// PIN disimpan di kolom providers.secret.
+type VexagameSettingsRequest struct {
+	Name     string `json:"name"`
+	BaseURL  string `json:"base_url" binding:"required"`
+	APIKey   string `json:"api_key"`
+	PIN      string `json:"pin"`
+	CallbackToken string `json:"callback_token"`
+	IsActive bool   `json:"is_active"`
+}
+
+const (
+	vexagameCode           = "VEXAGAME"
+	vexagameDefaultBaseURL = "https://api.vexaagen.com/v2"
+)
+
+func (h *AdminHandler) GetVexagameSettings(c *gin.Context) {
+	record, err := h.providerRepo.GetByCode(vexagameCode)
+	if err != nil || record == nil {
+		response.Success(c, "Vexagame settings loaded", gin.H{
+			"configured": false, "name": "Vexagame", "base_url": vexagameDefaultBaseURL,
+			"is_active": false, "api_key_configured": false, "pin_configured": false,
+		})
+		return
+	}
+	baseURL := strings.TrimSpace(record.BaseURL)
+	if baseURL == "" {
+		baseURL = vexagameDefaultBaseURL
+	}
+	response.Success(c, "Vexagame settings loaded", gin.H{
+		"configured": true, "id": record.ID, "name": record.Name, "base_url": baseURL,
+		"is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
+		"callback_token_configured": strings.TrimSpace(record.Username) != "",
+		"pin_configured": strings.TrimSpace(record.Secret) != "",
+	})
+}
+
+func (h *AdminHandler) SaveVexagameSettings(c *gin.Context) {
+	var req VexagameSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid Vexagame settings", err.Error())
+		return
+	}
+	if err := provider.ValidateEndpointURL(req.BaseURL); err != nil {
+		response.BadRequest(c, "Base URL Vexagame tidak valid", err.Error())
+		return
+	}
+
+	record, lookupErr := h.providerRepo.GetByCode(vexagameCode)
+	if lookupErr != nil || record == nil {
+		record = &domain.Provider{Code: vexagameCode}
+	}
+	if req.IsActive && strings.TrimSpace(req.APIKey) == "" && strings.TrimSpace(record.APIKey) == "" {
+		response.BadRequest(c, "API key wajib diisi sebelum Vexagame diaktifkan", nil)
+		return
+	}
+	if req.IsActive && strings.TrimSpace(req.PIN) == "" && strings.TrimSpace(record.Secret) == "" {
+		response.BadRequest(c, "PIN transaksi wajib diisi sebelum Vexagame diaktifkan", nil)
+		return
+	}
+	if strings.TrimSpace(req.CallbackToken) != "" {
+		record.Username = strings.TrimSpace(req.CallbackToken)
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = "Vexagame"
+	}
+	record.Name = name
+	record.BaseURL = strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+	if strings.TrimSpace(req.APIKey) != "" {
+		record.APIKey = strings.TrimSpace(req.APIKey)
+	}
+	if strings.TrimSpace(req.PIN) != "" {
+		record.Secret = strings.TrimSpace(req.PIN)
+	}
+	record.IsActive = req.IsActive
+	if err := h.providerRepo.Update(record); err != nil {
+		response.InternalServerError(c, "Failed to save Vexagame settings", err)
+		return
+	}
+	response.Success(c, "Vexagame settings saved", gin.H{
+		"id": record.ID, "name": record.Name, "code": record.Code, "base_url": record.BaseURL,
+		"is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
+		"callback_token_configured": strings.TrimSpace(record.Username) != "",
+		"pin_configured": strings.TrimSpace(record.Secret) != "",
+	})
+}
+
 type UpdateProviderRequest struct {
 	Name     string `json:"name"`
 	BaseURL  string `json:"base_url"`

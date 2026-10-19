@@ -851,7 +851,7 @@ func (s *transactionService) HandleProviderCallback(providerCode string, req *ht
 	}
 
 	if result != nil && result.Status == provider.StatusSuccess &&
-		strings.EqualFold(p.Code(), "EXCELLENTSTORE") {
+		(strings.EqualFold(p.Code(), "EXCELLENTSTORE") || strings.EqualFold(p.Code(), "VEXAGAME")) { // [UBAH]
 		result.SN = provider.BuildManualSN(tx.Nickname, tx.CustomerID, tx.InvoiceNumber)
 		result.UpdateSN = true
 	}
