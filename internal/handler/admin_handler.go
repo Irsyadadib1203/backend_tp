@@ -1297,6 +1297,7 @@ type VexagameSettingsRequest struct {
 	APIKey   string `json:"api_key"`
 	PIN      string `json:"pin"`
 	CallbackToken string `json:"callback_token"`
+	WebhookSecret string `json:"webhook_secret"`
 	IsActive bool   `json:"is_active"`
 }
 
@@ -1322,6 +1323,7 @@ func (h *AdminHandler) GetVexagameSettings(c *gin.Context) {
 		"configured": true, "id": record.ID, "name": record.Name, "base_url": baseURL,
 		"is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
 		"callback_token_configured": strings.TrimSpace(record.Username) != "",
+		"webhook_secret_configured": false,
 		"pin_configured": strings.TrimSpace(record.Secret) != "",
 	})
 }
@@ -1349,6 +1351,9 @@ func (h *AdminHandler) SaveVexagameSettings(c *gin.Context) {
 		response.BadRequest(c, "PIN transaksi wajib diisi sebelum Vexagame diaktifkan", nil)
 		return
 	}
+		if strings.TrimSpace(req.WebhookSecret) != "" {
+		record.Username = strings.TrimSpace(req.WebhookSecret)
+	}
 	if strings.TrimSpace(req.CallbackToken) != "" {
 		record.Username = strings.TrimSpace(req.CallbackToken)
 	}
@@ -1374,6 +1379,7 @@ func (h *AdminHandler) SaveVexagameSettings(c *gin.Context) {
 		"id": record.ID, "name": record.Name, "code": record.Code, "base_url": record.BaseURL,
 		"is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
 		"callback_token_configured": strings.TrimSpace(record.Username) != "",
+		"webhook_secret_configured": strings.TrimSpace(record.Username) != "",
 		"pin_configured": strings.TrimSpace(record.Secret) != "",
 	})
 }
