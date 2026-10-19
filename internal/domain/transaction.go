@@ -69,7 +69,7 @@ type Transaction struct {
 	//                   Ini yang digunakan sebagai identifier di sisi provider, dan untuk retry.
 	// ProviderOrderID : ID order asli dari respons provider. Kosong sampai provider membalas.
 	RefID           string `gorm:"size:100;index" json:"ref_id"`
-	ProviderRefID   string `gorm:"size:100;index" json:"provider_ref_id"`
+	ProviderRefID string `gorm:"size:100;uniqueIndex" json:"provider_ref_id"`
 	ProviderOrderID string `gorm:"size:100" json:"provider_order_id"`
 
 	ProviderStatus       string `gorm:"size:50" json:"provider_status"`
