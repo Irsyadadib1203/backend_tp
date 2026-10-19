@@ -80,7 +80,6 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		&domain.Provider{},
 		&domain.ProviderProduct{},
 		&domain.Transaction{},
-		&domain.TransactionStatusHistory{},
 		&domain.DepositRequest{},
 		&domain.BalanceMutation{},
 		&domain.IPWhitelist{},

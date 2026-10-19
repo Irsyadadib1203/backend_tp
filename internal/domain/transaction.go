@@ -94,16 +94,6 @@ type Transaction struct {
 	Game            *Game                     `gorm:"foreignKey:GameID" json:"game,omitempty"`
 	Nominal         *Nominal                  `gorm:"foreignKey:NominalID" json:"nominal,omitempty"`
 	Provider        *Provider                 `gorm:"foreignKey:ProviderID" json:"provider,omitempty"`
-	StatusHistories []TransactionStatusHistory `gorm:"foreignKey:TransactionID" json:"status_histories,omitempty"`
-}
-
-type TransactionStatusHistory struct {
-	ID            uint              `gorm:"primaryKey" json:"id"`
-	TransactionID uint              `gorm:"index;not null" json:"transaction_id"`
-	FromStatus    TransactionStatus `gorm:"size:30" json:"from_status"`
-	ToStatus      TransactionStatus `gorm:"size:30;not null" json:"to_status"`
-	Reason        string            `gorm:"size:255" json:"reason"`
-	CreatedAt     time.Time         `json:"created_at"`
 }
 
 // ProviderReference returns the ref_id that identifies this transaction at the

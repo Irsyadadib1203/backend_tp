@@ -74,7 +74,7 @@ func (r *transactionRepository) Create(tx *domain.Transaction) error {
 
 func (r *transactionRepository) FindByID(id uint) (*domain.Transaction, error) {
 	var tx domain.Transaction
-	err := r.db.Preload("Game").Preload("Nominal").Preload("Provider").Preload("User").Preload("StatusHistories").
+	err := r.db.Preload("Game").Preload("Nominal").Preload("Provider").Preload("User").
 		First(&tx, id).Error
 	if err != nil {
 		return nil, err
@@ -238,7 +238,6 @@ func (r *transactionRepository) UpdateStatus(id uint, newStatus domain.Transacti
 			return err
 		}
 
-		oldStatus := transaction.Status
 		transaction.Status = newStatus
 
 		if newStatus == domain.StatusSuccess || newStatus == domain.StatusFailed {
@@ -246,17 +245,7 @@ func (r *transactionRepository) UpdateStatus(id uint, newStatus domain.Transacti
 			transaction.CompletedAt = &now
 		}
 
-		if err := tx.Save(&transaction).Error; err != nil {
-			return err
-		}
-
-		history := domain.TransactionStatusHistory{
-			TransactionID: id,
-			FromStatus:    oldStatus,
-			ToStatus:      newStatus,
-			Reason:        reason,
-		}
-		return tx.Create(&history).Error
+		return tx.Save(&transaction).Error
 	})
 }
 
