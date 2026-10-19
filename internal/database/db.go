@@ -3,14 +3,14 @@ package database
 import (
 	"fmt"
 	"log"
+	"os"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
-
-	"time"
 
 	"topup-backend/config"
 	"topup-backend/internal/domain"
@@ -36,21 +36,31 @@ func InitDB(cfg *config.Config) *gorm.DB {
 		dialector = sqlite.Open(cfg.DBSQLite)
 	}
 
-	var gormLogger logger.Interface = logger.Default.LogMode(logger.Warn)
+	// Logger: sembunyikan "record not found", tetap catat query lambat & error asli.
+	logLevel := logger.Warn
 	if cfg.AppEnv == "development" {
-		gormLogger = logger.Default.LogMode(logger.Info)
+		logLevel = logger.Info
 	}
+	gormLogger := logger.New(
+		log.New(os.Stdout, "\r\n", log.LstdFlags),
+		logger.Config{
+			SlowThreshold:             200 * time.Millisecond,
+			LogLevel:                  logLevel,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  false,
+		},
+	)
 
 	db, err := gorm.Open(dialector, &gorm.Config{
 		Logger:      gormLogger,
-		PrepareStmt: true, // Cache prepared statements for ultra-fast query execution
+		PrepareStmt: true,
 	})
 	if err != nil {
 		log.Fatalf("[Database] Failed to connect to database (%s): %v", cfg.DBDriver, err)
 	}
 
 	// -------------------------------------------------------------
-	// Database Connection Pool Tuning (High Performance & Resilient)
+	// Connection pool (disesuaikan untuk VPS 2 core / 2 GB RAM)
 	// -------------------------------------------------------------
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -58,12 +68,29 @@ func InitDB(cfg *config.Config) *gorm.DB {
 	}
 
 	if cfg.DBDriver != "sqlite" {
-		sqlDB.SetMaxOpenConns(50)                  // Maximum active connections
-		sqlDB.SetMaxIdleConns(25)                  // Maximum idle connections kept in pool
-		sqlDB.SetConnMaxLifetime(10 * time.Minute) // Maximum amount of time a connection may be reused
-		sqlDB.SetConnMaxIdleTime(5 * time.Minute)  // Maximum amount of time a connection may be idle
+		sqlDB.SetMaxOpenConns(20)
+		sqlDB.SetMaxIdleConns(5)
+		sqlDB.SetConnMaxLifetime(30 * time.Minute)
+		sqlDB.SetConnMaxIdleTime(5 * time.Minute)
+
+		// Pantau antrean pool. Kalau waitCount terus naik, naikkan MaxOpenConns.
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			var lastWait int64
+			for range ticker.C {
+				s := sqlDB.Stats()
+				// Cetak hanya jika ada antrean baru atau pool hampir penuh,
+				// supaya log tidak membengkak lagi.
+				if s.WaitCount > lastWait || s.InUse >= 15 {
+					log.Printf("[DBPool] open=%d inUse=%d idle=%d waitCount=%d waitDuration=%s",
+						s.OpenConnections, s.InUse, s.Idle, s.WaitCount, s.WaitDuration)
+				}
+				lastWait = s.WaitCount
+			}
+		}()
 	} else {
-		// SQLite is single-file; limit concurrent write connections to avoid database locked errors
+		// SQLite: satu koneksi untuk menghindari "database is locked"
 		sqlDB.SetMaxOpenConns(1)
 		sqlDB.SetMaxIdleConns(1)
 	}
