@@ -23,7 +23,7 @@ func InitDB(cfg *config.Config) *gorm.DB {
 
 	switch cfg.DBDriver {
 	case "mysql":
-		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+		dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Asia%%2FJakarta&time_zone=%%27%%2B07%%3A00%%27",
 			cfg.DBUser, cfg.DBPass, cfg.DBHost, cfg.DBPort, cfg.DBName)
 		dialector = mysql.Open(dsn)
 	case "postgres":
