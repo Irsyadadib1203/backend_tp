@@ -93,7 +93,6 @@ type createTransactionRequest struct {
 	Code          string `json:"code"`
 	CustomerNo    string `json:"customer_no"`
 	PaymentMethod string `json:"payment_method"`
-	PIN           string `json:"pin"`
 	Qty           int    `json:"qty"`
 	PartnerRefID  string `json:"partner_ref_id"`
 }
@@ -118,7 +117,6 @@ func (e *httpError) Error() string {
 type apiCredentials struct {
 	BaseURL string
 	APIKey  string
-	PIN     string // dari kolom providers.secret
 	CallbackToken string
 }
 
@@ -156,7 +154,6 @@ func (a *Adapter) credentials() (*apiCredentials, error) {
 	return &apiCredentials{
 		BaseURL: baseURL,
 		APIKey:  apiKey,
-		PIN:     strings.TrimSpace(record.Secret),
 		CallbackToken: strings.TrimSpace(record.Username),
 	}, nil
 }
@@ -308,9 +305,6 @@ func (a *Adapter) Purchase(
 	if err != nil {
 		return nil, configurationError(err)
 	}
-	if creds.PIN == "" {
-		return nil, configurationError(errors.New("Vexagame: PIN transaksi belum dikonfigurasi"))
-	}
 
 	productCode := strings.TrimSpace(request.ProductCode)
 	refID := strings.TrimSpace(request.RefID)
@@ -323,7 +317,6 @@ func (a *Adapter) Purchase(
 		Code:          productCode,
 		CustomerNo:    customerNo(customerID, request.ServerID),
 		PaymentMethod: "balance",
-		PIN:           creds.PIN,
 		Qty:           1,
 		PartnerRefID:  refID,
 	}
@@ -353,7 +346,7 @@ func (a *Adapter) Purchase(
 		result.SN = provider.BuildManualSN(request.Nickname, customerID, request.InvoiceNumber)
 		result.UpdateSN = true
 	}
-	// PIN dan API key sengaja tidak masuk ke log request.
+	// API key sengaja tidak masuk ke log request.
 	result.RequestRaw, _ = json.Marshal(map[string]any{
 		"code":           payload.Code,
 		"customer_no":    payload.CustomerNo,

@@ -56,6 +56,10 @@ type apiEnvelope struct {
 	Data   json.RawMessage `json:"data"`
 }
 
+type apiKeyRequest struct {
+	APIKey string `json:"api_key"`
+}
+
 type orderData struct {
 	ID          string `json:"id"` // invoice ASMarket
 	ServiceName string `json:"service_name"`
@@ -134,8 +138,7 @@ func (a *Adapter) ReconcileMinAge() time.Duration { return 10 * time.Second }
 
 var _ provider.PollingProvider = (*Adapter)(nil)
 
-// request mengirim HTTP request. Untuk GET, api_key dikirim lewat query string;
-// untuk POST, body dikirim sebagai JSON.
+// request mengirim POST dengan body JSON ke endpoint ASMarket.
 func (a *Adapter) request(
 	ctx context.Context,
 	creds *apiCredentials,
@@ -145,11 +148,7 @@ func (a *Adapter) request(
 	endpoint := creds.BaseURL + path
 
 	var reader io.Reader
-	if method == http.MethodGet {
-		q := url.Values{}
-		q.Set("api_key", creds.APIKey)
-		endpoint += "?" + q.Encode()
-	} else if body != nil {
+	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("ASMarket: encode request: %w", err)
@@ -349,7 +348,7 @@ func (a *Adapter) Balance(ctx context.Context) (float64, error) {
 		return 0, err
 	}
 
-	raw, err := a.request(ctx, creds, http.MethodGet, "/saldo", nil)
+	raw, err := a.request(ctx, creds, http.MethodPost, "/saldo", apiKeyRequest{APIKey: creds.APIKey})
 	if err != nil {
 		return 0, err
 	}
@@ -370,7 +369,7 @@ func (a *Adapter) SyncCatalog(ctx context.Context) ([]provider.CatalogItem, erro
 		return nil, err
 	}
 
-	raw, err := a.request(ctx, creds, http.MethodGet, "/service", nil)
+	raw, err := a.request(ctx, creds, http.MethodPost, "/service", apiKeyRequest{APIKey: creds.APIKey})
 	if err != nil {
 		return nil, err
 	}

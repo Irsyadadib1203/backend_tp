@@ -1289,13 +1289,11 @@ func (h *AdminHandler) SaveASMarketSettings(c *gin.Context) {
 	})
 }
 
-// VexagameSettingsRequest: base URL, API key, dan PIN transaksi.
-// PIN disimpan di kolom providers.secret.
+// VexagameSettingsRequest: base URL dan API key.
 type VexagameSettingsRequest struct {
 	Name     string `json:"name"`
 	BaseURL  string `json:"base_url" binding:"required"`
 	APIKey   string `json:"api_key"`
-	PIN      string `json:"pin"`
 	CallbackToken string `json:"callback_token"`
 	WebhookSecret string `json:"webhook_secret"`
 	IsActive bool   `json:"is_active"`
@@ -1311,7 +1309,7 @@ func (h *AdminHandler) GetVexagameSettings(c *gin.Context) {
 	if err != nil || record == nil {
 		response.Success(c, "Vexagame settings loaded", gin.H{
 			"configured": false, "name": "Vexagame", "base_url": vexagameDefaultBaseURL,
-			"is_active": false, "api_key_configured": false, "pin_configured": false,
+			"is_active": false, "api_key_configured": false, 	"webhook_secret_configured": strings.TrimSpace(record.Secret) != "",   // cabang "belum terkonfigurasi": false
 		})
 		return
 	}
@@ -1323,8 +1321,7 @@ func (h *AdminHandler) GetVexagameSettings(c *gin.Context) {
 		"configured": true, "id": record.ID, "name": record.Name, "base_url": baseURL,
 		"is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
 		"callback_token_configured": strings.TrimSpace(record.Username) != "",
-		"webhook_secret_configured": false,
-		"pin_configured": strings.TrimSpace(record.Secret) != "",
+		"webhook_secret_configured": strings.TrimSpace(record.Secret) != "",   // cabang "belum terkonfigurasi": false
 	})
 }
 
@@ -1347,12 +1344,8 @@ func (h *AdminHandler) SaveVexagameSettings(c *gin.Context) {
 		response.BadRequest(c, "API key wajib diisi sebelum Vexagame diaktifkan", nil)
 		return
 	}
-	if req.IsActive && strings.TrimSpace(req.PIN) == "" && strings.TrimSpace(record.Secret) == "" {
-		response.BadRequest(c, "PIN transaksi wajib diisi sebelum Vexagame diaktifkan", nil)
-		return
-	}
-		if strings.TrimSpace(req.WebhookSecret) != "" {
-		record.Username = strings.TrimSpace(req.WebhookSecret)
+	if strings.TrimSpace(req.WebhookSecret) != "" {
+		record.Secret = strings.TrimSpace(req.WebhookSecret)
 	}
 	if strings.TrimSpace(req.CallbackToken) != "" {
 		record.Username = strings.TrimSpace(req.CallbackToken)
@@ -1367,8 +1360,8 @@ func (h *AdminHandler) SaveVexagameSettings(c *gin.Context) {
 	if strings.TrimSpace(req.APIKey) != "" {
 		record.APIKey = strings.TrimSpace(req.APIKey)
 	}
-	if strings.TrimSpace(req.PIN) != "" {
-		record.Secret = strings.TrimSpace(req.PIN)
+	if strings.TrimSpace(req.WebhookSecret) != "" {
+		record.Secret = strings.TrimSpace(req.WebhookSecret)
 	}
 	record.IsActive = req.IsActive
 	if err := h.providerRepo.Update(record); err != nil {
