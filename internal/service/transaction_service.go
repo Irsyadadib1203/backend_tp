@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"crypto/rand"
+	"encoding/hex"
 
 	"topup-backend/internal/domain"
 	"topup-backend/internal/pkg/sse"
@@ -319,11 +321,39 @@ const (
 	maxProviderRefLength           = 100 // transactions.ref_id size
 )
 
-// NewReferences membuat invoice number dan provider_ref_id untuk transaksi baru.
-// provider_ref_id adalah ref internal yang dikirim ke provider saat purchase.
-// Format custom (Settings > Transaction Reference) berlaku global untuk semua
-// provider dan semua jalur (web maupun H2H); tanpa setting dipakai format bawaan.
+// NewReferences membuat invoice & provider_ref_id yang belum dipakai transaksi
+// mana pun. Kalau tabrakan, dibuat ulang sampai 5 kali; setelah itu suffix acak
+// ditambahkan paksa.
 func (s *transactionService) NewReferences(nominal *domain.Nominal, customerID, serverID string) (string, string) {
+	var invoice, ref string
+	for i := 0; i < 5; i++ {
+		invoice, ref = s.renderReferences(nominal, customerID, serverID)
+		if !s.referenceInUse(invoice, ref) {
+			return invoice, ref
+		}
+	}
+	suffix := "-" + randomHex(3) // 6 karakter hex
+	return limitReference(invoice+suffix, maxInvoiceNumberLength),
+		limitReference(ref+suffix, maxProviderRefLength)
+}
+
+func (s *transactionService) referenceInUse(invoice, ref string) bool {
+	used, err := s.txRepo.ExistsByRefs(invoice, ref)
+	if err != nil {
+		log.Printf("[Reference] cek keunikan gagal: %v", err)
+		return false // jangan blokir order; unique index tetap jadi pengaman
+	}
+	return used
+}
+
+func randomHex(nBytes int) string {
+	b := make([]byte, nBytes)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%x", time.Now().UnixNano()&0xffffff)
+	}
+	return hex.EncodeToString(b)
+}
+func (s *transactionService) renderReferences(nominal *domain.Nominal, customerID, serverID string) (string, string) {
 	invoiceNumber := utils.GenerateInvoiceNumber()
 	refID := utils.GenerateRefID()
 	if s.settingRepo == nil || nominal == nil {

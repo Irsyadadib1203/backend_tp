@@ -123,6 +123,7 @@ func (r *characterizationNominalRepo) ListByGameID(uint) ([]domain.Nominal, erro
 func (m *characterizationNominalRepo) ListAllAdmin(offset, limit int, gameID uint, providerID uint, search string, isActive, sortBy, sortDir string) ([]domain.Nominal, int64, error) {
 	return nil, 0, nil
 }
+func (r *characterizationTxRepo) ExistsByRefs(invoice, ref string) (bool, error) { return false, nil }
 func (r *characterizationNominalRepo) ListForSellerH2H() ([]domain.Nominal, error) { return nil, nil }
 func (r *characterizationNominalRepo) UpsertFromDigiflazz([]domain.Nominal) error  { return nil }
 func (r *characterizationNominalRepo) BatchSwitchProvider([]uint, uint) error      { return nil }

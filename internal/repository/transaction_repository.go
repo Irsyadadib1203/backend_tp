@@ -48,6 +48,7 @@ type TransactionRepository interface {
 	GetDailyTotals(startDate, endDate string) (totalSpent, totalRevenue, totalProfit float64, totalOrders, successOrders, pendingOrders, failedOrders int64, err error)
 	ListTransactionsByDate(startDate, endDate string, limit int) ([]domain.Transaction, error)
 	FindReconcileQueue(minAge time.Duration, limit int) ([]domain.Transaction, error)
+	ExistsByRefs(invoice, ref string) (bool, error)
 }
 
 type ProviderStatRow struct {
@@ -415,4 +416,23 @@ func (r *transactionRepository) FindReconcileQueue(minAge time.Duration, limit i
 		Order("COALESCE(payment_verified_at, created_at) ASC, id ASC").
 		Limit(limit).Find(&txs).Error
 	return txs, err
+}
+func (r *transactionRepository) ExistsByRefs(invoice, ref string) (bool, error) {
+	if invoice == "" && ref == "" {
+		return false, nil
+	}
+	q := r.db.Model(&domain.Transaction{}).Unscoped()
+	switch {
+	case invoice != "" && ref != "":
+		q = q.Where("invoice_number = ? OR ref_id = ? OR provider_ref_id = ? OR provider_order_id = ?", invoice, ref, ref, ref)
+	case invoice != "":
+		q = q.Where("invoice_number = ?", invoice)
+	default:
+		q = q.Where("ref_id = ? OR provider_ref_id = ? OR provider_order_id = ?", ref, ref, ref)
+	}
+	var n int64
+	if err := q.Limit(1).Count(&n).Error; err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }

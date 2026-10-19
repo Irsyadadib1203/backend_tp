@@ -119,7 +119,7 @@ type reconcilerTestSvc struct {
 func (m *reconcilerTestSvc) RegenerateProviderRefID(transactionID uint) (*domain.Transaction, error) {
 	return nil, nil
 }
-
+func (r *fakeReconcilerTxRepo) ExistsByRefs(invoice, ref string) (bool, error) { return false, nil }
 func (s *reconcilerTestSvc) CreateOrder(*CreateOrderRequest) (*domain.Transaction, error) {
 	return nil, nil
 }
