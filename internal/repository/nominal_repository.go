@@ -66,7 +66,7 @@ func (r *nominalRepository) FindByProviderCode(code string) (*domain.Nominal, er
 func (r *nominalRepository) FindBySellerCode(code string) (*domain.Nominal, error) {
 	var nominal domain.Nominal
 	err := r.db.Preload("Game").Preload("Provider").
-		Where("(seller_product_code = ? OR provider_product_code = ?) AND is_active = ?", code, code, true).
+		Where("(seller_product_code = ? AND is_active = ?", code, code, true).
 		First(&nominal).Error
 	if err != nil {
 		return nil, err
