@@ -236,3 +236,9 @@ type CallbackParser interface {
 type GameSupport interface {
 	Supports(gameSlug string) bool
 }
+
+// PollingProvider is implemented by providers without callbacks. The
+// reconciler uses ReconcileMinAge instead of its default minimum age.
+type PollingProvider interface {
+	ReconcileMinAge() time.Duration
+}

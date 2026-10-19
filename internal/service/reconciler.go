@@ -17,8 +17,16 @@ import (
 type ReconcilerConfig struct {
 	// MinAge is the minimum age of a processing transaction before it is
 	// eligible for reconciliation. Maps to RECONCILER_MIN_AGE (default 5m).
+	// MinAge ... (tetap)
 	MinAge time.Duration
 
+	// [TAMBAH] Batas bawah umur untuk query antrean. Isi dengan ReconcileMinAge
+	// terkecil di antara provider PollingProvider (ASMarket = 10s). 0 = fitur mati.
+	FastMinAge time.Duration
+
+	// [TAMBAH] Berapa lama transaksi dipolling cepat (dihitung dari created_at).
+	// Lewat dari ini kembali ke MinAge. 0 = tanpa batas.
+	FastPollWindow time.Duration
 	// Interval is how often the worker polls for stale transactions.
 	// Default: 1 minute.
 	Interval time.Duration
@@ -41,7 +49,9 @@ type ReconcilerConfig struct {
 func DefaultReconcilerConfig(minAge time.Duration) ReconcilerConfig {
 	return ReconcilerConfig{
 		MinAge:            minAge,
-		Interval:          15 * time.Second,
+		FastMinAge:        10 * time.Second, // [TAMBAH]
+		FastPollWindow:    15 * time.Minute, // [TAMBAH]
+		Interval:          5 * time.Second,
 		BatchSize:         30,
 		Concurrency:       4,
 		ProviderRateLimit: 500 * time.Millisecond,
@@ -89,8 +99,8 @@ func NewReconcilerWorker(
 // Run starts the reconciler loop. It blocks until ctx is cancelled.
 // Call this in a goroutine: go worker.Run(ctx).
 func (w *ReconcilerWorker) Run(ctx context.Context) {
-	log.Printf("[Reconciler] Started. minAge=%s interval=%s batchSize=%d concurrency=%d",
-		w.cfg.MinAge, w.cfg.Interval, w.cfg.BatchSize, w.cfg.Concurrency)
+	log.Printf("[Reconciler] Started. minAge=%s fastMinAge=%s fastWindow=%s interval=%s batchSize=%d concurrency=%d",
+		w.cfg.MinAge, w.cfg.FastMinAge, w.cfg.FastPollWindow, w.cfg.Interval, w.cfg.BatchSize, w.cfg.Concurrency)
 
 	ticker := time.NewTicker(w.cfg.Interval)
 	defer ticker.Stop()
@@ -106,26 +116,78 @@ func (w *ReconcilerWorker) Run(ctx context.Context) {
 	}
 }
 
+// queryMinAge: umur terkecil untuk query antrean. Filter per provider
+// dilakukan di Go lewat minAgeFor.
+func (w *ReconcilerWorker) queryMinAge() time.Duration {
+	if w.cfg.FastMinAge > 0 && w.cfg.FastMinAge < w.cfg.MinAge {
+		return w.cfg.FastMinAge
+	}
+	return w.cfg.MinAge
+}
+
+// minAgeFor menentukan jeda minimum antar pengecekan untuk satu transaksi.
+func (w *ReconcilerWorker) minAgeFor(tx *domain.Transaction, now time.Time) time.Duration {
+	// Tanpa order ID asli, jalur reconcile memanggil Purchase (bukan CheckStatus),
+	// jadi jangan dipercepat (risiko order ganda).
+	if !hasProviderOrder(tx) {
+		return w.cfg.MinAge
+	}
+	code := resolveProviderCodeFromTx(tx)
+	if code == "" {
+		return w.cfg.MinAge
+	}
+	p, ok := w.registry.Get(code)
+	if !ok {
+		return w.cfg.MinAge
+	}
+	pp, ok := p.(provider.PollingProvider)
+	if !ok {
+		return w.cfg.MinAge // provider lain: tetap default 1 menit
+	}
+	age := pp.ReconcileMinAge()
+	if age <= 0 || age >= w.cfg.MinAge {
+		return w.cfg.MinAge
+	}
+	// Order yang menggantung lama tidak dicek tiap 10 detik selamanya.
+	if w.cfg.FastPollWindow > 0 && now.Sub(tx.CreatedAt) > w.cfg.FastPollWindow {
+		return w.cfg.MinAge
+	}
+	return age
+}
+
+type reconcileCandidate struct {
+	tx        *domain.Transaction
+	dueBefore time.Time
+}
+
 // runOnce executes one reconciliation cycle: query batch, fan-out, wait.
 func (w *ReconcilerWorker) runOnce(ctx context.Context) {
 	if w.registry == nil {
 		return
 	}
 
-	// Ambil lebih banyak dari BatchSize, karena sebagian akan dibuang oleh shouldSkip.
-	queue, err := w.txRepo.FindReconcileQueue(w.cfg.MinAge, w.cfg.BatchSize*5)
+	// [UBAH] sebelumnya: FindReconcileQueue(w.cfg.MinAge, ...)
+	queue, err := w.txRepo.FindReconcileQueue(w.queryMinAge(), w.cfg.BatchSize*5)
 	if err != nil {
 		log.Printf("[Reconciler] Error querying queue: %v", err)
 		return
 	}
 
-	// Jendela: N transaksi pertama di antrean.
-	window := make([]*domain.Transaction, 0, w.cfg.BatchSize)
+	// [UBAH] Jendela hanya berisi transaksi yang SUDAH jatuh tempo menurut
+	// min age provider masing-masing. Yang belum jatuh tempo dilewati tanpa
+	// memakai slot.
+	now := time.Now() // [TAMBAH]
+	window := make([]reconcileCandidate, 0, w.cfg.BatchSize) // [UBAH] tipe slice
 	for i := range queue {
-		if w.shouldSkip(&queue[i]) {
+		tx := &queue[i]
+		if w.shouldSkip(tx) {
 			continue
 		}
-		window = append(window, &queue[i])
+		dueBefore := now.Add(-w.minAgeFor(tx, now)) // [TAMBAH]
+		if tx.UpdatedAt.After(dueBefore) {          // [PINDAH] dari loop bawah
+			continue
+		}
+		window = append(window, reconcileCandidate{tx: tx, dueBefore: dueBefore}) // [UBAH]
 		if len(window) >= w.cfg.BatchSize {
 			break
 		}
@@ -134,18 +196,19 @@ func (w *ReconcilerWorker) runOnce(ctx context.Context) {
 		return
 	}
 
-	dueBefore := time.Now().Add(-w.cfg.MinAge)
+	// [HAPUS] baris ini: dueBefore := time.Now().Add(-w.cfg.MinAge)
+
 	sem := make(chan struct{}, w.cfg.Concurrency)
 	var wg sync.WaitGroup
 
-	for _, tx := range window {
-		// Belum 1 menit sejak pengecekan terakhir: tetap menempati slot jendela.
-		if tx.UpdatedAt.After(dueBefore) {
-			continue
-		}
-		claimed, claimErr := w.txRepo.ClaimProcessingForReconciliation(tx.ID, dueBefore)
+	for _, c := range window { // [UBAH] sebelumnya: for _, tx := range window
+		// [HAPUS] blok ini (pindah ke atas):
+		//   if tx.UpdatedAt.After(dueBefore) { continue }
+
+		// [UBAH] pakai c.tx.ID dan c.dueBefore (per transaksi)
+		claimed, claimErr := w.txRepo.ClaimProcessingForReconciliation(c.tx.ID, c.dueBefore)
 		if claimErr != nil {
-			log.Printf("[Reconciler] Could not claim tx %d: %v", tx.ID, claimErr)
+			log.Printf("[Reconciler] Could not claim tx %d: %v", c.tx.ID, claimErr)
 			continue
 		}
 		if !claimed {
@@ -165,7 +228,7 @@ func (w *ReconcilerWorker) runOnce(ctx context.Context) {
 			defer func() { <-sem }()
 			w.waitRateSlot(ctx, resolveProviderCodeFromTx(tx))
 			w.reconcileOne(tx)
-		}(tx)
+		}(c.tx) // [UBAH] sebelumnya: }(tx)
 	}
 	wg.Wait()
 }
