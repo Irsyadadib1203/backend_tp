@@ -526,33 +526,77 @@ func partnerMessage(tx *domain.Transaction) string {
 	}
 }
 
-var gameServerWhitelist = map[string][]string{
-	"honkai-star-rail": {"prod_official_usa", "prod_official_asia", "prod_official_eur", "prod_official_cht"},
-	"genshin-impact":   {"os_usa", "os_asia", "os_euro", "os_cht"},
+// Per game: nama zona (huruf kecil, tanpa spasi) -> kode zona SIPAS.
+var gameServerZones = map[string]map[string]string{
+	"honkai-star-rail": {
+		"america": "prod_official_usa",
+		"asia":    "prod_official_asia",
+		"europe":  "prod_official_eur",
+		"tw,hk,mo": "prod_official_cht",
+	},
+	"genshin-impact": {
+		"america": "os_usa",
+		"asia":    "os_asia",
+		"europe":  "os_euro",
+		"tw,hk,mo": "os_cht",
+	},
 }
 
-// normalizeGameTarget memastikan server_id valid untuk game yang dibatasi.
-// Jika mitra mengirim server_id kosong tetapi user_id berakhiran kode zona
-// (format "Nomor Tujuan" gabungan), keduanya dipisah otomatis.
+// Alias tambahan yang diterima untuk zona TW/HK/MO.
+var zoneAliases = map[string]string{
+	"us":      "america",
+	"usa":     "america",
+	"eu":      "europe",
+	"eur":     "europe",
+	"tw":      "tw,hk,mo",
+	"hk":      "tw,hk,mo",
+	"mo":      "tw,hk,mo",
+	"twhkmo":  "tw,hk,mo",
+	"tw/hk/mo": "tw,hk,mo",
+}
+
+func zoneKey(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, " ", "")
+	if canon, ok := zoneAliases[s]; ok {
+		return canon
+	}
+	return s
+}
+
+func zoneNames(zones map[string]string) string {
+	names := make([]string, 0, len(zones))
+	for k := range zones {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+// normalizeGameTarget menerjemahkan nama zona dari mitra (America, Asia,
+// Europe, TW,HK,MO) menjadi kode zona provider. Kode asli (mis. os_usa)
+// tetap diterima. Game yang tidak ada di map dilewati tanpa perubahan.
 func normalizeGameTarget(slug, userID, serverID string) (string, string, error) {
-	zones, ok := gameServerWhitelist[slug]
+	zones, ok := gameServerZones[slug]
 	if !ok {
-		return userID, serverID, nil // game lain tidak dibatasi
+		return userID, serverID, nil
 	}
-	serverID = strings.ToLower(strings.TrimSpace(serverID))
+
+	serverID = strings.TrimSpace(serverID)
 	if serverID == "" {
-		lower := strings.ToLower(userID)
-		for _, z := range zones {
-			if strings.HasSuffix(lower, z) && len(userID) > len(z) {
-				return strings.TrimSpace(userID[:len(userID)-len(z)]), z, nil
-			}
-		}
-		return "", "", errors.New("server_id wajib diisi, gunakan: " + strings.Join(zones, ", "))
+		return "", "", errors.New("server_id wajib diisi, gunakan: " + zoneNames(zones))
 	}
-	for _, z := range zones {
-		if serverID == z {
-			return userID, z, nil
+
+	// 1. Nama zona: America, Asia, Europe, TW,HK,MO
+	if code, found := zones[zoneKey(serverID)]; found {
+		return userID, code, nil
+	}
+	// 2. Kode asli provider: os_usa, prod_official_eur, dst.
+	lower := strings.ToLower(serverID)
+	for _, code := range zones {
+		if lower == code {
+			return userID, code, nil
 		}
 	}
-	return "", "", errors.New("server_id tidak valid, gunakan: " + strings.Join(zones, ", "))
+	return "", "", errors.New("server_id tidak valid, gunakan: " + zoneNames(zones))
 }
