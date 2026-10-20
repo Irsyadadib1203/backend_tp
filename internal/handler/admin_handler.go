@@ -1385,6 +1385,101 @@ func (h *AdminHandler) SaveVexagameSettings(c *gin.Context) {
 	})
 }
 
+// SIPASSettingsRequest: Member ID, Password H2H, dan PIN Trx.
+// Member ID -> providers.username, Password H2H -> providers.api_key, PIN -> providers.secret.
+type SIPASSettingsRequest struct {
+	Name     string `json:"name"`
+	BaseURL  string `json:"base_url" binding:"required"`
+	MemberID string `json:"member_id"`
+	Password string `json:"password"`
+	PIN      string `json:"pin"`
+	IsActive bool   `json:"is_active"`
+}
+
+const (
+	sipasCode           = "SIPAS"
+	sipasDefaultBaseURL = "https://h2h.kioson.my.id"
+)
+
+func sipasSettingsView(record *domain.Provider, baseURL string) gin.H {
+	return gin.H{
+		"configured": true, "id": record.ID, "name": record.Name, "base_url": baseURL,
+		"member_id": strings.TrimSpace(record.Username), "is_active": record.IsActive,
+		"password_configured": strings.TrimSpace(record.APIKey) != "",
+		"pin_configured":      strings.TrimSpace(record.Secret) != "",
+	}
+}
+
+func (h *AdminHandler) GetSIPASSettings(c *gin.Context) {
+	record, err := h.providerRepo.GetByCode(sipasCode)
+	if err != nil || record == nil {
+		response.Success(c, "SIPAS settings loaded", gin.H{
+			"configured": false, "name": "SIPAS", "base_url": sipasDefaultBaseURL, "member_id": "",
+			"is_active": false, "password_configured": false, "pin_configured": false,
+		})
+		return
+	}
+	baseURL := strings.TrimSpace(record.BaseURL)
+	if baseURL == "" {
+		baseURL = sipasDefaultBaseURL
+	}
+	response.Success(c, "SIPAS settings loaded", sipasSettingsView(record, baseURL))
+}
+
+func (h *AdminHandler) SaveSIPASSettings(c *gin.Context) {
+	var req SIPASSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid SIPAS settings", err.Error())
+		return
+	}
+	if err := provider.ValidateEndpointURL(req.BaseURL); err != nil {
+		response.BadRequest(c, "Base URL SIPAS tidak valid", err.Error())
+		return
+	}
+
+	record, lookupErr := h.providerRepo.GetByCode(sipasCode)
+	if lookupErr != nil || record == nil {
+		record = &domain.Provider{Code: sipasCode}
+	}
+	if req.IsActive {
+		if strings.TrimSpace(req.MemberID) == "" && strings.TrimSpace(record.Username) == "" {
+			response.BadRequest(c, "Member ID wajib diisi sebelum SIPAS diaktifkan", nil)
+			return
+		}
+		if strings.TrimSpace(req.Password) == "" && strings.TrimSpace(record.APIKey) == "" {
+			response.BadRequest(c, "Password H2H wajib diisi sebelum SIPAS diaktifkan", nil)
+			return
+		}
+		if strings.TrimSpace(req.PIN) == "" && strings.TrimSpace(record.Secret) == "" {
+			response.BadRequest(c, "PIN Trx wajib diisi sebelum SIPAS diaktifkan", nil)
+			return
+		}
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = "SIPAS"
+	}
+	record.Name = name
+	record.BaseURL = strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+	if v := strings.TrimSpace(req.MemberID); v != "" {
+		record.Username = v
+	}
+	if v := strings.TrimSpace(req.Password); v != "" {
+		record.APIKey = v
+	}
+	if v := strings.TrimSpace(req.PIN); v != "" {
+		record.Secret = v
+	}
+	record.IsActive = req.IsActive
+
+	if err := h.providerRepo.Update(record); err != nil {
+		response.InternalServerError(c, "Failed to save SIPAS settings", err)
+		return
+	}
+	response.Success(c, "SIPAS settings saved", sipasSettingsView(record, record.BaseURL))
+}
+
 type UpdateProviderRequest struct {
 	Name     string `json:"name"`
 	BaseURL  string `json:"base_url"`
