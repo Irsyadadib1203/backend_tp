@@ -25,6 +25,7 @@ import (
 	providerexcellentstore "topup-backend/internal/provider/excellentstore"
 	providerasmarket "topup-backend/internal/provider/asmarket"
 	providervexagame "topup-backend/internal/provider/vexagame"
+	providersipas "topup-backend/internal/provider/sipas"
 	providerkiosgamer "topup-backend/internal/provider/kiosgamer"
 	providerotomax "topup-backend/internal/provider/otomax"
 	"topup-backend/internal/repository"
@@ -81,6 +82,9 @@ func main() {
 	}
 	if err := providerRegistry.Register(providervexagame.New(providerRepo)); err != nil {
 		log.Fatalf("register Vexagame provider adapter: %v", err)
+	}
+	if err := providerRegistry.Register(providersipas.New(providerRepo)); err != nil {
+		log.Fatalf("register SIPAS provider adapter: %v", err)
 	}
 	if err := providerRegistry.Register(providerotomax.NewWithCallbackBaseURL(providerotomax.FFZStoreCode, providerRepo, cfg.PublicAPIURL)); err != nil {
 		log.Fatalf("register FFZStore OtoMax provider adapter: %v", err)
@@ -332,6 +336,8 @@ func main() {
 			admin.PUT("/providers/asmarket", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveASMarketSettings)
 			admin.GET("/providers/vexagame", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetVexagameSettings)
 			admin.PUT("/providers/vexagame", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveVexagameSettings)
+			admin.GET("/providers/sipas", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetSIPASSettings)
+			admin.PUT("/providers/sipas", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveSIPASSettings)
 			admin.GET("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetFFZStoreSettings)
 			admin.PUT("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveFFZStoreSettings)
 			admin.GET("/settings/transaction-reference", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetTransactionReferenceSettings)
