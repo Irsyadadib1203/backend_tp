@@ -261,6 +261,12 @@ func main() {
 		}
 		api.GET("/callback/sipas", sipasCallback)
 		api.POST("/callback/sipas", sipasCallback)
+		vexagameCallback := func(c *gin.Context) {
+			c.Params = append(c.Params, gin.Param{Key: "code", Value: "VEXAGAME"})
+			providerCallbackHandler.HandleCallback(c)
+		}
+		api.POST("/callback/vexagame", vexagameCallback)
+		api.GET("/callback/vexagame", vexagameCallback)
 		api.POST("/callback/provider/:code", providerCallbackHandler.HandleCallback)
 		api.GET("/callback/provider/:code", providerCallbackHandler.HandleCallback)
 		api.POST("/callback/tripay", paymentHandler.HandleTripayCallback)
