@@ -1405,8 +1405,8 @@ func sipasSettingsView(record *domain.Provider, baseURL string) gin.H {
 	return gin.H{
 		"configured": true, "id": record.ID, "name": record.Name, "base_url": baseURL,
 		"member_id": strings.TrimSpace(record.Username), "is_active": record.IsActive,
-		"password_configured": strings.TrimSpace(record.APIKey) != "",
-		"pin_configured":      strings.TrimSpace(record.Secret) != "",
+		"password_configured": strings.TrimSpace(record.Secret) != "",
+		"pin_configured":      strings.TrimSpace(record.APIKey) != "",
 	}
 }
 
@@ -1446,11 +1446,11 @@ func (h *AdminHandler) SaveSIPASSettings(c *gin.Context) {
 			response.BadRequest(c, "Member ID wajib diisi sebelum SIPAS diaktifkan", nil)
 			return
 		}
-		if strings.TrimSpace(req.Password) == "" && strings.TrimSpace(record.APIKey) == "" {
+		if strings.TrimSpace(req.Password) == "" && strings.TrimSpace(record.Secret) == "" {
 			response.BadRequest(c, "Password H2H wajib diisi sebelum SIPAS diaktifkan", nil)
 			return
 		}
-		if strings.TrimSpace(req.PIN) == "" && strings.TrimSpace(record.Secret) == "" {
+		if strings.TrimSpace(req.PIN) == "" && strings.TrimSpace(record.APIKey) == "" {
 			response.BadRequest(c, "PIN Trx wajib diisi sebelum SIPAS diaktifkan", nil)
 			return
 		}
@@ -1466,10 +1466,10 @@ func (h *AdminHandler) SaveSIPASSettings(c *gin.Context) {
 		record.Username = v
 	}
 	if v := strings.TrimSpace(req.Password); v != "" {
-		record.APIKey = v
+		record.Secret = v // Password H2H
 	}
 	if v := strings.TrimSpace(req.PIN); v != "" {
-		record.Secret = v
+		record.APIKey = v // PIN Trx
 	}
 	record.IsActive = req.IsActive
 

@@ -62,8 +62,8 @@ func (a *Adapter) Code() string { return Code }
 type apiCredentials struct {
 	BaseURL  string
 	MemberID string // providers.username
-	Password string // providers.api_key  (Password H2H)
-	PIN      string // providers.secret   (Pin Trx)
+	PIN      string // providers.api_key  (Pin Trx)
+	Password string // providers.secret   (Password H2H)
 }
 
 func (a *Adapter) credentials() (*apiCredentials, error) {
@@ -79,8 +79,8 @@ func (a *Adapter) credentials() (*apiCredentials, error) {
 	}
 
 	memberID := strings.TrimSpace(record.Username)
-	password := strings.TrimSpace(record.APIKey)
-	pin := strings.TrimSpace(record.Secret)
+	pin := strings.TrimSpace(record.APIKey)       // PIN Trx
+	password := strings.TrimSpace(record.Secret)  // Password H2H
 	if memberID == "" || password == "" || pin == "" {
 		return nil, errors.New("SIPAS: Member ID, Password H2H, dan PIN Trx wajib dikonfigurasi")
 	}
