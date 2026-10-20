@@ -357,6 +357,15 @@ func (s *h2hService) ProcessTransaction(req *H2HTransactionRequest, clientIP str
 		return fail("Produk sedang dalam pemeliharaan", "40", price), errors.New("product under maintenance")
 	}
 
+	slug := ""
+	if nominal.Game != nil {
+		slug = nominal.Game.Slug
+	}
+	userID, serverID, err = normalizeGameTarget(slug, userID, serverID)
+	if err != nil {
+		return fail(err.Error(), "40", 0), err
+	}
+
 	// 4. Cek saldo
 	if user.Balance < price {
 		return fail("Saldo deposit Anda tidak mencukupi", "17", price), errors.New("insufficient balance")
@@ -515,4 +524,35 @@ func partnerMessage(tx *domain.Transaction) string {
 	default:
 		return "Transaksi sedang diproses"
 	}
+}
+
+var gameServerWhitelist = map[string][]string{
+	"honkai-star-rail": {"prod_official_usa", "prod_official_asia", "prod_official_eur", "prod_official_cht"},
+	"genshin-impact":   {"os_usa", "os_asia", "os_euro", "os_cht"},
+}
+
+// normalizeGameTarget memastikan server_id valid untuk game yang dibatasi.
+// Jika mitra mengirim server_id kosong tetapi user_id berakhiran kode zona
+// (format "Nomor Tujuan" gabungan), keduanya dipisah otomatis.
+func normalizeGameTarget(slug, userID, serverID string) (string, string, error) {
+	zones, ok := gameServerWhitelist[slug]
+	if !ok {
+		return userID, serverID, nil // game lain tidak dibatasi
+	}
+	serverID = strings.ToLower(strings.TrimSpace(serverID))
+	if serverID == "" {
+		lower := strings.ToLower(userID)
+		for _, z := range zones {
+			if strings.HasSuffix(lower, z) && len(userID) > len(z) {
+				return strings.TrimSpace(userID[:len(userID)-len(z)]), z, nil
+			}
+		}
+		return "", "", errors.New("server_id wajib diisi, gunakan: " + strings.Join(zones, ", "))
+	}
+	for _, z := range zones {
+		if serverID == z {
+			return userID, z, nil
+		}
+	}
+	return "", "", errors.New("server_id tidak valid, gunakan: " + strings.Join(zones, ", "))
 }
