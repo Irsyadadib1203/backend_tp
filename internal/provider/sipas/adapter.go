@@ -27,10 +27,10 @@ const (
 // Teks yang tidak cocok dengan semuanya ditahan di pending (tidak di-refund,
 // tidak dianggap sukses). Lengkapi daftar ini setelah melihat respons nyata.
 var (
-	// Kosong dengan sengaja: respons gagal yang belum dikenal ditahan dulu
-	// supaya admin yang memutuskan refund. Isi, misalnya "gagal", bila
-	// sudah dipastikan respons itu selalu final.
-	failedMarkers  = []string{}
+	// Respons "GAGAL" dari SIPAS dianggap final (mis. "Produk sedang gangguan",
+	// "Transaksi tidak bisa di proses"). Kosongkan lagi bila ada kasus GAGAL
+	// yang ternyata belum final dan perlu diputuskan admin.
+	failedMarkers  = []string{"gagal"}
 	pendingMarkers = []string{"proses", "ditunggu", "pending", "antri"}
 	successMarkers = []string{"sukses", "berhasil"}
 )
@@ -423,6 +423,60 @@ func (a *Adapter) SyncCatalog(ctx context.Context) ([]provider.CatalogItem, erro
 	return items, nil
 }
 
+// ParseCallback membaca callback GET dari SIPAS:
+//   ?reffid=..&rescode=2|4&msgs=..&sn=..&produk=..&dest=..&price=..&balance=..
+// rescode 4 = berhasil, 2 = gagal (dari contoh nyata). Kode lain diputuskan
+// dari teks msgs; kalau tetap tidak dikenal, ditahan di pending.
+func (a *Adapter) ParseCallback(req *http.Request) (*provider.Result, string, error) {
+	if req == nil || req.URL == nil {
+		return nil, "", errors.New("SIPAS: request callback kosong")
+	}
+	q := req.URL.Query()
+
+	refID := strings.TrimSpace(q.Get("reffid"))
+	if refID == "" {
+		return nil, "", errors.New("SIPAS: callback tanpa reffid")
+	}
+	msgs := cleanText([]byte(q.Get("msgs")))
+	sn := strings.TrimSpace(q.Get("sn"))
+
+	flat := make(map[string]string, len(q))
+	for k, v := range q {
+		if len(v) > 0 {
+			flat[k] = v[0]
+		}
+	}
+	raw, _ := json.Marshal(flat)
+
+	var result *provider.Result
+	switch strings.TrimSpace(q.Get("rescode")) {
+	case "4":
+		result = &provider.Result{
+			Status:                  provider.StatusSuccess,
+			ProviderStatus:          "success",
+			StatusReason:            "SIPAS: transaksi sukses (callback)",
+			IncludeSNInSuccessEvent: true,
+		}
+	case "2":
+		result = &provider.Result{
+			Status:         provider.StatusFailedFinal,
+			ProviderStatus: "failed",
+			StatusReason:   "SIPAS: transaksi gagal final (callback)",
+			RefundReason:   truncate(msgs, 200),
+		}
+	default:
+		result = resultFromText(msgs, refID, raw)
+	}
+
+	result.ProviderOrderID = refID
+	result.Message = "SIPAS: " + truncate(msgs, 200)
+	result.Raw = raw
+	if result.Status == provider.StatusSuccess && sn != "" {
+		result.SN = sn // diganti BuildManualSN di service, ini hanya cadangan
+	}
+	return result, refID, nil
+}
+
 // ---------------------------------------------------------------------------
 // Error helper
 // ---------------------------------------------------------------------------
@@ -445,4 +499,5 @@ func temporaryError(err error) *provider.ProviderError {
 var (
 	_ provider.Provider      = (*Adapter)(nil)
 	_ provider.CatalogSyncer = (*Adapter)(nil)
+	_ provider.CallbackParser = (*Adapter)(nil)
 )
