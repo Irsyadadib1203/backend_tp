@@ -255,6 +255,12 @@ func main() {
 		}
 		api.POST("/callback/digiflazz", digiflazzCallback)
 		api.POST("/digiflazz/callback", digiflazzCallback)
+		sipasCallback := func(c *gin.Context) {
+			c.Params = append(c.Params, gin.Param{Key: "code", Value: providersipas.Code})
+			providerCallbackHandler.HandleCallback(c)
+		}
+		api.GET("/callback/sipas", sipasCallback)
+		api.POST("/callback/sipas", sipasCallback)
 		api.POST("/callback/provider/:code", providerCallbackHandler.HandleCallback)
 		api.GET("/callback/provider/:code", providerCallbackHandler.HandleCallback)
 		api.POST("/callback/tripay", paymentHandler.HandleTripayCallback)
