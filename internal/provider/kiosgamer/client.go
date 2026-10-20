@@ -671,33 +671,6 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 			fmt.Printf("[Kiosgamer] Warmup non-blocking notice: %v\n", err)
 		}
 
-		playerPayload := map[string]interface{}{
-			"app_id":   appID,
-			"login_id": customerID,
-		}
-		if v := strings.TrimSpace(serverID); v != "" {
-			if n, convErr := strconv.Atoi(v); convErr == nil {
-				playerPayload["app_server_id"] = n
-			} else {
-				playerPayload["app_server_id"] = v
-			}
-		}
-
-		var playerResp struct {
-			OpenID   string `json:"open_id"`
-			Region   string `json:"region"`
-			Nickname string `json:"nickname"`
-			ImgURL   string `json:"img_url"`
-		}
-		if _, err := s.doJSON(ctx, http.MethodPost, "/auth/player_id_login", playerPayload, &playerResp); err != nil {
-			if errors.Is(err, ErrKiosgamerSessionExpired) || errors.Is(err, ErrKiosgamerChallengeRequired) {
-				return nil, err
-			}
-			return nil, fmt.Errorf("Player ID %s gagal divalidasi Kiosgamer: %w", customerID, err)
-		}
-		if playerResp.OpenID == "" {
-			return nil, fmt.Errorf("Player ID %s tidak ditemukan di Kiosgamer", customerID)
-		}
 
 		packedRoleID, err := s.fetchPackedRoleID(ctx, appID, serverID)
 		if err != nil {
