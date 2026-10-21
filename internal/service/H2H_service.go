@@ -209,6 +209,8 @@ func (s *h2hService) buildProducts(user *domain.User) ([]H2HProduct, error) {
 			brand = nom.Game.Name
 			category = string(nom.Game.Category)
 		}
+		price := partnerPrice(user, nom.PriceReseller, nom.PriceVIP)
+		available := nom.IsActive && nom.BasePrice <= price
 
 		products = append(products, H2HProduct{
 			ProductName: nom.Name,
@@ -216,6 +218,8 @@ func (s *h2hService) buildProducts(user *domain.User) ([]H2HProduct, error) {
 			Brand:       brand,
 			Price:       partnerPrice(user, nom.PriceReseller, nom.PriceVIP),
 			SKUCode:     sku,
+			BuyerProductStatus:  available,
+    		SellerProductStatus: available,
 		})
 	}
 	return products, nil

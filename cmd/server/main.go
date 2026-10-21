@@ -62,7 +62,7 @@ func main() {
 
 	// 4. Initialize Services
 	authService := service.NewAuthService(userRepo, cfg)
-	nicknameService := service.NewNicknameService()
+	// nicknameService := service.NewNicknameService()
 	digiflazzClient := providerdigiflazz.NewClient(providerRepo, cfg)
 	kiosgamerClient := providerkiosgamer.NewClient(kiosgamerRepo, providerRepo, nominalRepo, gameRepo, cfg, providerProductRepo)
 	// Provider registry is the sole transaction execution path after the
@@ -111,7 +111,7 @@ func main() {
 
 	// 5. Initialize Handlers
 	authHandler := handler.NewAuthHandler(authService)
-	gameHandler := handler.NewGameHandler(gameService, nicknameService)
+	// gameHandler := handler.NewGameHandler(gameService, nicknameService)
 	txHandler := handler.NewTransactionHandler(txService, authService)
 	depositHandler := handler.NewDepositHandler(depositService)
 	h2hHandler := handler.NewH2HHandler(h2hService)
@@ -216,21 +216,21 @@ func main() {
 		sec.POST("/disable", authHandler.Disable2FA)
 
 		// Public Games & Nominals
-		api.GET("/games", gameHandler.GetGames)
-		api.POST("/games/check-nickname", gameHandler.CheckNickname)
-		api.GET("/games/id/:id/nominals", gameHandler.GetNominalsByGame)
-		api.GET("/check-user/:game", gameHandler.CheckUserFromQuery)
-		api.GET("/games/:slug", gameHandler.GetGameBySlug)
+		// api.GET("/games", gameHandler.GetGames)
+		// api.POST("/games/check-nickname", gameHandler.CheckNickname)
+		// api.GET("/games/id/:id/nominals", gameHandler.GetNominalsByGame)
+		// api.GET("/check-user/:game", gameHandler.CheckUserFromQuery)
+		// api.GET("/games/:slug", gameHandler.GetGameBySlug)
 
 		// Public Transactions & Invoices
-		api.POST("/transactions", txHandler.CreateOrder)
-		api.GET("/transactions/recent", txHandler.GetRecent)
-		api.GET("/transactions/:invoice", txHandler.GetByInvoice)
-		// SSE: Real-time invoice status stream (browser push, no polling needed)
-		api.GET("/transactions/:invoice/stream", txHandler.StreamInvoice)
+		// api.POST("/transactions", txHandler.CreateOrder)
+		// api.GET("/transactions/recent", txHandler.GetRecent)
+		// api.GET("/transactions/:invoice", txHandler.GetByInvoice)
+		// // SSE: Real-time invoice status stream (browser push, no polling needed)
+		// api.GET("/transactions/:invoice/stream", txHandler.StreamInvoice)
 
-		// Payment Methods
-		api.GET("/payment-methods", paymentHandler.GetPaymentMethods)
+		// // Payment Methods
+		// api.GET("/payment-methods", paymentHandler.GetPaymentMethods)
 
 		// Public Banners & Articles
 		api.GET("/banners", adminHandler.GetPublicBanners)
