@@ -88,7 +88,7 @@ func (r *characterizationTxRepo) ListRecent(int) ([]domain.Transaction, error) {
 func (r *characterizationTxRepo) ListByUser(uint, int, int) ([]domain.Transaction, int64, error) {
 	return nil, 0, nil
 }
-func (r *characterizationTxRepo) ListAdmin(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string) ([]domain.Transaction, int64, error) {
+func (r *characterizationTxRepo) ListAdmin(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string, gameID uint) ([]domain.Transaction, int64, error) {
 	return nil, 0, nil
 }
 func (r *characterizationTxRepo) FindReconcileQueue(minAge time.Duration, limit int) ([]domain.Transaction, error) {

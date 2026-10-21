@@ -42,7 +42,7 @@ type TransactionRepository interface {
 	FindProcessingBalanceHolds(providerID uint, batchSize int) ([]domain.Transaction, error)
 	ListRecent(limit int) ([]domain.Transaction, error)
 	ListByUser(userID uint, offset, limit int) ([]domain.Transaction, int64, error)
-	ListAdmin(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string) ([]domain.Transaction, int64, error)
+	ListAdmin(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string, gameID uint) ([]domain.Transaction, int64, error)
 	GetDashboardStats() (map[string]interface{}, error)
 	GetDailyProviderStats(startDate, endDate string) ([]ProviderStatRow, error)
 	GetDailyTotals(startDate, endDate string) (totalSpent, totalRevenue, totalProfit float64, totalOrders, successOrders, pendingOrders, failedOrders int64, err error)
@@ -276,7 +276,7 @@ func (r *transactionRepository) ListByUser(userID uint, offset, limit int) ([]do
 	return txs, total, err
 }
 
-func (r *transactionRepository) ListAdmin(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string) ([]domain.Transaction, int64, error) {
+func (r *transactionRepository) ListAdmin(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string, gameID uint) ([]domain.Transaction, int64, error) {
 	var txs []domain.Transaction
 	var total int64
 
@@ -296,6 +296,9 @@ func (r *transactionRepository) ListAdmin(offset, limit int, status, search, sta
 	}
 	if providerID > 0 {
 		query = query.Where("provider_id = ?", providerID)
+	}
+	if gameID > 0 {
+		query = query.Where("game_id = ?", gameID)
 	}
 	switch strings.ToLower(strings.TrimSpace(providerStatus)) {
 	case "sukses":
