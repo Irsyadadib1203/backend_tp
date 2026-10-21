@@ -34,6 +34,10 @@ import (
 
 const kiosgamerGarenaShellChannelID = 208070
 
+// txSessionFreshness adalah jendela waktu di mana pertukaran SSO transaksi
+// tidak diulang oleh order lain yang berjalan bersamaan.
+const txSessionFreshness = 2 * time.Minute
+
 var (
 	ErrKiosgamerSessionExpired    = errors.New("kiosgamer session expired")
 	ErrKiosgamerReauthRequired    = errors.New("kiosgamer re-authentication required")
@@ -140,7 +144,9 @@ type kiosgamerService struct {
 	httpClient          tls_client.HttpClient
 	baseURL             *url.URL
 	mu                  sync.Mutex
-	orderMu             sync.Mutex
+	// lastTxSessionAt dijaga oleh mu. Menandai kapan pertukaran SSO transaksi
+	// terakhir berhasil, supaya order paralel tidak mengulanginya bersamaan.
+	lastTxSessionAt time.Time
 }
 
 // NewClient builds the stateful Kiosgamer client used by its adapter, admin
@@ -647,9 +653,6 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 			DisplayID string `json:"display_id"`
 		} `json:"exec"`
 	}, error) {
-		s.orderMu.Lock()
-		defer s.orderMu.Unlock()
-
 		info, err := s.EnsureSession(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("kiosgamer: session error before order: %w", err)
@@ -760,6 +763,12 @@ func (s *kiosgamerService) PlaceOrder(ctx context.Context, refID, productCode, c
 }
 
 func (s *kiosgamerService) ensureGarenaTransactionSession(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.lastTxSessionAt.IsZero() && time.Since(s.lastTxSessionAt) < txSessionFreshness {
+		return nil
+	}
 	var session KiosgamerSSOSession
 	_, err := s.doJSON(ctx, http.MethodGet, "/auth/check_session", nil, &session)
 	if err != nil {
@@ -810,6 +819,7 @@ func (s *kiosgamerService) ensureGarenaTransactionSession(ctx context.Context) e
 	}
 	now := time.Now()
 	cred.LastRecoveredAt = &now
+	s.lastTxSessionAt = now
 	return s.repo.Upsert(cred)
 }
 
@@ -1035,11 +1045,12 @@ func parseKiosgamerPoll(v map[string]interface{}) (status, message, serial strin
 
 	// Cek apakah Kiosgamer mengembalikan error eksplisit
 	errStr := strings.ToLower(firstString(v, "error", "error_message", "err"))
-	if errStr != "" {
-		if strings.Contains(errStr, "not_received") || strings.Contains(errStr, "timeout") || strings.Contains(errStr, "unfinished") {
-			return "pending", message, serial
+	if errStr != "" && status != "success" {
+		if status == "failed" {
+			return "failed", message, serial
 		}
-		return "failed", message, serial
+		log.Printf("[Kiosgamer] poll error non-final, dianggap pending: %s", truncateString(errStr, 200))
+		return "pending", message, serial
 	}
 
 	// Kiosgamer untuk Garena Shell langsung mengembalikan data transaksi lengkap (display_id, app, currency, dll.)

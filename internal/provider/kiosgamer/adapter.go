@@ -175,7 +175,7 @@ func containsAny(value string, fragments ...string) bool {
 }
 
 func isInternalOrProviderBalanceError(message string) bool {
-	return containsAny(strings.ToLower(message), "saldo", "balance", "shell", "challenge", "captcha", "session", "reauth", "timeout", "timed out", "connection", "preflight", "totp", "uid", "konfigurasi", "modal", "harga naik", "harga modal", "server", "maintenance", "jaringan")
+	return containsAny(strings.ToLower(message), "pending","saldo", "balance", "shell", "challenge", "captcha", "session", "reauth", "timeout", "timed out", "connection", "preflight", "totp", "uid", "konfigurasi", "modal", "harga naik", "harga modal", "server", "maintenance", "jaringan")
 }
 
 func isUserOrProductFatalError(message string) bool {
