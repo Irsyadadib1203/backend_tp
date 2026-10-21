@@ -169,6 +169,18 @@ func containsAny(text string, markers []string) bool {
 	return false
 }
 
+// isBalanceShortage: pesan penolakan karena saldo AKUN SIPAS kita kurang
+// (mis. "Saldo tidak mencukupi. Saldo Rp. 19.247"). Order belum diterima
+// provider dan bukan kesalahan pelanggan, jadi ditahan di pending (tanpa refund)
+// sampai saldo diisi lalu admin menekan Proses Ulang.
+func isBalanceShortage(lower string) bool {
+	if strings.Contains(lower, "insufficient") {
+		return true
+	}
+	return strings.Contains(lower, "saldo") &&
+		containsAny(lower, []string{"tidak cukup", "tidak mencukupi", "kurang", "habis", "minim"})
+}
+
 // parseRupiah memakai format Indonesia: titik = pemisah ribuan, koma = desimal
 // ("50.006" -> 50006).
 func parseRupiah(s string) (float64, error) {
@@ -263,6 +275,13 @@ func resultFromText(text, refID string, raw []byte) *provider.Result {
 	}
 
 	switch {
+	case isBalanceShortage(lower):
+		// Harus dicek sebelum failedMarkers: teksnya juga memuat "GAGAL".
+		result.Status = provider.StatusFailedHold
+		result.ProviderStatus = "Pending (Saldo Provider)"
+		result.StatusReason = "SIPAS: saldo provider tidak mencukupi, ditahan di pending"
+		// Order belum diterima provider; kosongkan agar Proses Ulang mengirim order baru.
+		result.ProviderOrderID = ""
 	case containsAny(lower, failedMarkers):
 		result.Status = provider.StatusFailedFinal
 		result.ProviderStatus = "failed"
@@ -458,17 +477,23 @@ func (a *Adapter) ParseCallback(req *http.Request) (*provider.Result, string, er
 			IncludeSNInSuccessEvent: true,
 		}
 	case "2":
-		result = &provider.Result{
-			Status:         provider.StatusFailedFinal,
-			ProviderStatus: "failed",
-			StatusReason:   "SIPAS: transaksi gagal final (callback)",
-			RefundReason:   truncate(msgs, 200),
+		if isBalanceShortage(strings.ToLower(msgs)) {
+			result = resultFromText(msgs, refID, raw)
+		} else {
+			result = &provider.Result{
+				Status:         provider.StatusFailedFinal,
+				ProviderStatus: "failed",
+				StatusReason:   "SIPAS: transaksi gagal final (callback)",
+				RefundReason:   truncate(msgs, 200),
+			}
 		}
 	default:
 		result = resultFromText(msgs, refID, raw)
 	}
 
-	result.ProviderOrderID = refID
+	if result.Status != provider.StatusFailedHold {
+		result.ProviderOrderID = refID
+	}
 	result.Message = "SIPAS: " + truncate(msgs, 200)
 	result.Raw = raw
 	if result.Status == provider.StatusSuccess && sn != "" {
