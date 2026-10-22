@@ -67,7 +67,9 @@ type telegramAlertService struct {
 
 	// Cooldown tracking to avoid spamming the same alert.
 	lastAlerts map[string]time.Time
-	mu         sync.Mutex
+	// Track providers currently below minimum balance to detect recovery
+	isLowBalance map[string]bool
+	mu           sync.Mutex
 }
 
 // NewTelegramAlertService wires the service with the repositories and
@@ -84,6 +86,7 @@ func NewTelegramAlertService(
 		txRepo:       txRepo,
 		registry:     registry,
 		lastAlerts:   make(map[string]time.Time),
+		isLowBalance: make(map[string]bool),
 	}
 }
 
@@ -198,7 +201,7 @@ func (s *telegramAlertService) RunAlertCheck(ctx context.Context) error {
 	client := telegram.NewClient(settings.BotToken)
 
 	// 1. Check provider balances
-	s.checkProviderBalances(client, settings)
+	s.checkProviderBalances(ctx, client, settings)
 
 	// 2. Check stuck transactions
 	s.checkStuckTransactions(client, settings)
@@ -210,7 +213,7 @@ func (s *telegramAlertService) RunAlertCheck(ctx context.Context) error {
 // Balance alert
 // -----------------------------------------------------------------------
 
-func (s *telegramAlertService) checkProviderBalances(client *telegram.Client, settings *TelegramSettings) {
+func (s *telegramAlertService) checkProviderBalances(ctx context.Context, client *telegram.Client, settings *TelegramSettings) {
 	if len(settings.MinBalance) == 0 {
 		return
 	}
@@ -228,40 +231,97 @@ func (s *telegramAlertService) checkProviderBalances(client *telegram.Client, se
 			continue
 		}
 
-		threshold, exists := settings.MinBalance[strings.ToUpper(prov.Code)]
+		code := strings.ToUpper(prov.Code)
+		threshold, exists := settings.MinBalance[code]
 		if !exists || threshold <= 0 {
 			continue
 		}
 
-		if prov.Balance >= threshold {
+		// Sinkronisasi saldo realtime ke adapter jika tersedia di registry
+		currentBalance := prov.Balance
+		if s.registry != nil {
+			if adapter, ok := s.registry.Get(code); ok {
+				syncCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+				if liveBal, err := adapter.Balance(syncCtx); err == nil {
+					currentBalance = liveBal
+					if store, ok := s.providerRepo.(interface {
+						UpdateBalanceSnapshot(id uint, balance float64, checkedAt time.Time) error
+					}); ok {
+						_ = store.UpdateBalanceSnapshot(prov.ID, liveBal, time.Now())
+					} else {
+						_ = s.providerRepo.UpdateBalance(prov.ID, liveBal)
+					}
+				}
+				cancel()
+			}
+		}
+
+		alertKey := fmt.Sprintf("balance_%s", code)
+
+		// KONDISI 1: Saldo sudah di atas atau sama dengan batas minimum
+		if currentBalance >= threshold {
+			s.mu.Lock()
+			wasLow := s.isLowBalance[code]
+			s.isLowBalance[code] = false
+			s.mu.Unlock()
+
+			// Jika sebelumnya dalam kondisi saldo rendah, kirim pesan konfirmasi bahwa saldo sudah aman dan trigger berhenti!
+			if wasLow {
+				now := time.Now().In(wib).Format("02/01/2006 15:04:05 WIB")
+				balanceStr := formatBalanceAlert(currentBalance, code)
+				thresholdStr := formatBalanceAlert(threshold, code)
+
+				msg := fmt.Sprintf(
+					"✅ *SALDO PROVIDER SUDAH AMAN*\n\n"+
+						"Provider: *%s* (`%s`)\n"+
+						"Saldo Sekarang: *%s*\n"+
+						"Batas Minimum: %s\n"+
+						"Waktu: %s\n\n"+
+						"Saldo sudah berada di atas batas minimum. Trigger notifikasi Telegram dihentikan.",
+					prov.Name, code, balanceStr, thresholdStr, now,
+				)
+
+				if err := client.SendMessageMarkdown(settings.ChatID, msg); err != nil {
+					log.Printf("[TelegramAlert] Gagal kirim recovery saldo %s: %v", code, err)
+				} else {
+					log.Printf("[TelegramAlert] Notifikasi saldo pulih terkirim: %s (saldo: %.0f >= threshold: %.0f)", code, currentBalance, threshold)
+				}
+			}
 			continue
 		}
 
-		// Cooldown: no repeat for same provider within 15 minutes
-		alertKey := fmt.Sprintf("balance_%s", prov.Code)
-		if s.isCooldown(alertKey, 15*time.Minute) {
+		// KONDISI 2: Saldo di bawah batas minimum (< threshold)
+		// Trigger aktif terus setiap interval 5 menit sampai saldo diisi di atas minimum
+		s.mu.Lock()
+		s.isLowBalance[code] = true
+		s.mu.Unlock()
+
+		// Cooldown 4 menit: mencegah double-firing dalam interval yang sama,
+		// namun menjamin trigger terkirim setiap putaran scheduler 5 menit
+		if s.isCooldown(alertKey, 4*time.Minute) {
 			continue
 		}
 
 		now := time.Now().In(wib).Format("02/01/2006 15:04:05 WIB")
-		balanceStr := formatBalanceAlert(prov.Balance, prov.Code)
-		thresholdStr := formatBalanceAlert(threshold, prov.Code)
+		balanceStr := formatBalanceAlert(currentBalance, code)
+		thresholdStr := formatBalanceAlert(threshold, code)
 
 		msg := fmt.Sprintf(
-			"⚠️ *SALDO RENDAH*\n\n"+
+			"⚠️ *PERINGATAN SALDO RENDAH*\n\n"+
 				"Provider: *%s* (`%s`)\n"+
-				"Saldo: %s\n"+
+				"Saldo Saat Ini: *%s*\n"+
 				"Batas Minimum: %s\n"+
 				"Waktu: %s\n\n"+
-				"Segera lakukan top-up saldo provider!",
-			prov.Name, prov.Code, balanceStr, thresholdStr, now,
+				"⚠️ Saldo masih di bawah batas minimum!\n"+
+				"Peringatan ini akan dikirim setiap 5 menit sampai saldo diisi di atas batas minimum.",
+			prov.Name, code, balanceStr, thresholdStr, now,
 		)
 
 		if err := client.SendMessageMarkdown(settings.ChatID, msg); err != nil {
-			log.Printf("[TelegramAlert] Gagal kirim alert saldo %s: %v", prov.Code, err)
+			log.Printf("[TelegramAlert] Gagal kirim alert saldo %s: %v", code, err)
 		} else {
 			s.setCooldown(alertKey)
-			log.Printf("[TelegramAlert] Alert saldo rendah terkirim: %s (saldo: %.0f, threshold: %.0f)", prov.Code, prov.Balance, threshold)
+			log.Printf("[TelegramAlert] Alert saldo rendah terkirim: %s (saldo: %.0f, threshold: %.0f)", code, currentBalance, threshold)
 		}
 	}
 }
@@ -276,9 +336,9 @@ func (s *telegramAlertService) checkStuckTransactions(client *telegram.Client, s
 		stuckMinutes = 5
 	}
 
-	// Cooldown: only alert stuck transactions every 5 minutes
+	// Cooldown 4 menit agar berjalan konsisten setiap putaran 5 menit
 	alertKey := "stuck_transactions"
-	if s.isCooldown(alertKey, 5*time.Minute) {
+	if s.isCooldown(alertKey, 4*time.Minute) {
 		return
 	}
 
