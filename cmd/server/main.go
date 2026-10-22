@@ -154,6 +154,13 @@ func main() {
 		defer providerBalanceRetryScheduler.Stop()
 	}
 
+	// 5.2d Telegram Alert Scheduler — notifikasi saldo rendah & transaksi stuck setiap 5 menit
+	telegramAlertService := service.NewTelegramAlertService(settingRepo, providerRepo, txRepo, providerRegistry)
+	adminHandler.SetTelegramAlertService(telegramAlertService)
+	telegramAlertScheduler := scheduler.NewTelegramAlertScheduler(telegramAlertService, 5*time.Minute)
+	telegramAlertScheduler.Start()
+	defer telegramAlertScheduler.Stop()
+
 	// 5.3 Start Reconciler (Fase 5) — disabled by default via RECONCILER_ENABLED=false.
 	// Enable only after registry mode has been verified in production.
 	reconcilerCtx, reconcilerCancel := context.WithCancel(context.Background())
@@ -354,6 +361,9 @@ func main() {
 			admin.PUT("/providers/ffzstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveFFZStoreSettings)
 			admin.GET("/settings/transaction-reference", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetTransactionReferenceSettings)
 			admin.PUT("/settings/transaction-reference", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveTransactionReferenceSettings)
+			admin.GET("/settings/telegram", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetTelegramSettings)
+			admin.PUT("/settings/telegram", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveTelegramSettings)
+			admin.POST("/settings/telegram/test", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.TestTelegramMessage)
 
 			// Keuangan / Financial Reports
 			finance := admin.Group("/finance", middleware.RequireAnyPermission(rbacService, domain.ResourceFinance, domain.ResourceDashboard, domain.ResourceTransactions))

@@ -387,3 +387,85 @@ func (s *ProviderTaskScheduler) Stop() {
 		s.wg.Wait()
 	})
 }
+
+// ---------------------------------------------------------------------------
+// TelegramAlertScheduler
+// Runs Telegram alert checks (low balance + stuck transactions) at a fixed
+// interval (typically every 5 minutes). Uses a narrow interface so the
+// scheduler package does not depend on the full service layer.
+// ---------------------------------------------------------------------------
+
+// TelegramAlertRunner is the narrow interface consumed by the scheduler.
+type TelegramAlertRunner interface {
+	RunAlertCheck(ctx context.Context) error
+}
+
+type TelegramAlertScheduler struct {
+	runner   TelegramAlertRunner
+	interval time.Duration
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	stopOnce sync.Once
+}
+
+func NewTelegramAlertScheduler(runner TelegramAlertRunner, interval time.Duration) *TelegramAlertScheduler {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &TelegramAlertScheduler{
+		runner:   runner,
+		interval: interval,
+		ctx:      ctx,
+		cancel:   cancel,
+	}
+}
+
+func (s *TelegramAlertScheduler) Start() {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		log.Printf("[TelegramAlert] Scheduler started (interval: %s)", s.interval)
+
+		// Delay 30 seconds after boot before first check
+		select {
+		case <-time.After(30 * time.Second):
+		case <-s.ctx.Done():
+			return
+		}
+
+		s.runOnce()
+
+		ticker := time.NewTicker(s.interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				s.runOnce()
+			case <-s.ctx.Done():
+				log.Println("[TelegramAlert] Scheduler stopped.")
+				return
+			}
+		}
+	}()
+}
+
+func (s *TelegramAlertScheduler) runOnce() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[TelegramAlert] Recovered from panic: %v", r)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+	defer cancel()
+
+	if err := s.runner.RunAlertCheck(ctx); err != nil {
+		log.Printf("[TelegramAlert] Alert check failed: %v", err)
+	}
+}
+
+func (s *TelegramAlertScheduler) Stop() {
+	s.stopOnce.Do(func() {
+		s.cancel()
+		s.wg.Wait()
+	})
+}

@@ -41,6 +41,12 @@ type AdminHandler struct {
 	settingRepo          repository.SystemSettingRepository
 	providerRegistry     *provider.Registry
 	bulkTxService        service.BulkTransactionService
+	telegramAlertService service.TelegramAlertService
+}
+
+// SetTelegramAlertService wires the Telegram alert service after construction.
+func (h *AdminHandler) SetTelegramAlertService(svc service.TelegramAlertService) {
+	h.telegramAlertService = svc
 }
 
 func NewAdminHandler(
@@ -1713,4 +1719,102 @@ func (h *AdminHandler) RefreshAllProviderBalances(c *gin.Context) {
 	}
 
 	response.Success(c, "Saldo semua provider berhasil diperbarui secara realtime", safe)
+}
+
+// ---------------------------------------------------------------------------
+// Telegram Bot Settings Endpoints
+// ---------------------------------------------------------------------------
+
+// GetTelegramSettings returns the current Telegram alert configuration.
+func (h *AdminHandler) GetTelegramSettings(c *gin.Context) {
+	if h.telegramAlertService == nil {
+		response.Error(c, http.StatusInternalServerError, "Telegram alert service belum dikonfigurasi")
+		return
+	}
+
+	settings, err := h.telegramAlertService.GetSettings()
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "Gagal memuat konfigurasi Telegram: "+err.Error())
+		return
+	}
+
+	// Mask bot token for security: show only first 10 chars
+	maskedToken := settings.BotToken
+	if len(maskedToken) > 10 {
+		maskedToken = maskedToken[:10] + "..." + maskedToken[len(maskedToken)-4:]
+	}
+
+	response.Success(c, "Konfigurasi Telegram", gin.H{
+		"enabled":       settings.Enabled,
+		"bot_token":     maskedToken,
+		"bot_token_set": settings.BotToken != "",
+		"chat_id":       settings.ChatID,
+		"min_balance":   settings.MinBalance,
+		"stuck_minutes": settings.StuckMinutes,
+	})
+}
+
+// SaveTelegramSettings persists updated Telegram alert configuration.
+func (h *AdminHandler) SaveTelegramSettings(c *gin.Context) {
+	if h.telegramAlertService == nil {
+		response.Error(c, http.StatusInternalServerError, "Telegram alert service belum dikonfigurasi")
+		return
+	}
+
+	var input struct {
+		Enabled      bool               `json:"enabled"`
+		BotToken     string             `json:"bot_token"`
+		ChatID       string             `json:"chat_id"`
+		MinBalance   map[string]float64 `json:"min_balance"`
+		StuckMinutes int                `json:"stuck_minutes"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		response.Error(c, http.StatusBadRequest, "Format request tidak valid")
+		return
+	}
+
+	// If bot_token is empty or masked, keep existing token
+	existingSettings, _ := h.telegramAlertService.GetSettings()
+	botToken := input.BotToken
+	if botToken == "" || strings.Contains(botToken, "...") {
+		if existingSettings != nil {
+			botToken = existingSettings.BotToken
+		}
+	}
+
+	settings := &service.TelegramSettings{
+		Enabled:      input.Enabled,
+		BotToken:     botToken,
+		ChatID:       input.ChatID,
+		MinBalance:   input.MinBalance,
+		StuckMinutes: input.StuckMinutes,
+	}
+
+	if err := h.telegramAlertService.SaveSettings(settings); err != nil {
+		response.Error(c, http.StatusInternalServerError, "Gagal menyimpan konfigurasi Telegram: "+err.Error())
+		return
+	}
+
+	response.Success(c, "Konfigurasi Telegram berhasil disimpan", gin.H{
+		"enabled":       settings.Enabled,
+		"chat_id":       settings.ChatID,
+		"bot_token_set": settings.BotToken != "",
+		"min_balance":   settings.MinBalance,
+		"stuck_minutes": settings.StuckMinutes,
+	})
+}
+
+// TestTelegramMessage sends a test message to verify the bot setup.
+func (h *AdminHandler) TestTelegramMessage(c *gin.Context) {
+	if h.telegramAlertService == nil {
+		response.Error(c, http.StatusInternalServerError, "Telegram alert service belum dikonfigurasi")
+		return
+	}
+
+	if err := h.telegramAlertService.SendTestMessage(); err != nil {
+		response.Error(c, http.StatusBadRequest, "Gagal mengirim pesan test: "+err.Error())
+		return
+	}
+
+	response.Success(c, "Pesan test berhasil dikirim ke Telegram!", nil)
 }
