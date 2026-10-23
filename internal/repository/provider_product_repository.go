@@ -83,7 +83,8 @@ func (r *providerProductRepository) ListByNominalID(nominalID uint) ([]domain.Pr
 
 func (r *providerProductRepository) ListByProviderID(providerID uint) ([]domain.ProviderProduct, error) {
 	var list []domain.ProviderProduct
-	err := r.db.Where("provider_id = ?", providerID).
+	err := r.db.Preload("Nominal.Game").
+		Where("provider_id = ?", providerID).
 		Order("nominal_id ASC").
 		Find(&list).Error
 	return list, err

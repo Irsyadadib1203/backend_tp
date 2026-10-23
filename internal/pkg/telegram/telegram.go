@@ -54,6 +54,11 @@ func (c *Client) SendMessageMarkdown(chatID, text string) error {
 	return c.send(chatID, text, "Markdown")
 }
 
+// SendMessagePlain sends a message without any parse mode (plain text).
+func (c *Client) SendMessagePlain(chatID, text string) error {
+	return c.send(chatID, text, "")
+}
+
 func (c *Client) send(chatID, text, parseMode string) error {
 	if !c.IsConfigured() {
 		return fmt.Errorf("telegram bot token belum dikonfigurasi")

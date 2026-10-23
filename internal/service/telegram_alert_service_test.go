@@ -44,3 +44,23 @@ func TestFormatBalanceAlert(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatPriceChange(t *testing.T) {
+	tests := []struct {
+		price    float64
+		code     string
+		expected string
+	}{
+		{1570, "DIGIFLAZZ", "Rp. 1.570"},
+		{1545, "DIGIFLAZZ", "Rp. 1.545"},
+		{50, "KIOSGAMER", "50 Shell"},
+		{14000, "ASMARKET", "Rp. 14.000"},
+	}
+
+	for _, tt := range tests {
+		result := formatPriceChange(tt.price, tt.code)
+		if result != tt.expected {
+			t.Errorf("formatPriceChange(%f, %s) = %s, expected %s", tt.price, tt.code, result, tt.expected)
+		}
+	}
+}

@@ -42,8 +42,16 @@ const (
 // TelegramAlertService interface
 // ---------------------------------------------------------------------------
 
+// PriceChangeItem represents a single SKU price change event.
+type PriceChangeItem struct {
+	Category    string
+	ProductCode string
+	OldPrice    float64
+	NewPrice    float64
+}
+
 // TelegramAlertService handles periodic Telegram alert checks for
-// low provider balances and stuck transactions.
+// low provider balances, stuck transactions, and SKU price changes.
 type TelegramAlertService interface {
 	// RunAlertCheck is called by the scheduler every N minutes.
 	RunAlertCheck(ctx context.Context) error
@@ -53,6 +61,8 @@ type TelegramAlertService interface {
 	SaveSettings(settings *TelegramSettings) error
 	// SendTestMessage sends a test notification to validate the bot setup.
 	SendTestMessage() error
+	// SendPriceChangeAlert notifies about SKU cost price changes from a provider.
+	SendPriceChangeAlert(providerName, providerCode string, changes []PriceChangeItem) error
 }
 
 // ---------------------------------------------------------------------------
@@ -449,4 +459,86 @@ func humanizeNumber(f float64) string {
 		result = "-" + result
 	}
 	return result
+}
+
+// -----------------------------------------------------------------------
+// Price change alerts
+// -----------------------------------------------------------------------
+
+func (s *telegramAlertService) SendPriceChangeAlert(providerName, providerCode string, changes []PriceChangeItem) error {
+	if len(changes) == 0 {
+		return nil
+	}
+
+	settings, err := s.GetSettings()
+	if err != nil {
+		return fmt.Errorf("gagal memuat settings telegram: %w", err)
+	}
+	if !settings.Enabled || settings.BotToken == "" || settings.ChatID == "" {
+		return nil // skip if bot not enabled
+	}
+
+	client := telegram.NewClient(settings.BotToken)
+
+	// Group changes by Category preserving insertion order
+	categories := make([]string, 0)
+	catMap := make(map[string][]PriceChangeItem)
+
+	for _, c := range changes {
+		cat := strings.TrimSpace(c.Category)
+		if cat == "" {
+			cat = "Umum"
+		}
+		if _, exists := catMap[cat]; !exists {
+			categories = append(categories, cat)
+		}
+		catMap[cat] = append(catMap[cat], c)
+	}
+
+	// Send notification for each category
+	for _, cat := range categories {
+		items := catMap[cat]
+		if len(items) == 0 {
+			continue
+		}
+
+		// Chunk into max 25 items per message to avoid exceeding Telegram message size
+		chunkSize := 25
+		for i := 0; i < len(items); i += chunkSize {
+			end := i + chunkSize
+			if end > len(items) {
+				end = len(items)
+			}
+			chunk := items[i:end]
+
+			var lines []string
+			lines = append(lines, fmt.Sprintf("Provider : %s", providerName))
+			lines = append(lines, fmt.Sprintf("Kategori : %s", cat))
+			lines = append(lines, "")
+
+			for _, item := range chunk {
+				oldStr := formatPriceChange(item.OldPrice, providerCode)
+				newStr := formatPriceChange(item.NewPrice, providerCode)
+				lines = append(lines, fmt.Sprintf("- %s = %s -> %s", item.ProductCode, oldStr, newStr))
+			}
+
+			msg := strings.Join(lines, "\n")
+			if err := client.SendMessagePlain(settings.ChatID, msg); err != nil {
+				log.Printf("[TelegramAlert] Gagal kirim notifikasi perubahan harga (%s - %s): %v", providerName, cat, err)
+			} else {
+				log.Printf("[TelegramAlert] Notifikasi perubahan harga terkirim (%s - %s: %d SKU)", providerName, cat, len(chunk))
+			}
+			time.Sleep(150 * time.Millisecond) // brief pause between messages
+		}
+	}
+
+	return nil
+}
+
+func formatPriceChange(price float64, providerCode string) string {
+	code := strings.ToUpper(providerCode)
+	if code == "KIOSGAMER" {
+		return fmt.Sprintf("%s Shell", humanizeNumber(price))
+	}
+	return fmt.Sprintf("Rp. %s", humanizeNumber(price))
 }

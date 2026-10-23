@@ -157,6 +157,8 @@ func main() {
 	// 5.2d Telegram Alert Scheduler — notifikasi saldo rendah & transaksi stuck setiap 5 menit
 	telegramAlertService := service.NewTelegramAlertService(settingRepo, providerRepo, txRepo, providerRegistry)
 	adminHandler.SetTelegramAlertService(telegramAlertService)
+	priceSyncService.SetNotifier(telegramAlertService)
+	adminHandler.SetPriceSyncService(priceSyncService)
 	telegramAlertScheduler := scheduler.NewTelegramAlertScheduler(telegramAlertService, 5*time.Minute)
 	telegramAlertScheduler.Start()
 	defer telegramAlertScheduler.Stop()
@@ -347,6 +349,7 @@ func main() {
 			admin.POST("/providers/refresh-balances", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.RefreshAllProviderBalances)
 			admin.PUT("/providers/:id", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.UpdateProvider)
 			admin.GET("/providers/:id/balance", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetProviderBalance)
+			admin.POST("/providers/:code/sync-prices", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SyncProviderPrices)
 			admin.GET("/providers/digiflazz", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetDigiflazzSettings)
 			admin.PUT("/providers/digiflazz", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveDigiflazzSettings)
 			admin.GET("/providers/excellentstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetExcellentStoreSettings)

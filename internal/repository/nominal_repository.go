@@ -212,10 +212,6 @@ func (r *nominalRepository) UpsertFromDigiflazz(nominals []domain.Nominal) error
 				}
 				continue
 			}
-
-			if nom.Name != "" {
-				existing.Name = nom.Name
-			}
 			// Harga & status hanya mengikuti Digiflazz jika Digiflazz
 			// memang provider aktif nominal ini.
 			if existing.ProviderID == nom.ProviderID {

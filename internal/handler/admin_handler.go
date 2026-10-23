@@ -42,11 +42,17 @@ type AdminHandler struct {
 	providerRegistry     *provider.Registry
 	bulkTxService        service.BulkTransactionService
 	telegramAlertService service.TelegramAlertService
+	priceSyncService     service.PriceSyncService
 }
 
 // SetTelegramAlertService wires the Telegram alert service after construction.
 func (h *AdminHandler) SetTelegramAlertService(svc service.TelegramAlertService) {
 	h.telegramAlertService = svc
+}
+
+// SetPriceSyncService wires the price sync service after construction.
+func (h *AdminHandler) SetPriceSyncService(svc service.PriceSyncService) {
+	h.priceSyncService = svc
 }
 
 func NewAdminHandler(
@@ -1817,4 +1823,30 @@ func (h *AdminHandler) TestTelegramMessage(c *gin.Context) {
 	}
 
 	response.Success(c, "Pesan test berhasil dikirim ke Telegram!", nil)
+}
+
+// SyncProviderPrices triggers catalog price synchronization for a specific provider.
+func (h *AdminHandler) SyncProviderPrices(c *gin.Context) {
+	if h.priceSyncService == nil {
+		response.Error(c, http.StatusInternalServerError, "Price sync service belum dikonfigurasi")
+		return
+	}
+
+	code := strings.ToUpper(strings.TrimSpace(c.Param("code")))
+	if code == "" {
+		response.BadRequest(c, "Kode provider harus diisi", nil)
+		return
+	}
+
+	if !h.priceSyncService.SupportsCatalog(code) {
+		response.BadRequest(c, fmt.Sprintf("Provider %s tidak mendukung sinkronisasi katalog harga", code), nil)
+		return
+	}
+
+	if err := h.priceSyncService.SyncProvider(c.Request.Context(), code); err != nil {
+		response.Error(c, http.StatusInternalServerError, fmt.Sprintf("Gagal sinkron harga %s: %s", code, err.Error()))
+		return
+	}
+
+	response.Success(c, fmt.Sprintf("Sinkronisasi harga provider %s berhasil dijalankan", code), nil)
 }
