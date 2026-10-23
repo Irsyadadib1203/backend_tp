@@ -78,6 +78,9 @@ func (r *characterizationTxRepo) MarkAsProcessingIfPending(uint, string, time.Ti
 func (r *characterizationTxRepo) FindProcessingOlderThan(time.Duration, int) ([]domain.Transaction, error) {
 	return nil, nil
 }
+func (r *characterizationTxRepo) CountProcessingOlderThan(time.Duration) (int64, error) {
+	return 0, nil
+}
 func (r *characterizationTxRepo) ClaimProcessingForReconciliation(uint, time.Time) (bool, error) {
 	return true, nil
 }

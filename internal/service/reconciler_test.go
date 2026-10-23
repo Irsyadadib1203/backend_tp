@@ -76,6 +76,12 @@ func (r *fakeReconcilerTxRepo) FindProcessingOlderThan(minAge time.Duration, bat
 	}
 	return r.processing, nil
 }
+func (r *fakeReconcilerTxRepo) CountProcessingOlderThan(time.Duration) (int64, error) {
+	if r.queryErr != nil {
+		return 0, r.queryErr
+	}
+	return int64(len(r.processing)), nil
+}
 func (r *fakeReconcilerTxRepo) ClaimProcessingForReconciliation(id uint, _ time.Time) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -353,13 +353,21 @@ func (s *telegramAlertService) checkStuckTransactions(client *telegram.Client, s
 	}
 
 	minAge := time.Duration(stuckMinutes) * time.Minute
-	txs, err := s.txRepo.FindProcessingOlderThan(minAge, 50)
+	totalStuck, err := s.txRepo.CountProcessingOlderThan(minAge)
 	if err != nil {
-		log.Printf("[TelegramAlert] Gagal query transaksi stuck: %v", err)
+		log.Printf("[TelegramAlert] Gagal count transaksi stuck: %v", err)
 		return
 	}
 
-	if len(txs) == 0 {
+	if totalStuck == 0 {
+		return
+	}
+
+	// Ambil maksimal 20 transaksi tertua untuk dirinci di pesan telegram
+	const displayLimit = 20
+	txs, err := s.txRepo.FindProcessingOlderThan(minAge, displayLimit)
+	if err != nil {
+		log.Printf("[TelegramAlert] Gagal query transaksi stuck: %v", err)
 		return
 	}
 
@@ -367,12 +375,7 @@ func (s *telegramAlertService) checkStuckTransactions(client *telegram.Client, s
 	now := time.Now()
 
 	var lines []string
-	for i, tx := range txs {
-		if i >= 20 { // Limit to 20 items to avoid message too long
-			lines = append(lines, fmt.Sprintf("... dan %d transaksi lainnya", len(txs)-20))
-			break
-		}
-
+	for _, tx := range txs {
 		duration := int(now.Sub(tx.UpdatedAt).Minutes())
 		providerName := "Unknown"
 		if tx.Provider != nil {
@@ -385,13 +388,17 @@ func (s *telegramAlertService) checkStuckTransactions(client *telegram.Client, s
 		))
 	}
 
+	if totalStuck > int64(len(txs)) {
+		lines = append(lines, fmt.Sprintf("... dan %d transaksi lainnya", totalStuck-int64(len(txs))))
+	}
+
 	msg := fmt.Sprintf(
 		"🚨 *TRANSAKSI STUCK*\n\n"+
 			"Ditemukan *%d* transaksi stuck di PROCESSING > %d menit:\n\n"+
 			"%s\n\n"+
 			"🕐 %s\n"+
 			"Segera cek di Admin Panel!",
-		len(txs), stuckMinutes, strings.Join(lines, "\n"),
+		totalStuck, stuckMinutes, strings.Join(lines, "\n"),
 		now.In(wib).Format("02/01/2006 15:04:05 WIB"),
 	)
 
@@ -399,7 +406,7 @@ func (s *telegramAlertService) checkStuckTransactions(client *telegram.Client, s
 		log.Printf("[TelegramAlert] Gagal kirim alert transaksi stuck: %v", err)
 	} else {
 		s.setCooldown(alertKey)
-		log.Printf("[TelegramAlert] Alert transaksi stuck terkirim: %d transaksi", len(txs))
+		log.Printf("[TelegramAlert] Alert transaksi stuck terkirim: %d transaksi (ditampilkan %d)", totalStuck, len(txs))
 	}
 }
 

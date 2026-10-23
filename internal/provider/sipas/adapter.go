@@ -181,6 +181,14 @@ func isBalanceShortage(lower string) bool {
 		containsAny(lower, []string{"tidak cukup", "tidak mencukupi", "kurang", "habis", "minim"})
 }
 
+// isCutOff: SIPAS menolak karena sistem sedang cut off (mis. "Sistem sedang
+// CutOff. Silahkan ulang setelah pukul 00:05:00"). Sifatnya sementara dan order
+// belum diterima provider, jadi ditahan di pending (tanpa refund) agar bisa
+// di-rehit setelah cut off selesai.
+func isCutOff(lower string) bool {
+	return containsAny(lower, []string{"cutoff", "cut off", "cut-off"})
+}
+
 // parseRupiah memakai format Indonesia: titik = pemisah ribuan, koma = desimal
 // ("50.006" -> 50006).
 func parseRupiah(s string) (float64, error) {
@@ -280,6 +288,13 @@ func resultFromText(text, refID string, raw []byte) *provider.Result {
 		result.Status = provider.StatusFailedHold
 		result.ProviderStatus = "Pending (Saldo Provider)"
 		result.StatusReason = "SIPAS: saldo provider tidak mencukupi, ditahan di pending"
+		// Order belum diterima provider; kosongkan agar Proses Ulang mengirim order baru.
+		result.ProviderOrderID = ""
+	case isCutOff(lower):
+		// Harus dicek sebelum failedMarkers: teksnya juga memuat "GAGAL"/"tidak bisa di proses".
+		result.Status = provider.StatusFailedHold
+		result.ProviderStatus = "Pending (Cut Off)"
+		result.StatusReason = "SIPAS: sistem sedang cut off, ditahan di pending"
 		// Order belum diterima provider; kosongkan agar Proses Ulang mengirim order baru.
 		result.ProviderOrderID = ""
 	case containsAny(lower, failedMarkers):
@@ -477,7 +492,7 @@ func (a *Adapter) ParseCallback(req *http.Request) (*provider.Result, string, er
 			IncludeSNInSuccessEvent: true,
 		}
 	case "2":
-		if isBalanceShortage(strings.ToLower(msgs)) {
+		if lowerMsgs := strings.ToLower(msgs); isBalanceShortage(lowerMsgs) || isCutOff(lowerMsgs) {
 			result = resultFromText(msgs, refID, raw)
 		} else {
 			result = &provider.Result{

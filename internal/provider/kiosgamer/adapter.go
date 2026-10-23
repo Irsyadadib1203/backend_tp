@@ -123,7 +123,11 @@ func mapResult(result *KiosgamerOrderResult, statusCheck bool) *provider.Result 
 			mapped.StatusReason, mapped.IncludeSNInSuccessEvent = "Kiosgamer: top up berhasil diproses", true
 		}
 	case "failed":
-		if isInternalOrProviderBalanceError(result.Message) {
+		if isBalanceShortage(result.Message) {
+			mapped.Status, mapped.ProviderStatus = provider.StatusFailedHold, "Pending (Saldo Provider)"
+			mapped.StatusReason = "Kiosgamer: saldo provider tidak mencukupi, ditahan di pending"
+			mapped.ProviderOrderID = ""
+		} else if isInternalOrProviderBalanceError(result.Message) {
 			mapped.Status, mapped.ProviderStatus = provider.StatusFailedHold, "Pending (Kendala Provider)"
 			mapped.StatusReason = "Kiosgamer: " + result.Message
 		} else {
@@ -149,6 +153,8 @@ func classifyError(err error) *provider.ProviderError {
 		return &provider.ProviderError{Status: provider.StatusFailedHold, Kind: provider.ErrorAuthentication, ProviderStatus: "Challenge Required", Message: fmt.Sprintf("Kiosgamer anti-bot challenge: %v", err), Cause: err}
 	case errors.Is(err, ErrKiosgamerReauthRequired) || errors.Is(err, ErrKiosgamerSessionExpired) || errors.Is(err, ErrKiosgamerNotConfigured) || strings.Contains(lower, "session") || strings.Contains(lower, "reauth"):
 		return &provider.ProviderError{Status: provider.StatusFailedHold, Kind: provider.ErrorAuthentication, ProviderStatus: "Session Error", Message: fmt.Sprintf("Kiosgamer session error: %v", err), Cause: err}
+	case isBalanceShortage(message):
+		return &provider.ProviderError{Status: provider.StatusFailedHold, Kind: provider.ErrorBalance, ProviderStatus: "Pending (Saldo Provider)", Message: fmt.Sprintf("Kiosgamer saldo tidak mencukupi: %v", err), Cause: err}
 	case containsAny(lower, "saldo", "shell", "balance", "uid", "totp", "preflight", "timeout", "connection"):
 		kind := provider.ErrorTemporary
 		if strings.Contains(lower, "timeout") || strings.Contains(lower, "connection") {
@@ -172,6 +178,14 @@ func containsAny(value string, fragments ...string) bool {
 		}
 	}
 	return false
+}
+
+func isBalanceShortage(message string) bool {
+	return containsAny(strings.ToLower(message),
+		"insufficient", "not enough", "not_enough",
+		"tidak cukup", "tidak mencukupi",
+		"saldo kurang", "kurang saldo", "saldo habis", "saldo tidak",
+		"shell kurang", "shell habis", "shell tidak")
 }
 
 func isInternalOrProviderBalanceError(message string) bool {

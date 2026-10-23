@@ -31,6 +31,9 @@ type TransactionRepository interface {
 	// whose updated_at (or created_at) is older than minAge, ordered by age
 	// ascending (oldest first). Used exclusively by the reconciler worker.
 	FindProcessingOlderThan(minAge time.Duration, batchSize int) ([]domain.Transaction, error)
+	// CountProcessingOlderThan returns the total number of processing transactions
+	// whose updated_at is older than minAge. Used for alert monitoring.
+	CountProcessingOlderThan(minAge time.Duration) (int64, error)
 	// ClaimProcessingForReconciliation atomically reserves a stale processing
 	// transaction for one reconciliation attempt. The reservation advances
 	// updated_at only when the transaction is still processing and stale, so
@@ -193,6 +196,17 @@ func (r *transactionRepository) FindProcessingOlderThan(minAge time.Duration, ba
 		Limit(batchSize).
 		Find(&txs).Error
 	return txs, err
+}
+
+// CountProcessingOlderThan counts processing transactions whose updated_at
+// is before (now - minAge).
+func (r *transactionRepository) CountProcessingOlderThan(minAge time.Duration) (int64, error) {
+	var count int64
+	cutoff := time.Now().Add(-minAge)
+	err := r.db.Model(&domain.Transaction{}).
+		Where("status = ? AND updated_at < ?", domain.StatusProcessing, cutoff).
+		Count(&count).Error
+	return count, err
 }
 
 // ClaimProcessingForReconciliation advances updated_at only for a transaction
