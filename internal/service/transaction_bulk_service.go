@@ -209,12 +209,16 @@ func (s *transactionService) BulkRetryWithProvider(ids []uint, notes string) ([]
 		}
 
 		tx.ProviderID = targetProviderID
-		tx.ProviderRefID = ""
 		tx.ProviderOrderID = ""
 		tx.ProviderCallbackData = ""
 		tx.SN = ""
 
-		_, tx.ProviderRefID = s.NewReferences(nominal, tx.CustomerID, tx.ServerID)
+		// Pertahankan ProviderRefID yang sudah ada. Hanya order lama (legacy) yang
+		// belum punya ref yang dibuatkan baru, karena kolomnya uniqueIndex dan
+		// tidak boleh kosong.
+		if strings.TrimSpace(tx.ProviderRefID) == "" {
+			_, tx.ProviderRefID = s.NewReferences(nominal, tx.CustomerID, tx.ServerID)
+		}
 		tx.ProviderStatus = "Retrying (provider switch)"
 		providerMsg := "Dialihkan ke provider " + targetProvider.Name + " sesuai nominal"
 		if trimmedNotes := strings.TrimSpace(notes); trimmedNotes != "" {
