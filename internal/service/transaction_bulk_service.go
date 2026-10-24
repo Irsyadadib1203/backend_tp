@@ -278,9 +278,9 @@ func (s *transactionService) ManualSetFailed(transactionID uint, notes string) e
 	tx.ProviderStatus = "Gagal (Manual)"
 	tx.ProviderMessage = truncateManualText("Gagal manual: "+reason, 255)
 	tx.CompletedAt = &now
-	_ = s.txRepo.Update(tx)
 
-	err = s.txRepo.UpdateStatus(transactionID, domain.StatusFailed, "Manual failed by admin: "+reason)
+	// Simpan semua perubahan field (status, provider_status, provider_message, completed_at) sekaligus
+	err = s.txRepo.Update(tx)
 	sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
 		"status": "failed", "invoice": tx.InvoiceNumber, "completed_at": now,
 	})

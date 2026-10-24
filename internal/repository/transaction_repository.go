@@ -246,21 +246,16 @@ func (r *transactionRepository) FindProcessingBalanceHolds(providerID uint, batc
 }
 
 func (r *transactionRepository) UpdateStatus(id uint, newStatus domain.TransactionStatus, reason string) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
-		var transaction domain.Transaction
-		if err := tx.First(&transaction, id).Error; err != nil {
-			return err
-		}
-
-		transaction.Status = newStatus
-
-		if newStatus == domain.StatusSuccess || newStatus == domain.StatusFailed {
-			now := time.Now()
-			transaction.CompletedAt = &now
-		}
-
-		return tx.Save(&transaction).Error
-	})
+	updates := map[string]interface{}{
+		"status": newStatus,
+	}
+	if newStatus == domain.StatusSuccess || newStatus == domain.StatusFailed {
+		now := time.Now()
+		updates["completed_at"] = now
+	}
+	return r.db.Model(&domain.Transaction{}).
+		Where("id = ?", id).
+		Updates(updates).Error
 }
 
 func (r *transactionRepository) ListRecent(limit int) ([]domain.Transaction, error) {
