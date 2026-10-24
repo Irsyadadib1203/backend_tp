@@ -405,6 +405,7 @@ func main() {
 				txs.POST("/:id/success", adminHandler.ManualSuccessTx)
 				txs.POST("/:id/refund", adminHandler.ManualRefundTx)
 				txs.POST("/bulk", adminHandler.BulkTransactions)
+				txs.POST("/bulk-retry-provider", adminHandler.BulkRetryProvider)
 			}
 
 			// IP Whitelist & Watchlist Management

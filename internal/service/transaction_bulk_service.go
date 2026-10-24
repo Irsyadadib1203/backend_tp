@@ -3,11 +3,14 @@ package service
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
 	"topup-backend/internal/domain"
 	"topup-backend/internal/pkg/sse"
+	"topup-backend/internal/pkg/worker"
+	"topup-backend/internal/provider"
 )
 
 // BulkAction adalah aksi massal yang boleh dijalankan admin.
@@ -33,6 +36,7 @@ type BulkActionResult struct {
 // TransactionService, supaya fake/mock di file tes tidak perlu diubah.
 type BulkTransactionService interface {
 	BulkManualAction(action BulkAction, ids []uint, notes string) ([]BulkActionResult, error)
+	BulkRetryWithProvider(ids []uint, notes string) ([]BulkActionResult, error)
 }
 
 // BulkManualAction menjalankan satu aksi untuk banyak transaksi secara berurutan.
@@ -101,6 +105,142 @@ func (s *transactionService) BulkManualAction(action BulkAction, ids []uint, not
 		}
 		results = append(results, res)
 	}
+	return results, nil
+}
+
+// BulkRetryWithProvider mengalihkan sejumlah transaksi ke provider yang saat ini aktif pada nominalnya masing-masing.
+// Syarat:
+// - Status transaksi processing
+// - ProviderStatus mengandung "pending" (misal karena provider lama down/bermasalah)
+// - ProviderOrderID masih kosong (belum ada order ID resmi dari provider lama)
+func (s *transactionService) BulkRetryWithProvider(ids []uint, notes string) ([]BulkActionResult, error) {
+	seen := make(map[uint]bool, len(ids))
+	unique := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return nil, errors.New("tidak ada transaksi yang dipilih")
+	}
+	if len(unique) > MaxBulkTransactions {
+		return nil, fmt.Errorf("maksimal %d transaksi per aksi massal", MaxBulkTransactions)
+	}
+
+	results := make([]BulkActionResult, 0, len(unique))
+	for _, id := range unique {
+		res := BulkActionResult{ID: id}
+
+		tx, err := s.txRepo.FindByID(id)
+		if err != nil || tx == nil {
+			res.Message = "transaksi tidak ditemukan"
+			results = append(results, res)
+			continue
+		}
+		res.InvoiceNumber = tx.InvoiceNumber
+
+		if tx.Status != domain.StatusProcessing {
+			res.Message = fmt.Sprintf("dilewati: status %s (aksi massal hanya untuk processing)", tx.Status)
+			results = append(results, res)
+			continue
+		}
+
+		// Syarat 1: status provider pada transaksi masih pending
+		if !strings.Contains(strings.ToLower(strings.TrimSpace(tx.ProviderStatus)), "pending") {
+			res.Message = fmt.Sprintf("dilewati: status provider %q (harus mengandung pending)", tx.ProviderStatus)
+			results = append(results, res)
+			continue
+		}
+
+		// Syarat 2: provider_order_id masih kosong (belum ada order ID resmi dari provider)
+		if tx.RealProviderOrderID() != "" {
+			res.Message = fmt.Sprintf("dilewati: sudah memiliki ProviderOrderID (%s)", tx.RealProviderOrderID())
+			results = append(results, res)
+			continue
+		}
+
+		nominal, err := s.nominalRepo.FindByID(tx.NominalID)
+		if err != nil || nominal == nil {
+			res.Message = "nominal tidak ditemukan"
+			results = append(results, res)
+			continue
+		}
+
+		targetProviderID := nominal.ProviderID
+		if targetProviderID == 0 {
+			res.Message = "nominal belum diatur providernya"
+			results = append(results, res)
+			continue
+		}
+
+		if s.providerRepo == nil {
+			res.Message = "provider repository tidak dikonfigurasi"
+			results = append(results, res)
+			continue
+		}
+
+		targetProvider, err := s.providerRepo.GetByID(targetProviderID)
+		if err != nil || targetProvider == nil || !targetProvider.IsActive {
+			res.Message = "provider aktif pada nominal tidak ditemukan atau tidak aktif"
+			results = append(results, res)
+			continue
+		}
+
+		if s.providerRegistry == nil {
+			res.Message = "provider registry tidak diinisialisasi"
+			results = append(results, res)
+			continue
+		}
+
+		if _, ok := s.providerRegistry.Get(strings.ToUpper(strings.TrimSpace(targetProvider.Code))); !ok {
+			res.Message = fmt.Sprintf("provider %s tidak terdaftar di sistem", targetProvider.Code)
+			results = append(results, res)
+			continue
+		}
+
+		sku, err := provider.ResolveProductCode(nominal, targetProvider.Code)
+		if err != nil || strings.TrimSpace(sku) == "" {
+			res.Message = fmt.Sprintf("SKU produk tidak tersedia untuk provider %s", targetProvider.Name)
+			results = append(results, res)
+			continue
+		}
+
+		tx.ProviderID = targetProviderID
+		tx.ProviderRefID = ""
+		tx.ProviderOrderID = ""
+		tx.ProviderCallbackData = ""
+		tx.SN = ""
+
+		_, tx.ProviderRefID = s.NewReferences(nominal, tx.CustomerID, tx.ServerID)
+		tx.ProviderStatus = "Retrying (provider switch)"
+		providerMsg := "Dialihkan ke provider " + targetProvider.Name + " sesuai nominal"
+		if trimmedNotes := strings.TrimSpace(notes); trimmedNotes != "" {
+			providerMsg += ": " + trimmedNotes
+		}
+		tx.ProviderMessage = truncateManualText(providerMsg, 255)
+
+		if err := s.txRepo.Update(tx); err != nil {
+			res.Message = "gagal memperbarui transaksi: " + err.Error()
+			results = append(results, res)
+			continue
+		}
+
+		targetTx := tx
+		worker.GlobalPool.Submit(func() {
+			if err := s.FulfillOrder(targetTx); err != nil {
+				log.Printf("[BulkRetryWithProvider] invoice=%s provider_ref_id=%s error=%v",
+					targetTx.InvoiceNumber, targetTx.ProviderRefID, err)
+			}
+		})
+
+		res.Success = true
+		res.Message = "dialihkan ke provider " + targetProvider.Name
+		results = append(results, res)
+	}
+
 	return results, nil
 }
 

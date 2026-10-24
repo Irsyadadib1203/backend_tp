@@ -461,6 +461,36 @@ func (h *AdminHandler) BulkTransactions(c *gin.Context) {
 	})
 }
 
+// POST /admin/transactions/bulk-retry-provider  {"ids":[1,2],"notes":""}
+func (h *AdminHandler) BulkRetryProvider(c *gin.Context) {
+	if h.bulkTxService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Bulk transaction service is not configured")
+		return
+	}
+	var req struct {
+		IDs   []uint `json:"ids" binding:"required"`
+		Notes string `json:"notes"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request", nil)
+		return
+	}
+	results, err := h.bulkTxService.BulkRetryWithProvider(req.IDs, strings.TrimSpace(req.Notes))
+	if err != nil {
+		response.BadRequest(c, err.Error(), nil)
+		return
+	}
+	ok := 0
+	for _, r := range results {
+		if r.Success {
+			ok++
+		}
+	}
+	response.Success(c, fmt.Sprintf("%d dari %d transaksi berhasil dialihkan", ok, len(results)), gin.H{
+		"results": results, "total": len(results), "succeeded": ok, "failed": len(results) - ok,
+	})
+}
+
 func (h *AdminHandler) RegenerateProviderRefTx(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	tx, err := h.txService.RegenerateProviderRefID(uint(id))
