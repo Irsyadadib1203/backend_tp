@@ -391,6 +391,7 @@ func (m *mockProviderProductRepo) UpdateCostPrice(uint, string, *float64) error 
 func (m *mockProviderProductRepo) Delete(id uint) error {
 	return nil
 }
+func (m *mockProviderProductRepo) DeleteByNominalID(uint) error { return nil }
 
 type mockGameSupportProvider struct {
 	code string

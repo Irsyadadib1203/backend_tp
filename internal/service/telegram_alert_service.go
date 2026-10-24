@@ -487,11 +487,31 @@ func (s *telegramAlertService) SendPriceChangeAlert(providerName, providerCode s
 
 	client := telegram.NewClient(settings.BotToken)
 
+	// Deduplicate changes by ProductCode, prioritizing specific category over "Umum"
+	uniqueChanges := make([]PriceChangeItem, 0, len(changes))
+	seenIndex := make(map[string]int)
+
+	for _, c := range changes {
+		sku := strings.TrimSpace(c.ProductCode)
+		if sku == "" {
+			continue
+		}
+		if idx, seen := seenIndex[sku]; !seen {
+			seenIndex[sku] = len(uniqueChanges)
+			uniqueChanges = append(uniqueChanges, c)
+		} else {
+			// If already seen as "Umum" and current has a specific category, update it
+			if uniqueChanges[idx].Category == "Umum" && c.Category != "" && c.Category != "Umum" {
+				uniqueChanges[idx].Category = c.Category
+			}
+		}
+	}
+
 	// Group changes by Category preserving insertion order
 	categories := make([]string, 0)
 	catMap := make(map[string][]PriceChangeItem)
 
-	for _, c := range changes {
+	for _, c := range uniqueChanges {
 		cat := strings.TrimSpace(c.Category)
 		if cat == "" {
 			cat = "Umum"

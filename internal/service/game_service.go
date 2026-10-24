@@ -316,6 +316,7 @@ func (s *gameService) dualWriteProviderProducts(nominal, existing *domain.Nomina
 }
 
 func (s *gameService) DeleteNominal(id uint) error {
+	_ = s.providerProductRepo.DeleteByNominalID(id)
 	err := s.nominalRepo.Delete(id)
 	if err == nil {
 		s.invalidateGameCache()

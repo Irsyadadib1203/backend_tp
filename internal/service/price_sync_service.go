@@ -108,12 +108,18 @@ func (s *priceSyncService) SyncProvider(ctx context.Context, providerCode string
 	}
 
 	changed, skipped, repriced := 0, 0, 0
-	var priceChanges []PriceChangeItem
+	priceChangeMap := make(map[string]PriceChangeItem)
+	var priceChangeOrder []string
 
 	for _, row := range rows {
 		// Toggle mati => lewati, harga lama dibiarkan
 		if !row.AutoSyncPrice {
 			skipped++
+			continue
+		}
+
+		// Lewati jika nominal sudah tidak ada / terhapus
+		if row.Nominal == nil {
 			continue
 		}
 
@@ -137,19 +143,31 @@ func (s *priceSyncService) SyncProvider(ctx context.Context, providerCode string
 		}
 
 		categoryName := "Umum"
-		if row.Nominal != nil && row.Nominal.Game != nil && row.Nominal.Game.Name != "" {
-			categoryName = row.Nominal.Game.Name
-		} else if row.Nominal != nil && row.Nominal.Name != "" {
-			categoryName = row.Nominal.Name
+		if row.Nominal != nil && row.Nominal.Game != nil && strings.TrimSpace(row.Nominal.Game.Name) != "" {
+			categoryName = strings.TrimSpace(row.Nominal.Game.Name)
+		} else if row.Nominal != nil && strings.TrimSpace(row.Nominal.Name) != "" {
+			categoryName = strings.TrimSpace(row.Nominal.Name)
 		}
 
-		if oldCost > 0 && newCost > 0 {
-			priceChanges = append(priceChanges, PriceChangeItem{
-				Category:    categoryName,
-				ProductCode: row.ProductCode,
-				OldPrice:    oldCost,
-				NewPrice:    newCost,
-			})
+		codeKey := strings.TrimSpace(row.ProductCode)
+		if oldCost > 0 && newCost > 0 && codeKey != "" {
+			existing, exists := priceChangeMap[codeKey]
+			if !exists {
+				priceChangeOrder = append(priceChangeOrder, codeKey)
+				priceChangeMap[codeKey] = PriceChangeItem{
+					Category:    categoryName,
+					ProductCode: row.ProductCode,
+					OldPrice:    oldCost,
+					NewPrice:    newCost,
+				}
+			} else if existing.Category == "Umum" && categoryName != "Umum" {
+				priceChangeMap[codeKey] = PriceChangeItem{
+					Category:    categoryName,
+					ProductCode: row.ProductCode,
+					OldPrice:    oldCost,
+					NewPrice:    newCost,
+				}
+			}
 		}
 
 		if err := s.providerProductRepo.UpdateCostPrice(dbProvider.ID, row.ProductCode, newPrice); err != nil {
@@ -167,6 +185,13 @@ func (s *priceSyncService) SyncProvider(ctx context.Context, providerCode string
 			} else if ok {
 				repriced++
 			}
+		}
+	}
+
+	var priceChanges []PriceChangeItem
+	for _, codeKey := range priceChangeOrder {
+		if item, ok := priceChangeMap[codeKey]; ok {
+			priceChanges = append(priceChanges, item)
 		}
 	}
 

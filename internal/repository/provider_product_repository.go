@@ -20,6 +20,7 @@ type ProviderProductRepository interface {
 	UpdateCostPrice(providerID uint, productCode string, price *float64) error
 	SetAutoSyncPrice(nominalID, providerID uint, enabled bool) error
 	Delete(id uint) error
+	DeleteByNominalID(nominalID uint) error
 }
 
 type providerProductRepository struct {
@@ -83,9 +84,11 @@ func (r *providerProductRepository) ListByNominalID(nominalID uint) ([]domain.Pr
 
 func (r *providerProductRepository) ListByProviderID(providerID uint) ([]domain.ProviderProduct, error) {
 	var list []domain.ProviderProduct
-	err := r.db.Preload("Nominal.Game").
-		Where("provider_id = ?", providerID).
-		Order("nominal_id ASC").
+	err := r.db.
+		Joins("JOIN nominals ON nominals.id = provider_products.nominal_id AND nominals.deleted_at IS NULL").
+		Preload("Nominal.Game").
+		Where("provider_products.provider_id = ?", providerID).
+		Order("provider_products.nominal_id ASC").
 		Find(&list).Error
 	return list, err
 }
@@ -108,4 +111,8 @@ func (r *providerProductRepository) SetAutoSyncPrice(nominalID, providerID uint,
 
 func (r *providerProductRepository) Delete(id uint) error {
 	return r.db.Delete(&domain.ProviderProduct{}, id).Error
+}
+
+func (r *providerProductRepository) DeleteByNominalID(nominalID uint) error {
+	return r.db.Where("nominal_id = ?", nominalID).Delete(&domain.ProviderProduct{}).Error
 }
