@@ -185,26 +185,25 @@ func (r *transactionRepository) MarkAsProcessingIfPending(id uint, paymentRef st
 }
 
 // FindProcessingOlderThan returns at most batchSize processing transactions whose
-// updated_at is before (now - minAge), ordered oldest first. The reconciler uses
-// this to find stale transactions that may have been missed by push callbacks.
+// created_at is before (now - minAge), ordered oldest first.
 func (r *transactionRepository) FindProcessingOlderThan(minAge time.Duration, batchSize int) ([]domain.Transaction, error) {
 	var txs []domain.Transaction
 	cutoff := time.Now().Add(-minAge)
 	err := r.db.Preload("Nominal").Preload("Provider").
-		Where("status = ? AND updated_at < ?", domain.StatusProcessing, cutoff).
-		Order("updated_at ASC").
+		Where("status = ? AND created_at < ?", domain.StatusProcessing, cutoff).
+		Order("created_at ASC, id ASC").
 		Limit(batchSize).
 		Find(&txs).Error
 	return txs, err
 }
 
-// CountProcessingOlderThan counts processing transactions whose updated_at
+// CountProcessingOlderThan counts processing transactions whose created_at
 // is before (now - minAge).
 func (r *transactionRepository) CountProcessingOlderThan(minAge time.Duration) (int64, error) {
 	var count int64
 	cutoff := time.Now().Add(-minAge)
 	err := r.db.Model(&domain.Transaction{}).
-		Where("status = ? AND updated_at < ?", domain.StatusProcessing, cutoff).
+		Where("status = ? AND created_at < ?", domain.StatusProcessing, cutoff).
 		Count(&count).Error
 	return count, err
 }

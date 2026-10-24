@@ -376,7 +376,7 @@ func (s *telegramAlertService) checkStuckTransactions(client *telegram.Client, s
 
 	var lines []string
 	for _, tx := range txs {
-		duration := int(now.Sub(tx.UpdatedAt).Minutes())
+		duration := int(now.Sub(tx.CreatedAt).Minutes())
 		providerName := "Unknown"
 		if tx.Provider != nil {
 			providerName = tx.Provider.Name
