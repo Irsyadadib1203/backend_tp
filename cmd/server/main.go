@@ -28,6 +28,8 @@ import (
 	providersipas "topup-backend/internal/provider/sipas"
 	providerkiosgamer "topup-backend/internal/provider/kiosgamer"
 	providerotomax "topup-backend/internal/provider/otomax"
+	providerbostgame "topup-backend/internal/provider/bostgame"
+	providermumtazshop "topup-backend/internal/provider/mumtazshop"
 	"topup-backend/internal/repository"
 	"topup-backend/internal/service"
 )
@@ -76,6 +78,12 @@ func main() {
 	}
 	if err := providerRegistry.Register(providerexcellentstore.NewWithCallbackBaseURL(providerRepo, cfg.PublicAPIURL)); err != nil {
 		log.Fatalf("register ExcellentStore provider adapter: %v", err)
+	}
+	if err := providerRegistry.Register(providermumtazshop.NewWithCallbackBaseURL(providerRepo, cfg.PublicAPIURL)); err != nil {
+		log.Fatalf("register MumtazShop provider adapter: %v", err)
+	}
+	if err := providerRegistry.Register(providerbostgame.NewWithCallbackBaseURL(providerRepo, cfg.PublicAPIURL)); err != nil {
+		log.Fatalf("register BostGame provider adapter: %v", err)
 	}
 	if err := providerRegistry.Register(providerasmarket.New(providerRepo)); err != nil {
 		log.Fatalf("register ASMarket provider adapter: %v", err)
@@ -354,6 +362,10 @@ func main() {
 			admin.PUT("/providers/digiflazz", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveDigiflazzSettings)
 			admin.GET("/providers/excellentstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetExcellentStoreSettings)
 			admin.PUT("/providers/excellentstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveExcellentStoreSettings)
+			admin.GET("/providers/mumtazshop", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetMumtazShopSettings)
+			admin.PUT("/providers/mumtazshop", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveMumtazShopSettings)
+			admin.GET("/providers/bostgame", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetBostGameSettings)
+			admin.PUT("/providers/bostgame", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveBostGameSettings)
 			admin.GET("/providers/asmarket", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetASMarketSettings)
 			admin.PUT("/providers/asmarket", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveASMarketSettings)
 			admin.GET("/providers/vexagame", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetVexagameSettings)

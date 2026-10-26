@@ -1259,6 +1259,115 @@ func (h *AdminHandler) SaveExcellentStoreSettings(c *gin.Context) {
 	})
 }
 
+// Pengaturan generik provider berbasis API key (+ webhook secret opsional).
+type keyProviderSettingsRequest struct {
+	Name     string `json:"name"`
+	BaseURL  string `json:"base_url" binding:"required"`
+	APIKey   string `json:"api_key"`
+	Secret   string `json:"secret"`
+	IsActive bool   `json:"is_active"`
+}
+
+const (
+	mumtazShopCode           = "MUMTAZSHOP"
+	mumtazShopDefaultBaseURL = "https://api.mumtazshop.id/api/v1"
+	bostGameCode             = "BOSTGAME"
+	bostGameDefaultBaseURL   = "https://api.bostgame.com"
+)
+
+func (h *AdminHandler) getKeyProviderSettings(c *gin.Context, code, label, defaultBaseURL string, hasSecret bool) {
+	record, err := h.providerRepo.GetByCode(code)
+	if err != nil || record == nil {
+		view := gin.H{"configured": false, "name": label, "base_url": defaultBaseURL, "is_active": false, "api_key_configured": false}
+		if hasSecret {
+			view["secret_configured"] = false
+		}
+		response.Success(c, label+" settings loaded", view)
+		return
+	}
+	baseURL := strings.TrimSpace(record.BaseURL)
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
+	view := gin.H{
+		"configured": true, "id": record.ID, "name": record.Name, "base_url": baseURL,
+		"is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
+	}
+	if hasSecret {
+		view["secret_configured"] = strings.TrimSpace(record.Secret) != ""
+	}
+	response.Success(c, label+" settings loaded", view)
+}
+
+func (h *AdminHandler) saveKeyProviderSettings(c *gin.Context, code, label string, requireSecret bool) {
+	var req keyProviderSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid "+label+" settings", err.Error())
+		return
+	}
+	if err := provider.ValidateEndpointURL(req.BaseURL); err != nil {
+		response.BadRequest(c, "Base URL "+label+" tidak valid", err.Error())
+		return
+	}
+
+	record, lookupErr := h.providerRepo.GetByCode(code)
+	if lookupErr != nil || record == nil {
+		record = &domain.Provider{Code: code}
+	}
+	if req.IsActive && strings.TrimSpace(req.APIKey) == "" && strings.TrimSpace(record.APIKey) == "" {
+		response.BadRequest(c, "API key wajib diisi sebelum "+label+" diaktifkan", nil)
+		return
+	}
+	if requireSecret && req.IsActive && strings.TrimSpace(req.Secret) == "" && strings.TrimSpace(record.Secret) == "" {
+		response.BadRequest(c, "Webhook secret wajib diisi sebelum "+label+" diaktifkan", nil)
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = label
+	}
+	record.Name = name
+	record.BaseURL = strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+	if v := strings.TrimSpace(req.APIKey); v != "" {
+		record.APIKey = v
+	}
+	if requireSecret {
+		if v := strings.TrimSpace(req.Secret); v != "" {
+			record.Secret = v
+		}
+	}
+	record.IsActive = req.IsActive
+	if err := h.providerRepo.Update(record); err != nil {
+		response.InternalServerError(c, "Failed to save "+label+" settings", err)
+		return
+	}
+	view := gin.H{
+		"id": record.ID, "name": record.Name, "code": record.Code, "base_url": record.BaseURL,
+		"is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "",
+	}
+	if requireSecret {
+		view["secret_configured"] = strings.TrimSpace(record.Secret) != ""
+	}
+	response.Success(c, label+" settings saved", view)
+}
+
+// MumtazShop: API key + webhook secret (sama dengan ExcellentStore).
+func (h *AdminHandler) GetMumtazShopSettings(c *gin.Context) {
+	h.getKeyProviderSettings(c, mumtazShopCode, "MumtazShop", mumtazShopDefaultBaseURL, true)
+}
+func (h *AdminHandler) SaveMumtazShopSettings(c *gin.Context) {
+	h.saveKeyProviderSettings(c, mumtazShopCode, "MumtazShop", true)
+}
+
+// BostGame: hanya API key. API key itu juga dipakai sebagai secret HMAC callback.
+func (h *AdminHandler) GetBostGameSettings(c *gin.Context) {
+	h.getKeyProviderSettings(c, bostGameCode, "BostGame", bostGameDefaultBaseURL, false)
+}
+func (h *AdminHandler) SaveBostGameSettings(c *gin.Context) {
+	h.saveKeyProviderSettings(c, bostGameCode, "BostGame", false)
+}
+
 // ASMarketSettingsRequest hanya menerima base URL dan API key. Tidak ada
 // webhook secret karena ASMarket belum menyediakan callback.
 type ASMarketSettingsRequest struct {
