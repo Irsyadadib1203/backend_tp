@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"math"
 	"strconv"
 	"strings"
@@ -528,6 +529,17 @@ func (s *telegramAlertService) SendPriceChangeAlert(providerName, providerCode s
 		if len(items) == 0 {
 			continue
 		}
+
+		// Urutkan dari harga terkecil ke terbesar (berdasarkan harga baru).
+		sort.SliceStable(items, func(i, j int) bool {
+			if items[i].NewPrice != items[j].NewPrice {
+				return items[i].NewPrice < items[j].NewPrice
+			}
+			if items[i].OldPrice != items[j].OldPrice {
+				return items[i].OldPrice < items[j].OldPrice
+			}
+			return items[i].ProductCode < items[j].ProductCode
+		})
 
 		// Chunk into max 25 items per message to avoid exceeding Telegram message size
 		chunkSize := 25

@@ -188,6 +188,9 @@ func isBalanceShortage(lower string) bool {
 func isCutOff(lower string) bool {
 	return containsAny(lower, []string{"cutoff", "cut off", "cut-off"})
 }
+func isProductDisruption(lower string) bool {
+	return containsAny(lower, []string{"gangguan"})
+}
 
 // parseRupiah memakai format Indonesia: titik = pemisah ribuan, koma = desimal
 // ("50.006" -> 50006).
@@ -295,6 +298,13 @@ func resultFromText(text, refID string, raw []byte) *provider.Result {
 		result.Status = provider.StatusFailedHold
 		result.ProviderStatus = "Pending (Cut Off)"
 		result.StatusReason = "SIPAS: sistem sedang cut off, ditahan di pending"
+		// Order belum diterima provider; kosongkan agar Proses Ulang mengirim order baru.
+		result.ProviderOrderID = ""
+	case isProductDisruption(lower):
+		// Harus dicek sebelum failedMarkers: teksnya juga memuat "GAGAL".
+		result.Status = provider.StatusFailedHold
+		result.ProviderStatus = "Pending (Produk Gangguan)"
+		result.StatusReason = "SIPAS: produk sedang gangguan, ditahan di pending"
 		// Order belum diterima provider; kosongkan agar Proses Ulang mengirim order baru.
 		result.ProviderOrderID = ""
 	case containsAny(lower, failedMarkers):
@@ -492,7 +502,7 @@ func (a *Adapter) ParseCallback(req *http.Request) (*provider.Result, string, er
 			IncludeSNInSuccessEvent: true,
 		}
 	case "2":
-		if lowerMsgs := strings.ToLower(msgs); isBalanceShortage(lowerMsgs) || isCutOff(lowerMsgs) {
+		if lowerMsgs := strings.ToLower(msgs); isBalanceShortage(lowerMsgs) || isCutOff(lowerMsgs) || isProductDisruption(lowerMsgs) {
 			result = resultFromText(msgs, refID, raw)
 		} else {
 			result = &provider.Result{
