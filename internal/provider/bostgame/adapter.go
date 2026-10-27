@@ -22,7 +22,7 @@ import (
 
 const (
 	Code    = "BOSTGAME"
-	BaseURL = "https://api.bostgame.com"
+	BaseURL = "https://api.bostgame.com/v1"
 )
 
 type Adapter struct {
@@ -35,7 +35,9 @@ func New(providers repository.ProviderRepository, clients ...*http.Client) *Adap
 	return newAdapter(providers, "", clients...)
 }
 
-// NewWithCallbackBaseURL mengisi callback_url otomatis saat membuat order.
+// NewWithCallbackBaseURL configures the generic callback endpoint sent with
+// new orders. New remains available for callers that configure the webhook at
+// BostGame directly.
 func NewWithCallbackBaseURL(providers repository.ProviderRepository, callbackBaseURL string, clients ...*http.Client) *Adapter {
 	return newAdapter(providers, callbackBaseURL, clients...)
 }
@@ -55,8 +57,6 @@ func newAdapter(providers repository.ProviderRepository, callbackBaseURL string,
 func (a *Adapter) Code() string {
 	return Code
 }
-
-// ---------- tipe data ----------
 
 type apiEnvelope[T any] struct {
 	StatusCode int    `json:"statusCode"`
@@ -92,7 +92,7 @@ type productItem struct {
 	IsActive     bool    `json:"is_active"`
 }
 
-type userData struct {
+type userResponse struct {
 	UserBalance float64 `json:"user_balance"`
 }
 
@@ -108,8 +108,6 @@ type apiCredentials struct {
 	BaseURL string
 	APIKey  string
 }
-
-// ---------- kredensial & HTTP ----------
 
 func (a *Adapter) credentials() (*apiCredentials, error) {
 	if a.providers == nil {
@@ -138,7 +136,8 @@ func (a *Adapter) credentials() (*apiCredentials, error) {
 		return nil, errors.New("BostGame: BaseURL harus berupa URL HTTPS yang valid")
 	}
 
-	// BaseURL boleh root domain atau yang sudah diakhiri /v1.
+	// BaseURL boleh berupa root API atau URL dasar yang diakhiri /v1.
+	baseURL = strings.TrimRight(baseURL, "/")
 	if !strings.HasSuffix(baseURL, "/v1") {
 		baseURL += "/v1"
 	}
@@ -149,6 +148,8 @@ func (a *Adapter) credentials() (*apiCredentials, error) {
 	}, nil
 }
 
+// request mengembalikan body response apa adanya. Saat HTTP non-2xx, body
+// provider tetap dikembalikan bersama error supaya response asli tidak hilang.
 func (a *Adapter) request(
 	ctx context.Context,
 	creds *apiCredentials,
@@ -164,7 +165,12 @@ func (a *Adapter) request(
 		reader = bytes.NewReader(raw)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, creds.BaseURL+path, reader)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		method,
+		creds.BaseURL+path,
+		reader,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("BostGame: buat request: %w", err)
 	}
@@ -188,32 +194,26 @@ func (a *Adapter) request(
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Jangan menyertakan header autentikasi; message provider aman ditampilkan.
-		var env apiEnvelope[json.RawMessage]
-		if json.Unmarshal(raw, &env) == nil && strings.TrimSpace(env.Message) != "" {
-			return nil, fmt.Errorf("BostGame: HTTP %d dari provider (%s)", resp.StatusCode, truncate(env.Message, 120))
-		}
-		return nil, fmt.Errorf("BostGame: HTTP %d dari provider", resp.StatusCode)
+		// Hindari menampilkan header autentikasi atau kredensial.
+		return raw, fmt.Errorf(
+			"BostGame: HTTP %d dari provider",
+			resp.StatusCode,
+		)
 	}
 
 	return raw, nil
 }
 
-func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
-}
-
+// decodeEnvelope dipakai untuk saldo dan katalog. Semua statusCode 2xx
+// dianggap sukses (provider bisa mengirim 200/201).
 func decodeEnvelope[T any](raw []byte) (T, error) {
 	var envelope apiEnvelope[T]
-	var zero T
 	if err := json.Unmarshal(raw, &envelope); err != nil {
+		var zero T
 		return zero, fmt.Errorf("BostGame: response JSON tidak valid: %w", err)
 	}
-	if envelope.StatusCode != 0 && envelope.StatusCode != http.StatusOK {
+	if envelope.StatusCode != 0 && (envelope.StatusCode < 200 || envelope.StatusCode >= 300) {
+		var zero T
 		message := strings.TrimSpace(envelope.Message)
 		if message == "" {
 			message = fmt.Sprintf("provider mengembalikan statusCode %d", envelope.StatusCode)
@@ -223,13 +223,23 @@ func decodeEnvelope[T any](raw []byte) (T, error) {
 	return envelope.Data, nil
 }
 
-// ---------- Purchase ----------
+// decodeOrder: order dianggap valid selama ada invoice_number, apa pun nilai
+// statusCode di body.
+func decodeOrder(raw []byte) (orderData, error) {
+	var envelope apiEnvelope[orderData]
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return orderData{}, fmt.Errorf("BostGame: response JSON tidak valid: %w", err)
+	}
+	if strings.TrimSpace(envelope.Data.InvoiceNumber) == "" {
+		return orderData{}, errors.New("BostGame: response tidak memiliki invoice_number")
+	}
+	return envelope.Data, nil
+}
 
 func (a *Adapter) Purchase(
 	ctx context.Context,
 	request provider.PurchaseRequest,
 ) (*provider.Result, error) {
-	// Retry dengan order yang sudah ada: cek status, jangan buat order baru.
 	if strings.TrimSpace(request.ExistingProviderOrderID) != "" &&
 		request.ExistingProviderOrderID != "-" {
 		return a.CheckStatus(ctx, provider.StatusRequest{
@@ -268,15 +278,12 @@ func (a *Adapter) Purchase(
 
 	raw, err := a.request(ctx, creds, http.MethodPost, "/order", payload)
 	if err != nil {
-		return nil, temporaryError(err)
+		return nil, temporaryError(err, raw)
 	}
 
-	order, err := decodeEnvelope[orderData](raw)
+	order, err := decodeOrder(raw)
 	if err != nil {
-		return nil, temporaryError(err)
-	}
-	if strings.TrimSpace(order.InvoiceNumber) == "" {
-		return nil, temporaryError(errors.New("BostGame: response order tidak memiliki invoice_number"))
+		return nil, temporaryError(err, raw)
 	}
 
 	result := resultFromOrder(order, raw)
@@ -296,8 +303,6 @@ func (a *Adapter) callbackURL(requestURL string) string {
 	return a.callbackBaseURL + "/api/callback/provider/" + Code
 }
 
-// ---------- CheckStatus ----------
-
 func (a *Adapter) CheckStatus(
 	ctx context.Context,
 	request provider.StatusRequest,
@@ -307,15 +312,26 @@ func (a *Adapter) CheckStatus(
 		return nil, configurationError(err)
 	}
 
+	// BostGame hanya menyediakan cek status via invoice_number, bukan via trx_id.
 	invoice := strings.TrimSpace(request.ProviderOrderID)
 	if invoice == "" || invoice == "-" {
-		// BostGame hanya menyediakan cek status via invoice_number, bukan via trx_id.
 		return nil, temporaryError(errors.New("BostGame: invoice_number (provider order id) belum ada untuk cek status"))
 	}
 
-	order, raw, err := a.fetchOrder(ctx, creds, invoice)
+	raw, err := a.request(
+		ctx,
+		creds,
+		http.MethodGet,
+		"/status/"+url.PathEscape(invoice),
+		nil,
+	)
 	if err != nil {
-		return nil, temporaryError(err)
+		return nil, temporaryError(err, raw)
+	}
+
+	order, err := decodeOrder(raw)
+	if err != nil {
+		return nil, temporaryError(err, raw)
 	}
 
 	result := resultFromOrder(order, raw)
@@ -328,23 +344,6 @@ func (a *Adapter) CheckStatus(
 	return result, nil
 }
 
-func (a *Adapter) fetchOrder(ctx context.Context, creds *apiCredentials, invoice string) (orderData, []byte, error) {
-	raw, err := a.request(ctx, creds, http.MethodGet, "/status/"+url.PathEscape(invoice), nil)
-	if err != nil {
-		return orderData{}, nil, err
-	}
-	order, err := decodeEnvelope[orderData](raw)
-	if err != nil {
-		return orderData{}, nil, err
-	}
-	if strings.TrimSpace(order.InvoiceNumber) == "" {
-		return orderData{}, nil, errors.New("BostGame: response status tidak memiliki invoice_number")
-	}
-	return order, raw, nil
-}
-
-// ---------- error helpers ----------
-
 func configurationError(err error) *provider.ProviderError {
 	return &provider.ProviderError{
 		Status: provider.StatusFailedHold, Kind: provider.ErrorConfiguration,
@@ -352,16 +351,21 @@ func configurationError(err error) *provider.ProviderError {
 	}
 }
 
-// Upstream tidak tersedia / response rusak ditahan (hold), bukan di-refund.
-// Callback atau cek status berikutnya yang akan menyelesaikan order.
-func temporaryError(err error) *provider.ProviderError {
-	return &provider.ProviderError{
+// An unavailable or malformed upstream response is deliberately held instead
+// of refunded. A later callback/status check can safely settle the order.
+// Kalau body provider tersedia, Message berisi body asli apa adanya.
+func temporaryError(err error, raw ...[]byte) *provider.ProviderError {
+	pe := &provider.ProviderError{
 		Status: provider.StatusFailedHold, Kind: provider.ErrorTemporary,
 		ProviderStatus: "Provider Pending", Message: err.Error(), Cause: err,
 	}
+	if len(raw) > 0 && len(bytes.TrimSpace(raw[0])) > 0 {
+		pe.Message = string(bytes.TrimSpace(raw[0]))
+		// Jika provider.ProviderError punya field Raw ([]byte), aktifkan:
+		// pe.Raw = raw[0]
+	}
+	return pe
 }
-
-// ---------- Balance & katalog ----------
 
 func (a *Adapter) Balance(ctx context.Context) (float64, error) {
 	creds, err := a.credentials()
@@ -374,7 +378,7 @@ func (a *Adapter) Balance(ctx context.Context) (float64, error) {
 		return 0, err
 	}
 
-	user, err := decodeEnvelope[userData](raw)
+	user, err := decodeEnvelope[userResponse](raw)
 	if err != nil {
 		return 0, err
 	}
@@ -420,8 +424,6 @@ func (a *Adapter) SyncCatalog(ctx context.Context) ([]provider.CatalogItem, erro
 	return items, nil
 }
 
-// ---------- mapping status ----------
-
 func voucherText(raw json.RawMessage) string {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
@@ -454,20 +456,20 @@ func resultFromOrder(order orderData, raw []byte) *provider.Result {
 	case "PENDING", "PAID":
 		// PAID = sudah dibayar ke provider, masih menunggu diproses.
 		result.Status = provider.StatusPending
-		result.ProviderStatus = "processing"
+		result.ProviderStatus = "processing" // pending/paid ditampilkan seragam
 		result.StatusReason = "BostGame: transaksi sedang diproses"
 	case "REFUNDED", "FAILED":
 		result.Status = provider.StatusFailedFinal
 		result.StatusReason = "BostGame: transaksi gagal final"
 		result.RefundReason = "BostGame: " + strings.ToLower(status)
 	case "PARTIAL_SUCCESS":
-		// Sebagian terkirim: tidak dianggap sukses dan tidak di-refund, ditahan di pending.
+		// Sebagian terkirim: tidak dianggap sukses dan tidak di-refund.
 		result.Status = provider.StatusPending
 		result.ProviderStatus = "pending"
 		result.Message = "BostGame: sukses sebagian, ditahan di pending"
 		result.StatusReason = "BostGame: partial success, ditahan di pending"
 	default:
-		// Status anomali: tidak di-refund dan tidak dianggap sukses.
+		// Status anomali: tidak di-refund dan tidak dianggap sukses, dibiarkan di pending.
 		result.Status = provider.StatusPending
 		result.ProviderStatus = "pending"
 		result.Message = "BostGame: status tidak dikenal (" + status + "), ditahan di pending"
@@ -490,10 +492,8 @@ func applySuccessSN(result *provider.Result, order orderData, nickname, customer
 	result.UpdateSN = true
 }
 
-// ---------- callback ----------
-
-// ParseCallback memverifikasi header X-Signature: HMAC-SHA256 atas raw body
-// dengan API key sebagai secret. Nilai boleh berupa hex saja atau "sha256=<hex>".
+// ParseCallback memverifikasi HMAC-SHA256 atas raw body dengan API key sebagai
+// secret. X-Signature berupa hex saja atau sha256=<hex>.
 func (a *Adapter) ParseCallback(
 	req *http.Request,
 ) (*provider.Result, string, error) {
@@ -547,8 +547,9 @@ func (a *Adapter) ParseCallback(
 
 	return result, invoice, nil
 }
-// signatureMatches mencocokkan HMAC-SHA256 atas raw body, lalu atas versi compact-nya
-// (setara JSON.stringify di sisi provider).
+
+// signatureMatches mencocokkan HMAC-SHA256 atas raw body, lalu atas versi
+// compact-nya (setara JSON.stringify di sisi provider).
 func signatureMatches(body, provided, secret []byte) bool {
 	candidates := [][]byte{body}
 	var compact bytes.Buffer
