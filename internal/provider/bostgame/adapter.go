@@ -526,9 +526,7 @@ func (a *Adapter) ParseCallback(
 		return nil, "", errors.New("BostGame: format signature tidak valid")
 	}
 
-	mac := hmac.New(sha256.New, []byte(creds.APIKey))
-	_, _ = mac.Write(body)
-	if !hmac.Equal(providedSignature, mac.Sum(nil)) {
+	if !signatureMatches(body, providedSignature, []byte(creds.APIKey)) {
 		return nil, "", errors.New("BostGame: signature callback tidak cocok")
 	}
 
@@ -548,6 +546,23 @@ func (a *Adapter) ParseCallback(
 	result.Raw = body
 
 	return result, invoice, nil
+}
+// signatureMatches mencocokkan HMAC-SHA256 atas raw body, lalu atas versi compact-nya
+// (setara JSON.stringify di sisi provider).
+func signatureMatches(body, provided, secret []byte) bool {
+	candidates := [][]byte{body}
+	var compact bytes.Buffer
+	if json.Compact(&compact, body) == nil && !bytes.Equal(compact.Bytes(), body) {
+		candidates = append(candidates, compact.Bytes())
+	}
+	for _, candidate := range candidates {
+		mac := hmac.New(sha256.New, secret)
+		_, _ = mac.Write(candidate)
+		if hmac.Equal(provided, mac.Sum(nil)) {
+			return true
+		}
+	}
+	return false
 }
 
 // Pastikan adapter memenuhi kontrak provider dan kapabilitas opsional.
