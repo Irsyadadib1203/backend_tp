@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -71,6 +72,7 @@ func (h *ProviderCallbackHandler) HandleCallback(c *gin.Context) {
 	// 2. Process callback through service and registry (§3.4, §5)
 	tx, result, err := h.txService.HandleProviderCallback(code, c.Request)
 	if err != nil {
+		log.Printf("[ProviderCallback] code=%s error=%v", code, err)
 		errStr := err.Error()
 		lowerErr := strings.ToLower(errStr)
 		// Signature validation, empty data, or unsupported provider errors return HTTP 400
