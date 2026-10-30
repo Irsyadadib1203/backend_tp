@@ -5,6 +5,7 @@ import (
 	"log"
 	"sync"
 	"time"
+	"sort"
 
 	providerkiosgamer "topup-backend/internal/provider/kiosgamer"
 	"topup-backend/internal/service"
@@ -223,6 +224,20 @@ type PriceSyncScheduler struct {
 	stopOnce  sync.Once
 }
 
+// nextAlignedTime mengembalikan waktu eksekusi berikutnya yang selaras dengan
+// jam dinding. Contoh every=5m, offset=3m => :03, :08, :13, ..., :58.
+// Hasil selalu STRICTLY setelah `now`, jadi tidak pernah jalan dua kali pada
+// slot yang sama.
+func nextAlignedTime(now time.Time, every, offset time.Duration) time.Time {
+	// Truncate bekerja terhadap zero time (UTC), cocok untuk interval yang
+	// habis membagi jam (1m, 5m, 10m, 15m, 30m, 1h).
+	base := now.Truncate(every).Add(offset)
+	for !base.After(now) {
+		base = base.Add(every)
+	}
+	return base
+}
+
 func NewPriceSyncScheduler(svc service.PriceSyncService, intervals map[string]time.Duration) *PriceSyncScheduler {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &PriceSyncScheduler{svc: svc, intervals: intervals, ctx: ctx, cancel: cancel}
@@ -233,36 +248,47 @@ func (s *PriceSyncScheduler) Start() {
 		log.Println("[PriceSync] PRICE_SYNC_INTERVALS kosong, scheduler sinkron harga tidak dijalankan")
 		return
 	}
-	for code, every := range s.intervals {
+
+	// Urutkan agar jeda per provider konsisten antar restart.
+	codes := make([]string, 0, len(s.intervals))
+	for code := range s.intervals {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+
+	idx := 0
+	for _, code := range codes {
+		every := s.intervals[code]
 		if !s.svc.SupportsCatalog(code) {
 			log.Printf("[PriceSync] %s dilewati: adapter belum mendukung sinkron katalog", code)
 			continue
 		}
+		stagger := time.Duration(idx) * time.Second // jeda 1 detik per provider
+		idx++
 		s.wg.Add(1)
-		go s.loop(code, every)
+		go s.loop(code, every, stagger)
 	}
 }
 
-func (s *PriceSyncScheduler) loop(code string, every time.Duration) {
+func (s *PriceSyncScheduler) loop(code string, every, stagger time.Duration) {
 	defer s.wg.Done()
-	log.Printf("[PriceSync] %s dijadwalkan tiap %v", code, every)
 
-	// Beri jeda setelah server menyala, lalu sinkron pertama.
-	select {
-	case <-time.After(30 * time.Second):
-		s.runOnce(code, every)
-	case <-s.ctx.Done():
-		return
+	offset := 3*time.Minute + stagger
+	if offset >= every {
+		offset = 0 // interval pendek (mis. 1m): abaikan offset dan stagger
 	}
 
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
+	log.Printf("[PriceSync] %s dijadwalkan tiap %v (offset %v)", code, every, offset)
 
 	for {
+		next := nextAlignedTime(time.Now(), every, offset)
+		timer := time.NewTimer(time.Until(next))
+
 		select {
-		case <-ticker.C:
+		case <-timer.C:
 			s.runOnce(code, every)
 		case <-s.ctx.Done():
+			timer.Stop()
 			log.Printf("[PriceSync] %s dihentikan", code)
 			return
 		}
@@ -423,24 +449,17 @@ func (s *TelegramAlertScheduler) Start() {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		log.Printf("[TelegramAlert] Scheduler started (interval: %s)", s.interval)
+		log.Printf("[TelegramAlert] Scheduler started (interval: %s, selaras jam, tepat kelipatan interval)", s.interval)
 
-		// Delay 30 seconds after boot before first check
-		select {
-		case <-time.After(30 * time.Second):
-		case <-s.ctx.Done():
-			return
-		}
-
-		s.runOnce()
-
-		ticker := time.NewTicker(s.interval)
-		defer ticker.Stop()
 		for {
+			next := nextAlignedTime(time.Now(), s.interval, 0)
+			timer := time.NewTimer(time.Until(next))
+
 			select {
-			case <-ticker.C:
+			case <-timer.C:
 				s.runOnce()
 			case <-s.ctx.Done():
+				timer.Stop()
 				log.Println("[TelegramAlert] Scheduler stopped.")
 				return
 			}
