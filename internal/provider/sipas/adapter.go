@@ -346,7 +346,7 @@ func (a *Adapter) CheckStatus(
 	return &provider.Result{
 		ProviderOrderID: refID,
 		Status:          provider.StatusPending,
-		ProviderStatus:  "pending",
+		ProviderStatus:  "processing",
 		Message:         "SIPAS: cek status otomatis belum tersedia, selesaikan manual",
 		StatusReason:    "SIPAS: menunggu konfirmasi manual",
 	}, nil
