@@ -1,7 +1,6 @@
 package excellstore
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -81,10 +80,6 @@ type apiEnvelope struct {
 	Data   json.RawMessage `json:"data"`
 }
 
-type apiKeyRequest struct {
-	APIKey string `json:"api_key"`
-}
-
 type orderData struct {
 	ID          string `json:"id"` // order ID ExcellStore
 	ServiceName string `json:"service_name"`
@@ -101,20 +96,6 @@ type serviceItem struct {
 	Kategori    string    `json:"kategori"`
 	Harga       flexFloat `json:"harga"`
 	Status      string    `json:"status"`
-}
-
-type createOrderRequest struct {
-	APIKey    string `json:"api_key"`
-	Action    string `json:"action"`
-	ServiceID string `json:"service_id"`
-	Target    string `json:"target"`
-	Kontak    string `json:"kontak"`
-}
-
-type statusRequest struct {
-	APIKey  string `json:"api_key"`
-	Action  string `json:"action"`
-	OrderID string `json:"order_id"`
 }
 
 // ---------------------------------------------------------------------------
@@ -160,22 +141,19 @@ func (a *Adapter) ReconcileMinAge() time.Duration { return 10 * time.Second }
 
 var _ provider.PollingProvider = (*Adapter)(nil)
 
-// request mengirim request dengan body JSON ke endpoint ExcellStore.
+// request mengirim POST application/x-www-form-urlencoded ke endpoint ExcellStore
+// (sesuai dokumentasi: Method POST, Type Urlencoded).
 func (a *Adapter) request(
 	ctx context.Context,
 	creds *apiCredentials,
 	method, path string,
-	body any,
+	form url.Values,
 ) ([]byte, error) {
 	endpoint := creds.BaseURL + path
 
 	var reader io.Reader
-	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("ExcellStore: encode request: %w", err)
-		}
-		reader = bytes.NewReader(raw)
+	if form != nil {
+		reader = strings.NewReader(form.Encode())
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
@@ -184,7 +162,7 @@ func (a *Adapter) request(
 	}
 	req.Header.Set("Accept", "application/json")
 	if reader != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
 
 	resp, err := a.httpClient.Do(req)
@@ -273,15 +251,15 @@ func (a *Adapter) Purchase(
 		target = customerID + "|" + serverID
 	}
 
-	payload := createOrderRequest{
-		APIKey:    creds.APIKey,
-		Action:    "order",
-		ServiceID: serviceID,
-		Target:    target,
-		Kontak:    defaultContact,
+	form := url.Values{
+		"api_key":    {creds.APIKey},
+		"action":     {"order"},
+		"service_id": {serviceID},
+		"target":     {target},
+		"kontak":     {defaultContact},
 	}
 
-	raw, err := a.request(ctx, creds, http.MethodPost, "/order", payload)
+	raw, err := a.request(ctx, creds, http.MethodPost, "/order", form)
 	if err != nil {
 		return nil, temporaryError(err)
 	}
@@ -330,10 +308,10 @@ func (a *Adapter) CheckStatus(
 		return nil, temporaryError(errors.New("ExcellStore: provider order ID belum tersedia untuk cek status"))
 	}
 
-	raw, err := a.request(ctx, creds, http.MethodPost, "/status", statusRequest{
-		APIKey:  creds.APIKey,
-		Action:  "status",
-		OrderID: orderID,
+	raw, err := a.request(ctx, creds, http.MethodPost, "/status", url.Values{
+		"api_key":  {creds.APIKey},
+		"action":   {"status"},
+		"order_id": {orderID},
 	})
 	if err != nil {
 		return nil, temporaryError(err)
@@ -371,7 +349,7 @@ func (a *Adapter) Balance(ctx context.Context) (float64, error) {
 		return 0, err
 	}
 
-	raw, err := a.request(ctx, creds, http.MethodPost, "/saldo", apiKeyRequest{APIKey: creds.APIKey})
+	raw, err := a.request(ctx, creds, http.MethodPost, "/saldo", url.Values{"api_key": {creds.APIKey}})
 	if err != nil {
 		return 0, err
 	}
@@ -394,7 +372,7 @@ func (a *Adapter) SyncCatalog(ctx context.Context) ([]provider.CatalogItem, erro
 		return nil, err
 	}
 
-	raw, err := a.request(ctx, creds, http.MethodPost, "/service", apiKeyRequest{APIKey: creds.APIKey})
+	raw, err := a.request(ctx, creds, http.MethodPost, "/service", url.Values{"api_key": {creds.APIKey}})
 	if err != nil {
 		return nil, err
 	}
@@ -448,6 +426,7 @@ func resultFromOrder(order orderData, raw []byte) *provider.Result {
 		result.IncludeSNInSuccessEvent = true
 	case "pending", "processing":
 		result.Status = provider.StatusPending
+		result.ProviderStatus = "processing"
 		result.StatusReason = "ExcellStore: transaksi sedang diproses"
 	case "cancel", "refund":
 		result.Status = provider.StatusFailedFinal
