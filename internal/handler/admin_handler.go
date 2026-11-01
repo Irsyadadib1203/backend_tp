@@ -1368,6 +1368,19 @@ func (h *AdminHandler) SaveBostGameSettings(c *gin.Context) {
 	h.saveKeyProviderSettings(c, bostGameCode, "BostGame", false)
 }
 
+const (
+	excellStoreCode           = "EXCELLSTORE"
+	excellStoreDefaultBaseURL = "https://excellstore.id/api"
+)
+
+// ExcellStore: hanya API key (tanpa callback / webhook secret).
+func (h *AdminHandler) GetExcellStoreSettings(c *gin.Context) {
+	h.getKeyProviderSettings(c, excellStoreCode, "ExcellStore", excellStoreDefaultBaseURL, false)
+}
+func (h *AdminHandler) SaveExcellStoreSettings(c *gin.Context) {
+	h.saveKeyProviderSettings(c, excellStoreCode, "ExcellStore", false)
+}
+
 // ASMarketSettingsRequest hanya menerima base URL dan API key. Tidak ada
 // webhook secret karena ASMarket belum menyediakan callback.
 type ASMarketSettingsRequest struct {

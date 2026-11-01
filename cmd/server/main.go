@@ -24,6 +24,7 @@ import (
 	providerdigiflazz "topup-backend/internal/provider/digiflazz"
 	providerexcellentstore "topup-backend/internal/provider/excellentstore"
 	providerasmarket "topup-backend/internal/provider/asmarket"
+	providerexcellstore "topup-backend/internal/provider/excellstore"
 	providervexagame "topup-backend/internal/provider/vexagame"
 	providersipas "topup-backend/internal/provider/sipas"
 	providerkiosgamer "topup-backend/internal/provider/kiosgamer"
@@ -87,6 +88,9 @@ func main() {
 	}
 	if err := providerRegistry.Register(providerasmarket.New(providerRepo)); err != nil {
 		log.Fatalf("register ASMarket provider adapter: %v", err)
+	}
+	if err := providerRegistry.Register(providerexcellstore.New(providerRepo)); err != nil {
+		log.Fatalf("register ExcellStore provider adapter: %v", err)
 	}
 	if err := providerRegistry.Register(providervexagame.New(providerRepo)); err != nil {
 		log.Fatalf("register Vexagame provider adapter: %v", err)
@@ -368,6 +372,8 @@ func main() {
 			admin.PUT("/providers/bostgame", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveBostGameSettings)
 			admin.GET("/providers/asmarket", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetASMarketSettings)
 			admin.PUT("/providers/asmarket", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveASMarketSettings)
+			admin.GET("/providers/excellstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetExcellStoreSettings)
+			admin.PUT("/providers/excellstore", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveExcellStoreSettings)
 			admin.GET("/providers/vexagame", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetVexagameSettings)
 			admin.PUT("/providers/vexagame", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.SaveVexagameSettings)
 			admin.GET("/providers/sipas", middleware.RequirePermission(rbacService, domain.ResourceSettings), adminHandler.GetSIPASSettings)
