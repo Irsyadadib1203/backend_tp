@@ -276,13 +276,24 @@ func (a *Adapter) Purchase(
 		CallbackURL: a.callbackURL(request.CallbackURL),
 	}
 
-	raw, err := a.request(ctx, creds, http.MethodPost, "/order", payload)
+		raw, err := a.request(ctx, creds, http.MethodPost, "/order", payload)
 	if err != nil {
+		if code, detail, ok := failureFromError(raw); ok {
+			result := failedResultFromError(code, detail, raw)
+			result.RequestRaw, _ = json.Marshal(payload)
+			return result, nil
+		}
 		return nil, temporaryError(err, raw)
 	}
 
 	order, err := decodeOrder(raw)
 	if err != nil {
+		// Jaga-jaga bila provider membalas HTTP 200 tapi statusCode di body 4xx.
+		if code, detail, ok := failureFromError(raw); ok {
+			result := failedResultFromError(code, detail, raw)
+			result.RequestRaw, _ = json.Marshal(payload)
+			return result, nil
+		}
 		return nil, temporaryError(err, raw)
 	}
 
@@ -348,6 +359,51 @@ func configurationError(err error) *provider.ProviderError {
 	return &provider.ProviderError{
 		Status: provider.StatusFailedHold, Kind: provider.ErrorConfiguration,
 		ProviderStatus: "Konfigurasi Error", Message: err.Error(), Cause: err,
+	}
+}
+
+// finalFailureCodes: kode error BostGame yang pasti berarti order DITOLAK dan
+// tidak dibuat di sisi provider, sehingga aman langsung gagal + refund.
+// Kode lain (saldo habis, auth, 5xx, dll) sengaja tetap ditahan (hold).
+// Tambahkan kode baru di sini bila perlu.
+var finalFailureCodes = map[string]bool{
+	"REGION_LOCK":        true,
+	"NICKNAME_NOT_FOUND": true,
+}
+
+// failureFromError membaca body error BostGame, contoh:
+// {"statusCode":400,"message":"REGION_LOCK","data":"Unable to purchase..."}
+// Keputusan HANYA berdasarkan kode di field "message" (allowlist exact match).
+// statusCode HTTP sengaja diabaikan karena satu status code bisa dipakai untuk
+// banyak jenis error yang berbeda.
+func failureFromError(raw []byte) (code, detail string, ok bool) {
+	var e struct {
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(raw), &e) != nil {
+		return "", "", false
+	}
+	code = strings.ToUpper(strings.TrimSpace(e.Message))
+	if !finalFailureCodes[code] {
+		return "", "", false
+	}
+	return code, voucherText(e.Data), true
+}
+
+func failedResultFromError(code, detail string, raw []byte) *provider.Result {
+	reason := "BostGame: " + code
+	if detail != "" {
+		reason += " - " + detail
+	}
+	return &provider.Result{
+		Status:                          provider.StatusFailedFinal,
+		ProviderStatus:                  "failed",
+		Message:                         reason,
+		StatusReason:                    reason,
+		RefundReason:                    reason,
+		IncludeCompletedAtInFailedEvent: true,
+		Raw:                             raw,
 	}
 }
 
@@ -542,7 +598,6 @@ func (a *Adapter) ParseCallback(
 
 	result := resultFromOrder(callback, body)
 	applySuccessSN(result, callback, callback.UserInput.Nickname, callback.UserInput.UserID, "")
-	result.RequestRaw = body
 	result.Raw = body
 
 	return result, invoice, nil
