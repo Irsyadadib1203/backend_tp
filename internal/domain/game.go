@@ -33,6 +33,7 @@ type Game struct {
 	UserIDLabel        string         `gorm:"size:50;default:'User ID'" json:"user_id_label"`
 	ZoneIDLabel        string         `gorm:"size:50;default:'Zone ID / Server'" json:"zone_id_label"`
 	NicknameCheckCode  string         `gorm:"size:50" json:"nickname_check_code"` // e.g. "MOBILE_LEGENDS", "FREE_FIRE"
+	Code string `gorm:"size:20" json:"code"` 
 
 	CreatedAt          time.Time      `json:"created_at"`
 	UpdatedAt          time.Time      `json:"updated_at"`

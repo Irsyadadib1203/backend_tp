@@ -262,7 +262,7 @@ func (w *ReconcilerWorker) waitRateSlot(ctx context.Context, pvdCode string) {
 //     is unreliable for background workers; require manual admin review
 func (w *ReconcilerWorker) shouldSkip(tx *domain.Transaction) bool {
 	status := tx.ProviderStatus
-	if strings.Contains(status, "Harga Naik") || strings.Contains(status, "Konfigurasi Error") {
+	if strings.Contains(status, "Konfigurasi Error") {
 		return true
 	}
 

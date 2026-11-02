@@ -461,6 +461,7 @@ func resultFromOrder(order orderData, raw []byte) *provider.Result {
 		result.ProviderStatus = "processing" // pending/processing/created ditampilkan seragam
 		result.StatusReason = "ExcellentStore: transaksi sedang diproses"
 	case "failed", "refunded", "cancelled", "canceled":
+		result.ProviderStatus = "Gagal"
 		result.Status = provider.StatusFailedFinal
 		result.StatusReason = "ExcellentStore: transaksi gagal final"
 		if order.Fulfillment.FailureReason != nil &&

@@ -365,9 +365,44 @@ func (s *transactionService) renderReferences(nominal *domain.Nominal, customerI
 	}
 	reference := provider.ParseReferenceConfig(setting.Value)
 	providerCode := s.providerCodeForNominal(nominal)
-	invoiceNumber = limitReference(provider.RenderReference(reference.InvoiceTemplate, invoiceNumber, providerCode, customerID, serverID, nominal.ID), maxInvoiceNumberLength)
-	refID = limitReference(provider.RenderReference(reference.RefIDTemplate, refID, providerCode, customerID, serverID, nominal.ID), maxProviderRefLength)
+	gameCode := s.gameCodeForNominal(nominal)
+
+	// {game_code} diganti lebih dulu; token lain dirender oleh provider.RenderReference.
+	invoiceTpl := strings.ReplaceAll(reference.InvoiceTemplate, "{game_code}", gameCode)
+	refTpl := strings.ReplaceAll(reference.RefIDTemplate, "{game_code}", gameCode)
+
+	invoiceNumber = limitReference(provider.RenderReference(invoiceTpl, invoiceNumber, providerCode, customerID, serverID, nominal.ID), maxInvoiceNumberLength)
+	refID = limitReference(provider.RenderReference(refTpl, refID, providerCode, customerID, serverID, nominal.ID), maxProviderRefLength)
 	return invoiceNumber, refID
+}
+
+// gameCodeForNominal mengambil kode game milik nominal (kosong bila belum diisi).
+func (s *transactionService) gameCodeForNominal(nominal *domain.Nominal) string {
+	code := ""
+	if nominal.Game != nil {
+		code = nominal.Game.Code
+	} else if s.gameRepo != nil && nominal.GameID > 0 {
+		if game, err := s.gameRepo.FindByID(nominal.GameID); err == nil && game != nil {
+			code = game.Code
+		}
+	}
+	return sanitizeGameCode(code)
+}
+
+// sanitizeGameCode: huruf besar dan angka saja, maksimal 10 karakter, sehingga
+// aman dipakai di invoice/ref ID dan tidak bisa menyisipkan token lain.
+func sanitizeGameCode(v string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(strings.TrimSpace(v)) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	out := b.String()
+	if len(out) > 10 {
+		out = out[:10]
+	}
+	return out
 }
 
 // limitReference memastikan hasil template muat di kolom database. Saat harus
@@ -462,14 +497,6 @@ func (s *transactionService) fulfillOrderRegistry(tx *domain.Transaction) error 
 	nominal, err := s.nominalRepo.FindByID(tx.NominalID)
 	if err != nil || nominal == nil {
 		return errors.New("nominal not found")
-	}
-	if nominal.BasePrice > tx.SellingPrice {
-		tx.Status = domain.StatusProcessing
-		tx.ProviderStatus = "Pending (Harga Naik)"
-		tx.ProviderMessage = "Harga modal provider melebihi pembayaran pelanggan (tertahan di antrean server)"
-		_ = s.txRepo.Update(tx)
-		_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, tx.ProviderMessage)
-		return nil
 	}
 
 	p, productCode, gameSlug, err := s.resolveRegistryProvider(tx, nominal, providerOrderMayExist(tx))
@@ -571,14 +598,11 @@ func shouldPurchaseInsteadOfCheck(tx *domain.Transaction) bool {
 	if !strings.Contains(ps, "pending") {
 		return false
 	}
-	return !strings.Contains(ps, "harga naik") && !strings.Contains(ps, "konfigurasi")
+	return !strings.Contains(ps, "konfigurasi")
 }
 
 func (s *transactionService) purchaseInsteadOfCheck(tx *domain.Transaction, nominal *domain.Nominal, p provider.Provider, productCode, gameSlug, source string) (*domain.Transaction, error) {
 	// Guard yang sama dengan fulfillOrderRegistry
-	if nominal.BasePrice > tx.SellingPrice {
-		return tx, nil
-	}
 	providerRef := tx.ProviderReference()
 	requestSnapshot := provider.RequestSnapshot("purchase", p.Code(), providerRef, productCode, tx.CustomerID, tx.ServerID, "")
 	result, callErr := p.Purchase(context.Background(), provider.PurchaseRequest{

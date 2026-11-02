@@ -972,7 +972,7 @@ func (h *AdminHandler) GetTransactionReferenceSettings(c *gin.Context) {
 			reference = provider.ParseReferenceConfig(setting.Value)
 		}
 	}
-	response.Success(c, "Global transaction reference settings loaded", gin.H{"invoice_template": reference.InvoiceTemplate, "ref_id_template": reference.RefIDTemplate, "tokens": []string{"{date}", "{time}", "{timestamp}", "{unix}", "{random}", "{customer_id}", "{server_id}", "{nominal_id}", "{provider_code}","{date_short}","{timestamp_short}","{alnum}"}})
+	response.Success(c, "Global transaction reference settings loaded", gin.H{"invoice_template": reference.InvoiceTemplate, "ref_id_template": reference.RefIDTemplate, "tokens": []string{"{date}", "{time}", "{timestamp}", "{unix}", "{random}", "{customer_id}", "{server_id}", "{nominal_id}", "{provider_code}","{date_short}","{timestamp_short}","{alnum}","{game_code}"}})
 }
 
 func (h *AdminHandler) SaveTransactionReferenceSettings(c *gin.Context) {
@@ -994,6 +994,14 @@ func (h *AdminHandler) SaveTransactionReferenceSettings(c *gin.Context) {
 		return
 	}
 	if err := provider.ValidateReferenceTemplate(req.RefIDTemplate); err != nil {
+		response.BadRequest(c, "Template ref ID tidak valid: "+err.Error(), nil)
+		return
+	}
+	if err := provider.ValidateReferenceTemplate(strings.ReplaceAll(req.InvoiceTemplate, "{game_code}", "GC")); err != nil {
+		response.BadRequest(c, "Template invoice tidak valid: "+err.Error(), nil)
+		return
+	}
+	if err := provider.ValidateReferenceTemplate(strings.ReplaceAll(req.RefIDTemplate, "{game_code}", "GC")); err != nil {
 		response.BadRequest(c, "Template ref ID tidak valid: "+err.Error(), nil)
 		return
 	}

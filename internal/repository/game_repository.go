@@ -68,6 +68,7 @@ func (r *gameRepository) Update(game *domain.Game) error {
         "user_id_label":       game.UserIDLabel,
         "zone_id_label":       game.ZoneIDLabel,
         "nickname_check_code": game.NicknameCheckCode,
+		"code":                game.Code,
     }
 
     return r.db.
