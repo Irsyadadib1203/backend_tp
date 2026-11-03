@@ -129,6 +129,11 @@ func (h *AdminHandler) CreateGame(c *gin.Context) {
 		response.BadRequest(c, "Invalid game data", err.Error())
 		return
 	}
+	game.Code = normalizeGameCode(game.Code)
+	if game.Code == "" {
+		response.BadRequest(c, "Kode game wajib diisi (huruf/angka, maks. 10 karakter)", nil)
+		return
+	}
 
 	if err := h.gameService.CreateGame(&game); err != nil {
 		response.InternalServerError(c, "Failed to create game", err)
@@ -143,6 +148,11 @@ func (h *AdminHandler) UpdateGame(c *gin.Context) {
 	var game domain.Game
 	if err := c.ShouldBindJSON(&game); err != nil {
 		response.BadRequest(c, "Invalid game data", err.Error())
+		return
+	}
+	game.Code = normalizeGameCode(game.Code)
+	if game.Code == "" {
+		response.BadRequest(c, "Kode game wajib diisi (huruf/angka, maks. 10 karakter)", nil)
 		return
 	}
 
@@ -1188,6 +1198,21 @@ func (h *AdminHandler) SaveDigiflazzSettings(c *gin.Context) {
 		"id": record.ID, "name": record.Name, "code": record.Code, "base_url": record.BaseURL,
 		"username": record.Username, "is_active": record.IsActive, "api_key_configured": strings.TrimSpace(record.APIKey) != "", "secret_configured": strings.TrimSpace(record.Secret) != "",
 	})
+}
+
+// normalizeGameCode: huruf besar dan angka saja, maksimal 10 karakter.
+func normalizeGameCode(v string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(strings.TrimSpace(v)) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	out := b.String()
+	if len(out) > 10 {
+		out = out[:10]
+	}
+	return out
 }
 
 // ExcellentStoreSettingsRequest intentionally accepts only ExcellentStore's
