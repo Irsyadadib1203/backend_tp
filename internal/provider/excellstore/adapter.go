@@ -257,9 +257,10 @@ func (a *Adapter) Purchase(
 		"service_id": {serviceID},
 		"target":     {target},
 		"kontak":     {defaultContact},
+		"PartnerID":  {refID},
 	}
 
-	raw, err := a.request(ctx, creds, http.MethodPost, "/order", form)
+	raw, err := a.request(ctx, creds, http.MethodPost, "/orderv2", form)
 	if err != nil {
 		return nil, temporaryError(err)
 	}
@@ -283,7 +284,7 @@ func (a *Adapter) Purchase(
 		"service_id": serviceID,
 		"target":     target,
 		"kontak":     defaultContact,
-		"ref_id":     refID,
+		"PartnerID":  refID,
 	})
 	result.Raw = raw
 	return result, nil
