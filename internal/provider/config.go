@@ -82,7 +82,7 @@ var referenceTokenRegex = regexp.MustCompile(`\{([^{}]*)\}`)
 var allowedReferenceTokens = map[string]bool{
 	"date": true, "time": true, "timestamp": true, "unix": true, "random": true,
 	"customer_id": true, "server_id": true, "nominal_id": true, "provider_code": true,
-	"date_short": true, "timestamp_short": true,"alnum": true, 
+	"date_short": true, "timestamp_short": true, "alnum": true, "game_code": true,
 }
 
 // ValidateReferenceTemplate menolak template invoice/ref_id yang akan diubah

@@ -1095,14 +1095,6 @@ func (h *AdminHandler) SaveTransactionReferenceSettings(c *gin.Context) {
 		response.BadRequest(c, "Template ref ID tidak valid: "+err.Error(), nil)
 		return
 	}
-	if err := provider.ValidateReferenceTemplate(strings.ReplaceAll(req.InvoiceTemplate, "{game_code}", "GC")); err != nil {
-		response.BadRequest(c, "Template invoice tidak valid: "+err.Error(), nil)
-		return
-	}
-	if err := provider.ValidateReferenceTemplate(strings.ReplaceAll(req.RefIDTemplate, "{game_code}", "GC")); err != nil {
-		response.BadRequest(c, "Template ref ID tidak valid: "+err.Error(), nil)
-		return
-	}
 	configJSON, err := provider.WithReferenceConfig("", provider.ReferenceConfig{InvoiceTemplate: req.InvoiceTemplate, RefIDTemplate: req.RefIDTemplate})
 	if err != nil {
 		response.BadRequest(c, "Konfigurasi provider tidak dapat diperbarui", err.Error())
@@ -1112,7 +1104,17 @@ func (h *AdminHandler) SaveTransactionReferenceSettings(c *gin.Context) {
 		response.InternalServerError(c, "Gagal menyimpan format reference", err)
 		return
 	}
-	response.Success(c, "Format invoice dan ref ID global tersimpan", provider.ParseReferenceConfig(configJSON))
+	saved := provider.ParseReferenceConfig(configJSON)
+	// Return same shape as GET so the frontend SWR cache stays consistent (includes tokens list).
+	response.Success(c, "Format invoice dan ref ID global tersimpan", gin.H{
+		"invoice_template": saved.InvoiceTemplate,
+		"ref_id_template":  saved.RefIDTemplate,
+		"tokens": []string{
+			"{date}", "{time}", "{timestamp}", "{unix}", "{random}",
+			"{customer_id}", "{server_id}", "{nominal_id}", "{provider_code}",
+			"{date_short}", "{timestamp_short}", "{alnum}", "{game_code}",
+		},
+	})
 }
 
 // FFZStoreSettingsRequest only accepts the operational values needed by the
