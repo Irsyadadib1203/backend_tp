@@ -12,21 +12,31 @@ import (
 
 func AuthMiddleware(authService service.AuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Try Authorization: Bearer <token> header first
+		tokenString := ""
 		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			response.Unauthorized(c, "Authorization header is required")
+		if authHeader != "" {
+			parts := strings.SplitN(authHeader, " ", 2)
+			if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+				response.Unauthorized(c, "Invalid authorization format. Must be Bearer <token>")
+				c.Abort()
+				return
+			}
+			tokenString = parts[1]
+		}
+
+		// Fallback: ?token= query param (used by EventSource/SSE because the
+		// browser EventSource API cannot set custom request headers).
+		if tokenString == "" {
+			tokenString = c.Query("token")
+		}
+
+		if tokenString == "" {
+			response.Unauthorized(c, "Authorization token is required")
 			c.Abort()
 			return
 		}
 
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			response.Unauthorized(c, "Invalid authorization format. Must be Bearer <token>")
-			c.Abort()
-			return
-		}
-
-		tokenString := parts[1]
 		claims, err := authService.ValidateToken(tokenString)
 		if err != nil {
 			response.Unauthorized(c, "Invalid or expired token")
