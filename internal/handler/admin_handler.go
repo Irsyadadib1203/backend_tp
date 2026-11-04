@@ -15,6 +15,7 @@ import (
 	"topup-backend/internal/domain"
 	"topup-backend/internal/pkg/crypto"
 	"topup-backend/internal/pkg/response"
+	"topup-backend/internal/pkg/sse"
 	"topup-backend/internal/provider"
 	"topup-backend/internal/repository"
 	"topup-backend/internal/service"
@@ -99,6 +100,93 @@ func (h *AdminHandler) GetDashboardStats(c *gin.Context) {
 	stats["digiflazz_balance"] = digiBalance
 
 	response.Success(c, "Dashboard stats loaded", stats)
+}
+
+// GetDashboardRecentTransactions returns the 20 most recent transactions for the admin dashboard.
+func (h *AdminHandler) GetDashboardRecentTransactions(c *gin.Context) {
+	limitStr := c.DefaultQuery("limit", "20")
+	limit, _ := strconv.Atoi(limitStr)
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+
+	txs, err := h.txService.ListRecentAdmin(limit)
+	if err != nil {
+		response.InternalServerError(c, "Failed to load recent transactions", err)
+		return
+	}
+
+	type txRow struct {
+		ID            uint    `json:"id"`
+		InvoiceNumber string  `json:"invoice_number"`
+		CustomerID    string  `json:"customer_id"`
+		GameName      string  `json:"game_name"`
+		NominalName   string  `json:"nominal_name"`
+		TotalAmount   float64 `json:"total_amount"`
+		Status        string  `json:"status"`
+		PaymentMethod string  `json:"payment_method"`
+		CreatedAt     string  `json:"created_at"`
+	}
+
+	rows := make([]txRow, 0, len(txs))
+	for _, tx := range txs {
+		gameName := "-"
+		nominalName := "-"
+		if tx.Game != nil {
+			gameName = tx.Game.Name
+		}
+		if tx.Nominal != nil {
+			nominalName = tx.Nominal.Name
+		}
+		rows = append(rows, txRow{
+			ID:            tx.ID,
+			InvoiceNumber: tx.InvoiceNumber,
+			CustomerID:    tx.CustomerID,
+			GameName:      gameName,
+			NominalName:   nominalName,
+			TotalAmount:   tx.TotalAmount,
+			Status:        string(tx.Status),
+			PaymentMethod: tx.PaymentMethod,
+			CreatedAt:     tx.CreatedAt.Format(time.RFC3339),
+		})
+	}
+
+	response.Success(c, "Recent transactions retrieved", rows)
+}
+
+// StreamDashboardTransactions streams real-time transaction events directly to the admin dashboard via SSE.
+func (h *AdminHandler) StreamDashboardTransactions(c *gin.Context) {
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	clientChan := make(sse.ClientChan, 16)
+	sse.GlobalHub.Register("admin_dashboard", clientChan)
+	defer sse.GlobalHub.Unregister("admin_dashboard", clientChan)
+
+	// Send initial connected confirmation
+	fmt.Fprintf(c.Writer, "data: {\"type\":\"connected\",\"payload\":\"ok\"}\n\n")
+	c.Writer.Flush()
+
+	heartbeat := time.NewTicker(20 * time.Second)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case msg, ok := <-clientChan:
+			if !ok {
+				return
+			}
+			fmt.Fprint(c.Writer, msg)
+			c.Writer.Flush()
+		case <-heartbeat.C:
+			fmt.Fprintf(c.Writer, ": heartbeat\n\n")
+			c.Writer.Flush()
+		case <-c.Request.Context().Done():
+			return
+		}
+	}
 }
 
 // ----------------- GAMES -----------------

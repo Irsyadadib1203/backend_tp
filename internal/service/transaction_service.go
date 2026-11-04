@@ -1,4 +1,4 @@
-package service
+﻿package service
 
 import (
 	"context"
@@ -38,6 +38,8 @@ type TransactionService interface {
 	CreateOrder(req *CreateOrderRequest) (*domain.Transaction, error)
 	GetByInvoice(invoice string) (*domain.Transaction, error)
 	ListRecent(limit int) ([]domain.Transaction, error)
+	// ListRecentAdmin returns recent transactions across all statuses for the admin dashboard.
+	ListRecentAdmin(limit int) ([]domain.Transaction, error)
 	ListUserTransactions(userID uint, offset, limit int) ([]domain.Transaction, int64, error)
 	ListAdminTransactions(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string, gameID uint) ([]domain.Transaction, int64, error)
 	GetDashboardStats() (map[string]interface{}, error)
@@ -763,6 +765,7 @@ func (s *transactionService) applyResult(tx *domain.Transaction, result *provide
 			successEvent["sn"] = tx.SN
 		}
 		sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", successEvent)
+		s.broadcastToDashboard(tx)
 	case provider.StatusFailedFinal:
 		tx.Status = domain.StatusFailed
 		now := time.Now()
@@ -774,6 +777,7 @@ func (s *transactionService) applyResult(tx *domain.Transaction, result *provide
 			failedEvent["completed_at"] = now
 		}
 		sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", failedEvent)
+		s.broadcastToDashboard(tx)
 	case provider.StatusFailedHold:
 		tx.Status = domain.StatusProcessing
 		_ = s.txRepo.UpdateStatus(tx.ID, domain.StatusProcessing, result.StatusReason)
@@ -784,6 +788,7 @@ func (s *transactionService) applyResult(tx *domain.Transaction, result *provide
 			sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
 				"status": "processing", "invoice": tx.InvoiceNumber,
 			})
+			s.broadcastToDashboard(tx)
 		}
 	default:
 		return fmt.Errorf("unknown provider result status %d", result.Status)
@@ -869,7 +874,7 @@ func (s *transactionService) HandleProviderCallback(providerCode string, req *ht
 		return nil, nil, errors.New("transaction not found for callback")
 	}
 
-	// Idempotency (§5 Fase 4, rule 2): skip if already final
+	// Idempotency (Â§5 Fase 4, rule 2): skip if already final
 	if isFinalTransactionStatus(tx.Status) {
 		return tx, result, nil
 	}
@@ -881,7 +886,7 @@ func (s *transactionService) HandleProviderCallback(providerCode string, req *ht
 		result.UpdateSN = true
 	}
 
-	// Apply result through boundary (§3.4, §5)
+	// Apply result through boundary (Â§3.4, Â§5)
 	if err := s.applyResult(tx, result, nil, providerResultSourceCallback); err != nil {
 		return nil, nil, err
 	}
@@ -900,7 +905,7 @@ func (s *transactionService) HandlePaymentSuccess(invoiceNumber, paymentRef stri
 	}
 
 	// Cross-check the amount the payment gateway says was paid against what
-	// this transaction actually expects. A mismatch is never fulfilled —
+	// this transaction actually expects. A mismatch is never fulfilled â€”
 	// this is a second line of defense independent of Tripay's own
 	// "value consistency" setting (which we deliberately leave off).
 	// A small epsilon guards against float64 rounding, not real discrepancies.
@@ -912,7 +917,7 @@ func (s *transactionService) HandlePaymentSuccess(invoiceNumber, paymentRef stri
 	}
 
 	// Atomically flip Pending -> Processing. If another (duplicate/retried)
-	// callback already did this, ok is false and we stop here — this is
+	// callback already did this, ok is false and we stop here â€” this is
 	// what makes concurrent duplicate webhooks safe.
 	ok, err := s.txRepo.MarkAsProcessingIfPending(tx.ID, paymentRef, time.Now())
 	if err != nil {
@@ -942,6 +947,11 @@ func (s *transactionService) GetByInvoice(invoice string) (*domain.Transaction, 
 
 func (s *transactionService) ListRecent(limit int) ([]domain.Transaction, error) {
 	return s.txRepo.ListRecent(limit)
+}
+
+// ListRecentAdmin returns recent transactions across all statuses for the admin dashboard.
+func (s *transactionService) ListRecentAdmin(limit int) ([]domain.Transaction, error) {
+	return s.txRepo.ListRecentAdmin(limit)
 }
 
 func (s *transactionService) ListUserTransactions(userID uint, offset, limit int) ([]domain.Transaction, int64, error) {
@@ -1181,6 +1191,7 @@ func (s *transactionService) ManualSetSuccess(transactionID uint, notes string, 
 	sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
 		"status": "success", "invoice": tx.InvoiceNumber, "completed_at": tx.CompletedAt, "sn": tx.SN,
 	})
+	s.broadcastToDashboard(tx)
 	return err
 }
 
@@ -1210,6 +1221,7 @@ func (s *transactionService) ManualRefund(transactionID uint, notes string) erro
 	sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
 		"status": "refunded", "invoice": tx.InvoiceNumber, "completed_at": now,
 	})
+	s.broadcastToDashboard(tx)
 	return err
 }
 
@@ -1376,4 +1388,41 @@ func (s *transactionService) RegenerateProviderRefID(transactionID uint) (*domai
 	}
 	log.Printf("[RegenerateRef] invoice=%s old=%q new=%q", tx.InvoiceNumber, oldRef, newRef)
 	return tx, nil
+}
+
+// broadcastToDashboard pushes a lightweight transaction snapshot to all admin
+// dashboard SSE clients so the live feed updates in real time.
+func (s *transactionService) broadcastToDashboard(tx *domain.Transaction) {
+	if tx == nil {
+		return
+	}
+	gameName := "-"
+	nominalName := "-"
+	if tx.Game != nil && tx.Game.Name != "" {
+		gameName = tx.Game.Name
+	} else if tx.GameID > 0 && s.gameRepo != nil {
+		if g, err := s.gameRepo.FindByID(tx.GameID); err == nil && g != nil {
+			gameName = g.Name
+		}
+	}
+
+	if tx.Nominal != nil && tx.Nominal.Name != "" {
+		nominalName = tx.Nominal.Name
+	} else if tx.NominalID > 0 && s.nominalRepo != nil {
+		if n, err := s.nominalRepo.FindByID(tx.NominalID); err == nil && n != nil {
+			nominalName = n.Name
+		}
+	}
+
+	sse.GlobalHub.Broadcast("admin_dashboard", "tx_update", map[string]interface{}{
+		"id":             tx.ID,
+		"invoice_number": tx.InvoiceNumber,
+		"customer_id":    tx.CustomerID,
+		"game_name":      gameName,
+		"nominal_name":   nominalName,
+		"total_amount":   tx.TotalAmount,
+		"status":         tx.Status,
+		"payment_method": tx.PaymentMethod,
+		"created_at":     tx.CreatedAt,
+	})
 }

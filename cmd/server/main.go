@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"context"
@@ -166,7 +166,7 @@ func main() {
 		defer providerBalanceRetryScheduler.Stop()
 	}
 
-	// 5.2d Telegram Alert Scheduler — notifikasi saldo rendah & transaksi stuck setiap 5 menit
+	// 5.2d Telegram Alert Scheduler â€” notifikasi saldo rendah & transaksi stuck setiap 5 menit
 	telegramAlertService := service.NewTelegramAlertService(settingRepo, providerRepo, txRepo, providerRegistry)
 	adminHandler.SetTelegramAlertService(telegramAlertService)
 	priceSyncService.SetNotifier(telegramAlertService)
@@ -175,7 +175,7 @@ func main() {
 	telegramAlertScheduler.Start()
 	defer telegramAlertScheduler.Stop()
 
-	// 5.3 Start Reconciler (Fase 5) — disabled by default via RECONCILER_ENABLED=false.
+	// 5.3 Start Reconciler (Fase 5) â€” disabled by default via RECONCILER_ENABLED=false.
 	// Enable only after registry mode has been verified in production.
 	reconcilerCtx, reconcilerCancel := context.WithCancel(context.Background())
 	if cfg.ReconcilerEnabled {
@@ -205,7 +205,7 @@ func main() {
 		})
 	})
 
-	// Generic Provider Callback endpoint (§5 Fase 4: POST /api/callback/provider/:code)
+	// Generic Provider Callback endpoint (Â§5 Fase 4: POST /api/callback/provider/:code)
 	r.POST("/api/callback/provider/:code", providerCallbackHandler.HandleCallback)
 	r.GET("/api/callback/provider/:code", providerCallbackHandler.HandleCallback)
 
@@ -327,13 +327,15 @@ func main() {
 			admin.GET("/rbac/permissions", middleware.RequireRole(domain.RoleSuperAdmin), rbacHandler.GetRolePermissions)
 			admin.POST("/rbac/permissions", middleware.RequireRole(domain.RoleSuperAdmin), rbacHandler.UpdateRolePermissions)
 
-			// Profile self-management (no extra permission needed — any admin can manage their own account)
+			// Profile self-management (no extra permission needed â€” any admin can manage their own account)
 			admin.GET("/me", adminHandler.GetMyProfile)
 			admin.PUT("/me", adminHandler.UpdateMyProfile)
 			admin.PUT("/me/change-password", adminHandler.ChangeMyPassword)
 
 			// Dashboard
 			admin.GET("/dashboard/stats", middleware.RequirePermission(rbacService, domain.ResourceDashboard), adminHandler.GetDashboardStats)
+				admin.GET("/dashboard/recent-transactions", middleware.RequirePermission(rbacService, domain.ResourceDashboard), adminHandler.GetDashboardRecentTransactions)
+				admin.GET("/dashboard/stream", middleware.RequirePermission(rbacService, domain.ResourceDashboard), adminHandler.StreamDashboardTransactions)
 
 			// Games
 			games := admin.Group("/games", middleware.RequirePermission(rbacService, domain.ResourceGames))

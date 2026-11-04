@@ -44,6 +44,9 @@ type TransactionRepository interface {
 	// returned a provider order ID.
 	FindProcessingBalanceHolds(providerID uint, batchSize int) ([]domain.Transaction, error)
 	ListRecent(limit int) ([]domain.Transaction, error)
+	// ListRecentAdmin returns the most recent transactions across all statuses,
+	// intended for the admin dashboard live feed.
+	ListRecentAdmin(limit int) ([]domain.Transaction, error)
 	ListByUser(userID uint, offset, limit int) ([]domain.Transaction, int64, error)
 	ListAdmin(offset, limit int, status, search, startDate, endDate string, providerID uint, providerStatus string, gameID uint) ([]domain.Transaction, int64, error)
 	GetDashboardStats() (map[string]interface{}, error)
@@ -262,6 +265,16 @@ func (r *transactionRepository) ListRecent(limit int) ([]domain.Transaction, err
 	var txs []domain.Transaction
 	err := r.db.Preload("Game").Preload("Nominal").
 		Where("status = ?", domain.StatusSuccess).
+		Order("created_at DESC").
+		Limit(limit).
+		Find(&txs).Error
+	return txs, err
+}
+
+// ListRecentAdmin returns recent transactions across all statuses for the admin dashboard.
+func (r *transactionRepository) ListRecentAdmin(limit int) ([]domain.Transaction, error) {
+	var txs []domain.Transaction
+	err := r.db.Preload("Game").Preload("Nominal").
 		Order("created_at DESC").
 		Limit(limit).
 		Find(&txs).Error

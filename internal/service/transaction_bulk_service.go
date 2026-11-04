@@ -284,6 +284,7 @@ func (s *transactionService) ManualSetFailed(transactionID uint, notes string) e
 	sse.GlobalHub.Broadcast(tx.InvoiceNumber, "status_update", map[string]interface{}{
 		"status": "failed", "invoice": tx.InvoiceNumber, "completed_at": now,
 	})
+	s.broadcastToDashboard(tx)
 	return err
 }
 
