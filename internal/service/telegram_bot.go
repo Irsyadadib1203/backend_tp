@@ -100,7 +100,7 @@ func (b *TelegramBot) handle(ctx context.Context, s *TelegramSettings, up tgUpda
 		_ = client.SendMessagePlain(chatID, "❌ "+err.Error())
 		return
 	}
-	if err := client.SendMessagePlain(chatID, res.Format()); err != nil {
+	if err := client.SendMessageMarkdown(chatID, res.Format()); err != nil {
 		log.Printf("[CekNick] gagal kirim balasan: %v", err)
 	}
 }
