@@ -260,10 +260,12 @@ func (n *NickChecker) fetchMobapayLimits(ctx context.Context, userID, zoneID str
 
 	var r struct {
 		Data struct {
-			GoodList      []mobaGood `json:"good_list"`
-			ShelfLocation []struct {
-				Goods []mobaGood `json:"goods"`
-			} `json:"shelf_location"`
+			ShopInfo struct {
+				GoodList      []mobaGood `json:"good_list"`
+				ShelfLocation []struct {
+					Goods []mobaGood `json:"goods"`
+				} `json:"shelf_location"`
+			} `json:"shop_info"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &r); err != nil {
@@ -278,10 +280,10 @@ func (n *NickChecker) fetchMobapayLimits(ctx context.Context, userID, zoneID str
 			out[g.ID] = LimitAvailable
 		}
 	}
-	for _, g := range r.Data.GoodList {
+	for _, g := range r.Data.ShopInfo.GoodList {
 		set(g) // weekly pass & bundle
 	}
-	for _, s := range r.Data.ShelfLocation {
+	for _, s := range r.Data.ShopInfo.ShelfLocation {
 		for _, g := range s.Goods {
 			set(g) // first top up
 		}
