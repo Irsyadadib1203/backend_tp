@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"io"
 	"log"
 	"net/http"
@@ -110,6 +111,7 @@ var (
 const (
 	gopayBase      = "https://gopay.co.id/games/v1/order"
 	mobapayShopURL = "https://api.mobapay.com/api/app_shop"
+	mobapayOrderURL = "https://api.mobapay.com/pay/order"
 )
 
 type NickResult struct {
@@ -147,24 +149,39 @@ func (n *NickChecker) Check(ctx context.Context, userID, zoneID string) (*NickRe
 	res.Region = countryName(country)
 
 	// Step 2: semua limit dari mobapay, dicocokkan lewat judul produk.
-	st := n.fetchMobapayLimits(ctx, userID, zoneID, country)
-	get := func(key string) LimitStatus {
-		if v, ok := st[key]; ok {
-			return v
-		}
-		return LimitUnknown
+		cc := strings.ToUpper(strings.TrimSpace(country))
+	if cc == "" {
+		cc = "ID"
 	}
 
-	res.WeeklyPass = get("gl:weeklydiamondpass")
-	res.WeeklyElite = get("gl:weeklyelitebundle")
-	res.MonthlyElite = get("gl:monthlyepicbundle")
+	st, targets := n.fetchMobapayLimits(ctx, userID, zoneID, country)
+
+	// Weekly Pass & bundle: cek lewat order (paralel).
+	var wg sync.WaitGroup
+	check := func(dst *LimitStatus, key string) {
+		defer wg.Done()
+		t, ok := targets[key]
+		if !ok {
+			return
+		}
+		*dst = n.orderLimit(ctx, t, userID, zoneID, cc)
+	}
+	wg.Add(3)
+	go check(&res.WeeklyPass, "gl:weeklydiamondpass")
+	go check(&res.WeeklyElite, "gl:weeklyelitebundle")
+	go check(&res.MonthlyElite, "gl:monthlyepicbundle")
 
 	for _, g := range firstTopupGoods {
+		status := LimitUnknown
+		if v, ok := st["ft:"+normTitle(g.Label)]; ok {
+			status = v
+		}
 		res.FirstTopup = append(res.FirstTopup, struct {
 			Label  string
 			Status LimitStatus
-		}{g.Label, get("ft:" + normTitle(g.Label))})
+		}{g.Label, status})
 	}
+	wg.Wait()
 	return res, nil
 }
 
@@ -206,9 +223,23 @@ func (n *NickChecker) fetchAccount(ctx context.Context, userID, zoneID string) (
 type mobaGood struct {
 	ID         int    `json:"id"`
 	Title      string `json:"title"`
+	Currency   string `json:"currency"`
 	GoodsLimit struct {
 		ReachedLimit bool `json:"reached_limit"`
 	} `json:"goods_limit"`
+	PayChannelSub []struct {
+		ID             int         `json:"id"`
+		DirectName     string      `json:"direct_name"`
+		PriceLocalSell json.Number `json:"price_local_sell"`
+	} `json:"pay_channel_sub"`
+}
+
+// orderTarget = data yang dibutuhkan untuk membuat order cek limit.
+type orderTarget struct {
+	GoodsID   int
+	ChannelID int
+	Price     int64
+	Currency  string
 }
 
 func normTitle(s string) string {
@@ -217,8 +248,9 @@ func normTitle(s string) string {
 }
 
 // Hasil dikunci dengan judul: "gl:" = good_list, "ft:" = shelf first top up.
-func (n *NickChecker) fetchMobapayLimits(ctx context.Context, userID, zoneID, country string) map[string]LimitStatus {
+func (n *NickChecker) fetchMobapayLimits(ctx context.Context, userID, zoneID, country string) (map[string]LimitStatus, map[string]orderTarget) {
 	out := map[string]LimitStatus{}
+	targets := map[string]orderTarget{}
 
 	cc := strings.ToUpper(strings.TrimSpace(country))
 	if cc == "" {
@@ -239,18 +271,14 @@ func (n *NickChecker) fetchMobapayLimits(ctx context.Context, userID, zoneID, co
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mobapayShopURL+"?"+q.Encode(), nil)
 	if err != nil {
 		log.Printf("[CekNick] mobapay request: %v", err)
-		return out
+		return out, targets
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
-	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("Accept-Language", "id-ID,id;q=0.9,en;q=0.8")
-	req.Header.Set("Origin", "https://www.mobapay.com")
-	req.Header.Set("Referer", "https://www.mobapay.com/")
+	setMobapayHeaders(req)
 
 	resp, err := n.http.Do(req)
 	if err != nil {
 		log.Printf("[CekNick] mobapay error: %v", err)
-		return out
+		return out, targets
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
@@ -261,7 +289,7 @@ func (n *NickChecker) fetchMobapayLimits(ctx context.Context, userID, zoneID, co
 			snippet = snippet[:300]
 		}
 		log.Printf("[CekNick] mobapay HTTP %d: %s", resp.StatusCode, snippet)
-		return out
+		return out, targets
 	}
 
 	var r struct {
@@ -276,26 +304,105 @@ func (n *NickChecker) fetchMobapayLimits(ctx context.Context, userID, zoneID, co
 	}
 	if err := json.Unmarshal(body, &r); err != nil {
 		log.Printf("[CekNick] parse mobapay: %v", err)
-		return out
+		return out, targets
 	}
 
-	set := func(g mobaGood, prefix string) {
-		st := LimitAvailable
-		if g.GoodsLimit.ReachedLimit {
-			st = LimitReached
-		}
-		out[prefix+normTitle(g.Title)] = st
-	}
+	// good_list: simpan target order (limit dicek lewat /pay/order).
 	for _, g := range r.Data.ShopInfo.GoodList {
-		set(g, "gl:") // weekly pass & bundle
+		key := "gl:" + normTitle(g.Title)
+		if len(g.PayChannelSub) == 0 {
+			continue
+		}
+		ch := g.PayChannelSub[0]
+		for _, c := range g.PayChannelSub {
+			if c.DirectName == "qris" {
+				ch = c
+				break
+			}
+		}
+		price, perr := ch.PriceLocalSell.Int64()
+		if perr != nil {
+			continue
+		}
+		targets[key] = orderTarget{GoodsID: g.ID, ChannelID: ch.ID, Price: price, Currency: g.Currency}
 	}
+
+	// shelf first top up: status dari reached_limit.
 	for _, s := range r.Data.ShopInfo.ShelfLocation {
 		for _, g := range s.Goods {
-			set(g, "ft:") // first top up
+			st := LimitAvailable
+			if g.GoodsLimit.ReachedLimit {
+				st = LimitReached
+			}
+			out["ft:"+normTitle(g.Title)] = st
 		}
 	}
-	log.Printf("[CekNick] mobapay ok (country=%s): %d goods terbaca", cc, len(out))
-	return out
+	log.Printf("[CekNick] mobapay ok (country=%s): %d target order, %d first topup", cc, len(targets), len(out))
+	return out, targets
+}
+
+func setMobapayHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Accept-Language", "id-ID,id;q=0.9,en;q=0.8")
+	req.Header.Set("Origin", "https://www.mobapay.com")
+	req.Header.Set("Referer", "https://www.mobapay.com/")
+}
+
+// orderLimit: coba buat order. code 0 = tersedia, 110202 = limit.
+func (n *NickChecker) orderLimit(ctx context.Context, t orderTarget, userID, zoneID, cc string) LimitStatus {
+	payload := map[string]any{
+		"app_id":              100000,
+		"game_user_key":       userID,
+		"game_server_key":     zoneID,
+		"email":               "ahmad123675@gmail.com",
+		"goods_id":            t.GoodsID,
+		"lang":                "id",
+		"merchant_return_url": "https://www.mobapay.com/mlbb/?r=" + cc,
+		"net":                 "",
+		"network":             "",
+		"num":                 1,
+		"pay_channel_sub_id":  t.ChannelID,
+		"amount_pay":          t.Price,
+		"price_pay":           t.Price,
+		"shop_id":             1001,
+		"terminal_type":       "WEB",
+		"country_code":        cc,
+		"currency_code":       t.Currency,
+	}
+	b, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mobapayOrderURL, bytes.NewReader(b))
+	if err != nil {
+		return LimitUnknown
+	}
+	setMobapayHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := n.http.Do(req)
+	if err != nil {
+		log.Printf("[CekNick] order goods=%d error: %v", t.GoodsID, err)
+		return LimitUnknown
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	var r struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		log.Printf("[CekNick] order goods=%d parse: %s", t.GoodsID, string(body))
+		return LimitUnknown
+	}
+	switch r.Code {
+	case 0:
+		return LimitAvailable
+	case 110202:
+		return LimitReached
+	default:
+		log.Printf("[CekNick] order goods=%d code=%d msg=%s", t.GoodsID, r.Code, r.Message)
+		return LimitUnknown
+	}
 }
 
 // ---- helpers ----
