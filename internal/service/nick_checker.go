@@ -5,13 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sync"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -109,9 +110,24 @@ var (
 )
 
 const (
-	gopayBase      = "https://gopay.co.id/games/v1/order"
-	mobapayShopURL = "https://api.mobapay.com/api/app_shop"
+	gopayBase       = "https://gopay.co.id/games/v1/order"
+	mobapayShopURL  = "https://api.mobapay.com/api/app_shop"
 	mobapayOrderURL = "https://api.mobapay.com/pay/order"
+
+	// Kode respons mobapay pada /pay/order.
+	codeOrderOK        = 0
+	codeOrderLimit     = 110202
+	codeOrderRateLimit = 100008
+
+	// Jarak minimal antar request /pay/order (global, lintas chat) karena
+	// rate limit mobapay dihitung per IP.
+	orderGap = 1200 * time.Millisecond
+	// Jeda sebelum mengulang order yang kena rate limit mobapay.
+	orderRetryWait = 2 * time.Second
+	orderMaxTries  = 2
+
+	// Email bawaan untuk order cek limit; bisa di-override lewat env MOBAPAY_EMAIL.
+	defaultOrderEmail = "ahmad123675@gmail.com"
 )
 
 type NickResult struct {
@@ -124,15 +140,63 @@ type NickResult struct {
 }
 
 type NickChecker struct {
-	http *http.Client
+	http  *http.Client
+	email string
+
+	orderMu   sync.Mutex
+	lastOrder time.Time
 }
 
 func NewNickChecker() *NickChecker {
-	return &NickChecker{http: &http.Client{Timeout: 12 * time.Second}}
+	email := strings.TrimSpace(os.Getenv("MOBAPAY_EMAIL"))
+	if email == "" {
+		email = defaultOrderEmail
+	}
+	return &NickChecker{
+		http:  &http.Client{Timeout: 12 * time.Second},
+		email: email,
+	}
 }
 
-// Check: nickname + region dari gopay, semua limit dari 1 request mobapay
-// (country dikirim sesuai region akun karena katalog mobapay berbeda per negara).
+// throttleOrder menjaga jarak antar request /pay/order secara global.
+// Slot dipesan di dalam lock, jadi beberapa pemanggil bersamaan akan
+// mengantre berurutan dan tidak menembak serentak.
+func (n *NickChecker) throttleOrder(ctx context.Context) error {
+	n.orderMu.Lock()
+	next := n.lastOrder.Add(orderGap)
+	now := time.Now()
+	if next.Before(now) {
+		next = now
+	}
+	n.lastOrder = next
+	n.orderMu.Unlock()
+
+	wait := time.Until(next)
+	if wait <= 0 {
+		return nil
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// normCountry menghasilkan kode negara huruf besar, default "ID".
+func normCountry(country string) string {
+	cc := strings.ToUpper(strings.TrimSpace(country))
+	if cc == "" {
+		return "ID"
+	}
+	return cc
+}
+
+// Check: nickname + region dari gopay, first top up dari 1 request katalog
+// mobapay, lalu Weekly Pass & bundle lewat order (berurutan dengan jeda).
+// Country dikirim sesuai region akun karena katalog mobapay berbeda per negara.
 func (n *NickChecker) Check(ctx context.Context, userID, zoneID string) (*NickResult, error) {
 	if !reDigits.MatchString(userID) || !reDigits.MatchString(zoneID) {
 		return nil, fmt.Errorf("format ID/Server tidak valid")
@@ -148,28 +212,27 @@ func (n *NickChecker) Check(ctx context.Context, userID, zoneID string) (*NickRe
 	res.Nickname = nick
 	res.Region = countryName(country)
 
-	// Step 2: semua limit dari mobapay, dicocokkan lewat judul produk.
-		cc := strings.ToUpper(strings.TrimSpace(country))
-	if cc == "" {
-		cc = "ID"
+	// Step 2: katalog mobapay (first top up + target order), dicocokkan lewat judul.
+	cc := normCountry(country)
+	st, targets := n.fetchMobapayLimits(ctx, userID, zoneID, cc)
+
+	// Step 3: Weekly Pass & bundle lewat order. Sengaja berurutan (bukan
+	// paralel) agar tidak kena "Over rate limit" (code 100008) dari mobapay.
+	orders := []struct {
+		dst *LimitStatus
+		key string
+	}{
+		{&res.WeeklyPass, "gl:weeklydiamondpass"},
+		{&res.WeeklyElite, "gl:weeklyelitebundle"},
+		{&res.MonthlyElite, "gl:monthlyepicbundle"},
 	}
-
-	st, targets := n.fetchMobapayLimits(ctx, userID, zoneID, country)
-
-	// Weekly Pass & bundle: cek lewat order (paralel).
-	var wg sync.WaitGroup
-	check := func(dst *LimitStatus, key string) {
-		defer wg.Done()
-		t, ok := targets[key]
+	for _, o := range orders {
+		t, ok := targets[o.key]
 		if !ok {
-			return
+			continue
 		}
-		*dst = n.orderLimit(ctx, t, userID, zoneID, cc)
+		*o.dst = n.orderLimit(ctx, t, userID, zoneID, cc)
 	}
-	wg.Add(3)
-	go check(&res.WeeklyPass, "gl:weeklydiamondpass")
-	go check(&res.WeeklyElite, "gl:weeklyelitebundle")
-	go check(&res.MonthlyElite, "gl:monthlyepicbundle")
 
 	for _, g := range firstTopupGoods {
 		status := LimitUnknown
@@ -181,7 +244,6 @@ func (n *NickChecker) Check(ctx context.Context, userID, zoneID string) (*NickRe
 			Status LimitStatus
 		}{g.Label, status})
 	}
-	wg.Wait()
 	return res, nil
 }
 
@@ -218,7 +280,7 @@ func (n *NickChecker) fetchAccount(ctx context.Context, userID, zoneID string) (
 	return name, r.Data.CountryOrigin, nil
 }
 
-// ---- Step 2: limit weekly pass, bundle, first top up (mobapay) ----
+// ---- Step 2: katalog mobapay (first top up + target order) ----
 
 type mobaGood struct {
 	ID         int    `json:"id"`
@@ -248,14 +310,10 @@ func normTitle(s string) string {
 }
 
 // Hasil dikunci dengan judul: "gl:" = good_list, "ft:" = shelf first top up.
-func (n *NickChecker) fetchMobapayLimits(ctx context.Context, userID, zoneID, country string) (map[string]LimitStatus, map[string]orderTarget) {
+// cc harus sudah dinormalisasi lewat normCountry.
+func (n *NickChecker) fetchMobapayLimits(ctx context.Context, userID, zoneID, cc string) (map[string]LimitStatus, map[string]orderTarget) {
 	out := map[string]LimitStatus{}
 	targets := map[string]orderTarget{}
-
-	cc := strings.ToUpper(strings.TrimSpace(country))
-	if cc == "" {
-		cc = "ID"
-	}
 
 	q := url.Values{}
 	q.Set("app_id", "100000")
@@ -349,13 +407,56 @@ func setMobapayHeaders(req *http.Request) {
 	req.Header.Set("Referer", "https://www.mobapay.com/")
 }
 
+// ---- Step 3: cek limit lewat order ----
+
 // orderLimit: coba buat order. code 0 = tersedia, 110202 = limit.
+// Kalau mobapay membalas 100008 (Over rate limit), ulangi setelah jeda.
 func (n *NickChecker) orderLimit(ctx context.Context, t orderTarget, userID, zoneID, cc string) LimitStatus {
+	for attempt := 1; attempt <= orderMaxTries; attempt++ {
+		if err := n.throttleOrder(ctx); err != nil {
+			return LimitUnknown
+		}
+
+		code, msg, err := n.orderOnce(ctx, t, userID, zoneID, cc)
+		if err != nil {
+			log.Printf("[CekNick] order goods=%d error: %v", t.GoodsID, err)
+			return LimitUnknown
+		}
+
+		switch code {
+		case codeOrderOK:
+			return LimitAvailable
+		case codeOrderLimit:
+			return LimitReached
+		case codeOrderRateLimit:
+			if attempt < orderMaxTries {
+				log.Printf("[CekNick] order goods=%d rate limited, retry %d/%d", t.GoodsID, attempt, orderMaxTries-1)
+				timer := time.NewTimer(orderRetryWait)
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+					timer.Stop()
+					return LimitUnknown
+				}
+				continue
+			}
+			log.Printf("[CekNick] order goods=%d code=%d msg=%s (menyerah)", t.GoodsID, code, msg)
+			return LimitUnknown
+		default:
+			log.Printf("[CekNick] order goods=%d code=%d msg=%s", t.GoodsID, code, msg)
+			return LimitUnknown
+		}
+	}
+	return LimitUnknown
+}
+
+// orderOnce mengirim satu request /pay/order dan mengembalikan code + message.
+func (n *NickChecker) orderOnce(ctx context.Context, t orderTarget, userID, zoneID, cc string) (int, string, error) {
 	payload := map[string]any{
 		"app_id":              100000,
 		"game_user_key":       userID,
 		"game_server_key":     zoneID,
-		"email":               "ahmad123675@gmail.com",
+		"email":               n.email,
 		"goods_id":            t.GoodsID,
 		"lang":                "id",
 		"merchant_return_url": "https://www.mobapay.com/mlbb/?r=" + cc,
@@ -370,18 +471,20 @@ func (n *NickChecker) orderLimit(ctx context.Context, t orderTarget, userID, zon
 		"country_code":        cc,
 		"currency_code":       t.Currency,
 	}
-	b, _ := json.Marshal(payload)
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return 0, "", err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mobapayOrderURL, bytes.NewReader(b))
 	if err != nil {
-		return LimitUnknown
+		return 0, "", err
 	}
 	setMobapayHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := n.http.Do(req)
 	if err != nil {
-		log.Printf("[CekNick] order goods=%d error: %v", t.GoodsID, err)
-		return LimitUnknown
+		return 0, "", err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
@@ -391,24 +494,22 @@ func (n *NickChecker) orderLimit(ctx context.Context, t orderTarget, userID, zon
 		Message string `json:"message"`
 	}
 	if err := json.Unmarshal(body, &r); err != nil {
-		log.Printf("[CekNick] order goods=%d parse: %s", t.GoodsID, string(body))
-		return LimitUnknown
+		snippet := string(body)
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		return 0, "", fmt.Errorf("parse respons (HTTP %d): %s", resp.StatusCode, snippet)
 	}
-	switch r.Code {
-	case 0:
-		return LimitAvailable
-	case 110202:
-		return LimitReached
-	default:
-		log.Printf("[CekNick] order goods=%d code=%d msg=%s", t.GoodsID, r.Code, r.Message)
-		return LimitUnknown
-	}
+	return r.Code, r.Message, nil
 }
 
 // ---- helpers ----
 
 func (n *NickChecker) postJSON(ctx context.Context, u string, payload any) (int, []byte, error) {
-	b, _ := json.Marshal(payload)
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return 0, nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(b))
 	if err != nil {
 		return 0, nil, err

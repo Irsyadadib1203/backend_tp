@@ -46,7 +46,7 @@ func main() {
 	// 2. Initialize Database & Seeder
 	db := database.InitDB(cfg)
 	database.SeedInitialData(db)
-	nickChecker := service.NewNickChecker()
+	nickChecker := service.NewGuardedChecker(service.NewNickChecker())
 
 	// 3. Initialize Repositories
 	userRepo := repository.NewUserRepository(db)

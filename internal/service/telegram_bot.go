@@ -18,10 +18,10 @@ var reCN = regexp.MustCompile(`^/cn(?:@\w+)?\s+(\d+)\s*[\s(]\s*(\d+)\)?\s*$`)
 
 type TelegramBot struct {
 	alert   TelegramAlertService
-	checker *NickChecker
+	checker *GuardedChecker
 }
 
-func NewTelegramBot(alert TelegramAlertService, checker *NickChecker) *TelegramBot {
+func NewTelegramBot(alert TelegramAlertService, checker *GuardedChecker) *TelegramBot {
 	return &TelegramBot{alert: alert, checker: checker}
 }
 
@@ -29,6 +29,9 @@ type tgUpdate struct {
 	UpdateID int64 `json:"update_id"`
 	Message  *struct {
 		Text string `json:"text"`
+		From struct {
+			ID int64 `json:"id"`
+		} `json:"from"`
 		Chat struct {
 			ID int64 `json:"id"`
 		} `json:"chat"`
@@ -92,11 +95,25 @@ func (b *TelegramBot) handle(ctx context.Context, s *TelegramSettings, up tgUpda
 		return
 	}
 
-	cctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	// Rate limit per pengirim (bukan per chat), karena chat yang diizinkan
+	// hanya satu dan dipakai bersama. Fallback ke chat ID kalau from kosong.
+	limitKey := up.Message.From.ID
+	if limitKey == 0 {
+		limitKey = up.Message.Chat.ID
+	}
+
+	// Timeout lebih longgar dari sebelumnya: satu cek baru bisa ~4 detik
+	// (3 order berjarak 1,2 detik) dan bisa mengantre di throttle global.
+	cctx, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
 
-	res, err := b.checker.Check(cctx, m[1], m[2])
+	res, err := b.checker.Check(cctx, limitKey, m[1], m[2])
 	if err != nil {
+		if rl, ok := IsRateLimited(err); ok {
+			_ = client.SendMessagePlain(chatID,
+				fmt.Sprintf("⏳ Terlalu sering. Coba lagi %d detik lagi.", int(rl.RetryAfter.Seconds())+1))
+			return
+		}
 		_ = client.SendMessagePlain(chatID, "❌ "+err.Error())
 		return
 	}
