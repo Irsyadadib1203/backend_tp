@@ -33,30 +33,23 @@ func (l LimitStatus) String() string {
 	}
 }
 
-// firstTopupGoods = ID goods di mobapay (shelf "Diamond Ganda pada Top Up Pertama").
+// firstTopupGood = label First Top Up. Dicocokkan lewat judul di mobapay
+// (ID goods berbeda per region, jadi tidak di-hardcode).
 type firstTopupGood struct {
-	Label   string
-	GoodsID int
+	Label string
 }
-
-// ID goods di mobapay (good_list).
-const (
-	goodWeeklyPass   = 120991 // Weekly Diamond Pass
-	goodWeeklyElite  = 131189 // Weekly Elite Bundle
-	goodMonthlyElite = 131191 // di mobapay: "Monthly Epic Bundle"
-)
 
 var (
 	reDigits = regexp.MustCompile(`^\d{3,15}$`)
 
 	firstTopupGoods = []firstTopupGood{
-		{"50 + 50", 126306},
-		{"150 + 150", 126307},
-		{"250 + 250", 126315},
-		{"500 + 500", 126316},
+		{"50 + 50"},
+		{"150 + 150"},
+		{"250 + 250"},
+		{"500 + 500"},
 	}
 
-		countryNames = map[string]string{
+	countryNames = map[string]string{
 		"ad": "Andorra", "ae": "United Arab Emirates", "af": "Afghanistan", "ag": "Antigua and Barbuda",
 		"ai": "Anguilla", "al": "Albania", "am": "Armenia", "ao": "Angola", "aq": "Antarctica",
 		"ar": "Argentina", "as": "American Samoa", "at": "Austria", "au": "Australia", "aw": "Aruba",
@@ -136,7 +129,8 @@ func NewNickChecker() *NickChecker {
 	return &NickChecker{http: &http.Client{Timeout: 12 * time.Second}}
 }
 
-// Check: nickname + region dari gopay, semua limit dari 1 request mobapay.
+// Check: nickname + region dari gopay, semua limit dari 1 request mobapay
+// (country dikirim sesuai region akun karena katalog mobapay berbeda per negara).
 func (n *NickChecker) Check(ctx context.Context, userID, zoneID string) (*NickResult, error) {
 	if !reDigits.MatchString(userID) || !reDigits.MatchString(zoneID) {
 		return nil, fmt.Errorf("format ID/Server tidak valid")
@@ -152,24 +146,24 @@ func (n *NickChecker) Check(ctx context.Context, userID, zoneID string) (*NickRe
 	res.Nickname = nick
 	res.Region = countryName(country)
 
-	// Step 2: semua limit dari mobapay.
-	st := n.fetchMobapayLimits(ctx, userID, zoneID)
-	get := func(id int) LimitStatus {
-		if v, ok := st[id]; ok {
+	// Step 2: semua limit dari mobapay, dicocokkan lewat judul produk.
+	st := n.fetchMobapayLimits(ctx, userID, zoneID, country)
+	get := func(key string) LimitStatus {
+		if v, ok := st[key]; ok {
 			return v
 		}
 		return LimitUnknown
 	}
 
-	res.WeeklyPass = get(goodWeeklyPass)
-	res.WeeklyElite = get(goodWeeklyElite)
-	res.MonthlyElite = get(goodMonthlyElite)
+	res.WeeklyPass = get("gl:weeklydiamondpass")
+	res.WeeklyElite = get("gl:weeklyelitebundle")
+	res.MonthlyElite = get("gl:monthlyepicbundle")
 
 	for _, g := range firstTopupGoods {
 		res.FirstTopup = append(res.FirstTopup, struct {
 			Label  string
 			Status LimitStatus
-		}{g.Label, get(g.GoodsID)})
+		}{g.Label, get("ft:" + normTitle(g.Label))})
 	}
 	return res, nil
 }
@@ -210,20 +204,32 @@ func (n *NickChecker) fetchAccount(ctx context.Context, userID, zoneID string) (
 // ---- Step 2: limit weekly pass, bundle, first top up (mobapay) ----
 
 type mobaGood struct {
-	ID         int `json:"id"`
+	ID         int    `json:"id"`
+	Title      string `json:"title"`
 	GoodsLimit struct {
 		ReachedLimit bool `json:"reached_limit"`
 	} `json:"goods_limit"`
 }
 
-func (n *NickChecker) fetchMobapayLimits(ctx context.Context, userID, zoneID string) map[int]LimitStatus {
-	out := map[int]LimitStatus{}
+func normTitle(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return strings.ReplaceAll(s, " ", "")
+}
+
+// Hasil dikunci dengan judul: "gl:" = good_list, "ft:" = shelf first top up.
+func (n *NickChecker) fetchMobapayLimits(ctx context.Context, userID, zoneID, country string) map[string]LimitStatus {
+	out := map[string]LimitStatus{}
+
+	cc := strings.ToUpper(strings.TrimSpace(country))
+	if cc == "" {
+		cc = "ID"
+	}
 
 	q := url.Values{}
 	q.Set("app_id", "100000")
 	q.Set("game_user_key", userID)
 	q.Set("game_server_key", zoneID)
-	q.Set("country", "ID")
+	q.Set("country", cc)
 	q.Set("language", "id")
 	q.Set("network", "")
 	q.Set("net", "")
@@ -273,22 +279,22 @@ func (n *NickChecker) fetchMobapayLimits(ctx context.Context, userID, zoneID str
 		return out
 	}
 
-	set := func(g mobaGood) {
+	set := func(g mobaGood, prefix string) {
+		st := LimitAvailable
 		if g.GoodsLimit.ReachedLimit {
-			out[g.ID] = LimitReached
-		} else {
-			out[g.ID] = LimitAvailable
+			st = LimitReached
 		}
+		out[prefix+normTitle(g.Title)] = st
 	}
 	for _, g := range r.Data.ShopInfo.GoodList {
-		set(g) // weekly pass & bundle
+		set(g, "gl:") // weekly pass & bundle
 	}
 	for _, s := range r.Data.ShopInfo.ShelfLocation {
 		for _, g := range s.Goods {
-			set(g) // first top up
+			set(g, "ft:") // first top up
 		}
 	}
-	log.Printf("[CekNick] mobapay ok: %d goods terbaca", len(out))
+	log.Printf("[CekNick] mobapay ok (country=%s): %d goods terbaca", cc, len(out))
 	return out
 }
 
