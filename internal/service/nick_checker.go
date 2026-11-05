@@ -121,7 +121,7 @@ const (
 
 	// Jarak minimal antar request /pay/order (global, lintas chat) karena
 	// rate limit mobapay dihitung per IP.
-	orderGap = 1200 * time.Millisecond
+	orderGap = 2500 * time.Millisecond
 	// Jeda sebelum mengulang order yang kena rate limit mobapay.
 	orderRetryWait = 2 * time.Second
 	orderMaxTries  = 2
