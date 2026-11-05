@@ -354,9 +354,9 @@ func (s *telegramAlertService) checkStuckTransactions(client *telegram.Client, s
 	}
 
 	minAge := time.Duration(stuckMinutes) * time.Minute
-	totalStuck, err := s.txRepo.CountProcessingOlderThan(minAge)
+	totalStuck, err := s.txRepo.CountProviderPendingOlderThan(minAge)
 	if err != nil {
-		log.Printf("[TelegramAlert] Gagal count transaksi stuck: %v", err)
+		log.Printf("[TelegramAlert] Gagal count transaksi provider pending: %v", err)
 		return
 	}
 
@@ -366,9 +366,9 @@ func (s *telegramAlertService) checkStuckTransactions(client *telegram.Client, s
 
 	// Ambil maksimal 20 transaksi tertua untuk dirinci di pesan telegram
 	const displayLimit = 20
-	txs, err := s.txRepo.FindProcessingOlderThan(minAge, displayLimit)
+	txs, err := s.txRepo.FindProviderPendingOlderThan(minAge, displayLimit)
 	if err != nil {
-		log.Printf("[TelegramAlert] Gagal query transaksi stuck: %v", err)
+		log.Printf("[TelegramAlert] Gagal query transaksi provider pending: %v", err)
 		return
 	}
 
@@ -394,8 +394,8 @@ func (s *telegramAlertService) checkStuckTransactions(client *telegram.Client, s
 	}
 
 	msg := fmt.Sprintf(
-		"🚨 *TRANSAKSI STUCK*\n\n"+
-			"Ditemukan *%d* transaksi stuck di PROCESSING > %d menit:\n\n"+
+		"🚨 *TRANSAKSI PENDING DI PROVIDER*\n\n"+
+			"Ditemukan *%d* transaksi PROCESSING dengan status provider PENDING > %d menit:\n\n"+
 			"%s\n\n"+
 			"🕐 %s\n"+
 			"Segera cek di Admin Panel!",
@@ -404,10 +404,10 @@ func (s *telegramAlertService) checkStuckTransactions(client *telegram.Client, s
 	)
 
 	if err := client.SendMessageMarkdown(settings.ChatID, msg); err != nil {
-		log.Printf("[TelegramAlert] Gagal kirim alert transaksi stuck: %v", err)
+		log.Printf("[TelegramAlert] Gagal kirim alert transaksi pending: %v", err)
 	} else {
 		s.setCooldown(alertKey)
-		log.Printf("[TelegramAlert] Alert transaksi stuck terkirim: %d transaksi (ditampilkan %d)", totalStuck, len(txs))
+		log.Printf("[TelegramAlert] Alert transaksi pending terkirim: %d transaksi (ditampilkan %d)", totalStuck, len(txs))
 	}
 }
 

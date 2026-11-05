@@ -38,6 +38,9 @@ type TransactionRepository interface {
 	// transaction for one reconciliation attempt. The reservation advances
 	// updated_at only when the transaction is still processing and stale, so
 	// concurrent schedulers do not issue duplicate status checks.
+	FindProviderPendingOlderThan(minAge time.Duration, limit int) ([]domain.Transaction, error)
+	// CountProviderPendingOlderThan counts the same set. Used for the Telegram alert.
+	CountProviderPendingOlderThan(minAge time.Duration) (int64, error)
 	ClaimProcessingForReconciliation(id uint, staleBefore time.Time) (bool, error)
 	// FindProcessingBalanceHolds returns retry-safe transactions that stopped
 	// because the selected provider reported insufficient balance and has not
@@ -207,6 +210,31 @@ func (r *transactionRepository) CountProcessingOlderThan(minAge time.Duration) (
 	cutoff := time.Now().Add(-minAge)
 	err := r.db.Model(&domain.Transaction{}).
 		Where("status = ? AND created_at < ?", domain.StatusProcessing, cutoff).
+		Count(&count).Error
+	return count, err
+}
+// FindProviderPendingOlderThan returns processing transactions whose
+// provider_status is still pending and whose created_at is before (now - minAge),
+// oldest first.
+func (r *transactionRepository) FindProviderPendingOlderThan(minAge time.Duration, limit int) ([]domain.Transaction, error) {
+	var txs []domain.Transaction
+	cutoff := time.Now().Add(-minAge)
+	err := r.db.Preload("Nominal").Preload("Provider").
+		Where("status = ? AND created_at < ?", domain.StatusProcessing, cutoff).
+		Where("LOWER(provider_status) LIKE ?", "%pending%").
+		Order("created_at ASC, id ASC").
+		Limit(limit).
+		Find(&txs).Error
+	return txs, err
+}
+
+// CountProviderPendingOlderThan counts the same set as FindProviderPendingOlderThan.
+func (r *transactionRepository) CountProviderPendingOlderThan(minAge time.Duration) (int64, error) {
+	var count int64
+	cutoff := time.Now().Add(-minAge)
+	err := r.db.Model(&domain.Transaction{}).
+		Where("status = ? AND created_at < ?", domain.StatusProcessing, cutoff).
+		Where("LOWER(provider_status) LIKE ?", "%pending%").
 		Count(&count).Error
 	return count, err
 }
