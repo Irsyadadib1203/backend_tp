@@ -14,7 +14,14 @@ import (
 	"topup-backend/internal/pkg/telegram"
 )
 
-var reCN = regexp.MustCompile(`^/cn(?:@\w+)?\s+(\d+)\s*[\s(]\s*(\d+)\)?\s*$`)
+var (
+	// Perintah cek nickname. Awalan "." atau "/" opsional: "cn 123 456",
+	// ".cn 123 456", dan "/cn 123 456" semuanya diterima.
+	reCN = regexp.MustCompile(`(?i)^[./]?cn(?:@\w+)?\s+(\d+)\s*[\s(]\s*(\d+)\)?\s*$`)
+	// Awalan eksplisit: hanya untuk memutuskan apakah bot perlu membalas bantuan
+	// saat formatnya salah. "cn" polos yang salah format diabaikan.
+	reCNExplicit = regexp.MustCompile(`(?i)^[./]cn(?:@\w+)?(?:\s|$)`)
+)
 
 type TelegramBot struct {
 	alert   TelegramAlertService
@@ -77,8 +84,9 @@ func (b *TelegramBot) Run(ctx context.Context) {
 
 func (b *TelegramBot) handle(ctx context.Context, s *TelegramSettings, up tgUpdate) {
 	text := strings.TrimSpace(up.Message.Text)
-	if !strings.HasPrefix(text, "/cn") {
-		return
+	m := reCN.FindStringSubmatch(text)
+	if m == nil && !reCNExplicit.MatchString(text) {
+		return // bukan perintah cek nickname: abaikan
 	}
 	chatID := strconv.FormatInt(up.Message.Chat.ID, 10)
 
@@ -89,9 +97,8 @@ func (b *TelegramBot) handle(ctx context.Context, s *TelegramSettings, up tgUpda
 
 	client := telegram.NewClient(s.BotToken)
 
-	m := reCN.FindStringSubmatch(text)
 	if m == nil {
-		_ = client.SendMessagePlain(chatID, "Format: /cn <id> <server>\nContoh: /cn 123456 1234")
+		_ = client.SendMessagePlain(chatID, "Format: cn <id> <server>\nContoh: cn 123456 1234")
 		return
 	}
 
