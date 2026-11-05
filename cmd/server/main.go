@@ -46,6 +46,7 @@ func main() {
 	// 2. Initialize Database & Seeder
 	db := database.InitDB(cfg)
 	database.SeedInitialData(db)
+	nickChecker := service.NewNickChecker()
 
 	// 3. Initialize Repositories
 	userRepo := repository.NewUserRepository(db)
@@ -62,6 +63,7 @@ func main() {
 	rolePermRepo := repository.NewRolePermissionRepository(db)
 	providerProductRepo := repository.NewProviderProductRepository(db)
 	settingRepo := repository.NewSystemSettingRepository(db)
+
 
 	// 4. Initialize Services
 	authService := service.NewAuthService(userRepo, cfg)
@@ -174,6 +176,12 @@ func main() {
 	telegramAlertScheduler := scheduler.NewTelegramAlertScheduler(telegramAlertService, 5*time.Minute)
 	telegramAlertScheduler.Start()
 	defer telegramAlertScheduler.Stop()
+
+	// 5.2e Telegram bot: perintah /cn (cek nickname)
+	botCtx, botCancel := context.WithCancel(context.Background())
+	defer botCancel()
+	tgBot := service.NewTelegramBot(telegramAlertService, nickChecker)
+	go tgBot.Run(botCtx)
 
 	// 5.3 Start Reconciler (Fase 5) â€” disabled by default via RECONCILER_ENABLED=false.
 	// Enable only after registry mode has been verified in production.
@@ -525,6 +533,7 @@ func main() {
 
 	// Stop background services gracefully
 	reconcilerCancel() // stop reconciler goroutine (no-op if disabled)
+	botCancel()
 	autoSyncScheduler.Stop()
 	kiosKeepAliveScheduler.Stop()
 	priceSyncScheduler.Stop()
